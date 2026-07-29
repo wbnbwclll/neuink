@@ -3179,8 +3179,6 @@ dependencies = [
 name = "neuink-parser"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
- "hmac",
  "neuink-domain",
  "reqwest 0.12.28",
  "serde",

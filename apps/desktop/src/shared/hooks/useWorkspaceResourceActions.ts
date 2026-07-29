@@ -221,7 +221,7 @@ export function useWorkspaceResourceActions({
             queued,
             ...current.filter((entry) => entry.id !== queued.id)
           ]);
-          if (readAutoParseOnPdfImport()) {
+          if (readAutoParseOnPdfImport() && endpoint.trim()) {
             submitQueuedParse(root, queued.id, endpoint, apiKey);
           }
           return {
@@ -261,7 +261,7 @@ export function useWorkspaceResourceActions({
         setEntries((current) =>
           current.map((entry) => (entry.id === queued.id ? queued : entry))
         );
-        if (readAutoParseOnPdfImport()) {
+        if (readAutoParseOnPdfImport() && endpoint.trim()) {
           submitQueuedParse(root, queued.id, endpoint, apiKey);
         }
         setError(null);

@@ -6,8 +6,6 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-base64.workspace = true
-hmac.workspace = true
 neuink-domain = { path = "../neuink-domain" }
 reqwest.workspace = true
 serde.workspace = true

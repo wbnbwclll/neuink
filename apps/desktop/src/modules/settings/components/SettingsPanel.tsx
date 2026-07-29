@@ -41,15 +41,6 @@ import {
   type WorkspaceSettings
 } from '@/shared/ipc/workspaceApi';
 import {
-  CLOUD_PARSER_ENDPOINT,
-  type ParserSourceMode,
-  isCloudParserEndpoint,
-  persistCloudUnlockState,
-  readInitialParserSourceMode,
-  readStoredCloudUnlockState,
-  verifyCloudParserSecret
-} from '@/shared/lib/parserSettings';
-import {
   createBlankSkillPackage,
   equalAgentRuntimeSettings,
   mergeRegistrySkillPackages,
@@ -94,10 +85,6 @@ type SettingsPanelProps = {
   uiScale: UiScale;
   onParserEndpointChange: (value: string) => void;
   onParserApiKeyChange: (value: string) => void;
-  popoEnhancementEnabled: boolean;
-  popoEnhancementEndpoint: string;
-  onPopoEnhancementEnabledChange: (value: boolean) => void;
-  onPopoEnhancementEndpointChange: (value: string) => void;
   onReaderPreferencesChange: (preferences: ReaderPreferences) => void;
   onResetWorkspaceRoot?: () => Promise<void>;
   onBeforeWorkspaceChange?: () => Promise<void>;
@@ -149,10 +136,6 @@ export function SettingsPanel({
   uiScale,
   onParserEndpointChange,
   onParserApiKeyChange,
-  popoEnhancementEnabled,
-  popoEnhancementEndpoint,
-  onPopoEnhancementEnabledChange,
-  onPopoEnhancementEndpointChange,
   onReaderPreferencesChange,
   onResetWorkspaceRoot,
   onBeforeWorkspaceChange,
@@ -194,31 +177,10 @@ export function SettingsPanel({
     readModelCatalogCache()
   );
   const [providersExpanded, setProvidersExpanded] = useState(false);
-  const [cloudUnlocked, setCloudUnlocked] = useState(readStoredCloudUnlockState);
-  const [unlockSecret, setUnlockSecret] = useState('');
-  const [unlockBusy, setUnlockBusy] = useState(false);
   const [customParserEndpoint, setCustomParserEndpoint] = useState(parserEndpoint);
   const [customParserApiKey, setCustomParserApiKey] = useState(parserApiKey);
-  const [parserSourceMode, setParserSourceMode] = useState<ParserSourceMode>(() =>
-    readInitialParserSourceMode(parserEndpoint)
-  );
-  const [parserSourceIntent, setParserSourceIntent] = useState<ParserSourceMode>(() =>
-    readInitialParserSourceMode(parserEndpoint)
-  );
   const [savedParserEndpoint, setSavedParserEndpoint] = useState(parserEndpoint);
   const [savedParserApiKey, setSavedParserApiKey] = useState(parserApiKey);
-  const [draftPopoEnhancementEnabled, setDraftPopoEnhancementEnabled] = useState(
-    popoEnhancementEnabled
-  );
-  const [draftPopoEnhancementEndpoint, setDraftPopoEnhancementEndpoint] = useState(
-    popoEnhancementEndpoint
-  );
-  const [savedPopoEnhancementEnabled, setSavedPopoEnhancementEnabled] = useState(
-    popoEnhancementEnabled
-  );
-  const [savedPopoEnhancementEndpoint, setSavedPopoEnhancementEndpoint] = useState(
-    popoEnhancementEndpoint
-  );
   const [draftReaderPreferences, setDraftReaderPreferences] = useState(readerPreferences);
   const [savedReaderPreferences, setSavedReaderPreferences] = useState(readerPreferences);
   const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettings | null>(null);
@@ -296,8 +258,7 @@ export function SettingsPanel({
   const visibleProviderPresets = providersExpanded
     ? PROVIDER_PRESETS
     : PROVIDER_PRESETS.slice(0, COLLAPSED_PROVIDER_COUNT);
-  const effectiveParserEndpoint =
-    parserSourceMode === 'cloud' ? CLOUD_PARSER_ENDPOINT : customParserEndpoint.trim();
+  const effectiveParserEndpoint = customParserEndpoint.trim();
 
   useEffect(() => {
     let cancelled = false;
@@ -363,30 +324,14 @@ export function SettingsPanel({
       return;
     }
     pendingSavedParserEndpointRef.current = null;
-    setCloudUnlocked(readStoredCloudUnlockState());
-    if (!isCloudParserEndpoint(parserEndpoint)) {
-      setCustomParserEndpoint(parserEndpoint);
-    }
+    setCustomParserEndpoint(parserEndpoint);
     setSavedParserEndpoint(parserEndpoint);
-    const nextSourceMode = readInitialParserSourceMode(parserEndpoint);
-    setParserSourceMode(nextSourceMode);
-    setParserSourceIntent(nextSourceMode);
   }, [parserEndpoint]);
 
   useEffect(() => {
     setCustomParserApiKey(parserApiKey);
     setSavedParserApiKey(parserApiKey);
   }, [parserApiKey]);
-
-  useEffect(() => {
-    setDraftPopoEnhancementEnabled(popoEnhancementEnabled);
-    setSavedPopoEnhancementEnabled(popoEnhancementEnabled);
-  }, [popoEnhancementEnabled]);
-
-  useEffect(() => {
-    setDraftPopoEnhancementEndpoint(popoEnhancementEndpoint);
-    setSavedPopoEnhancementEndpoint(popoEnhancementEndpoint);
-  }, [popoEnhancementEndpoint]);
 
   useEffect(() => {
     setDraftReaderPreferences(readerPreferences);
@@ -689,57 +634,6 @@ export function SettingsPanel({
     );
   };
 
-  const selectParserSourceMode = (nextMode: ParserSourceMode, options?: { force?: boolean }) => {
-    if (nextMode === 'cloud' && !cloudUnlocked && !options?.force) {
-      setParserSourceIntent('cloud');
-      notify({ title: '需要云端解析秘钥', description: '输入并验证秘钥后才会启用云端 MinerU。' });
-      return;
-    }
-
-    setParserSourceIntent(nextMode);
-    setParserSourceMode(nextMode);
-    if (nextMode === 'cloud') {
-      pendingSavedParserEndpointRef.current = CLOUD_PARSER_ENDPOINT;
-      setSavedParserEndpoint(CLOUD_PARSER_ENDPOINT);
-      onParserEndpointChange(CLOUD_PARSER_ENDPOINT);
-      onParserApiKeyChange('');
-      notify({ tone: 'success', title: '已切换到云端 MinerU' });
-      return;
-    }
-
-    if (customParserEndpoint.trim()) {
-      setSavedParserEndpoint(customParserEndpoint.trim());
-      onParserEndpointChange(customParserEndpoint.trim());
-      notify({ tone: 'success', title: '已切换到自定义解析服务' });
-      return;
-    }
-    notify({ title: '缺少解析 URL', description: '请先填写自定义解析服务地址。' });
-  };
-
-  const unlockCloudParser = async () => {
-    if (!unlockSecret.trim() || unlockBusy) {
-      return;
-    }
-
-    try {
-      setUnlockBusy(true);
-      const matched = await verifyCloudParserSecret(unlockSecret);
-      if (!matched) {
-        notify({ tone: 'danger', title: '秘钥错误', description: '无法启用云端 MinerU。' });
-        return;
-      }
-
-      persistCloudUnlockState(true);
-      setCloudUnlocked(true);
-      setUnlockSecret('');
-      selectParserSourceMode('cloud', { force: true });
-    } catch (caught) {
-      notifyFailure('解锁云端解析失败', caught);
-    } finally {
-      setUnlockBusy(false);
-    }
-  };
-
   const refreshModels = async () => {
     setModelRefreshBusy(true);
     try {
@@ -833,19 +727,13 @@ export function SettingsPanel({
       }
       setDraftAgentRuntimeSettings(normalizedRuntimeSettings);
       setSavedAgentRuntimeSettings(normalizedRuntimeSettings);
-      const nextParserEndpoint =
-        parserSourceMode === 'cloud' ? CLOUD_PARSER_ENDPOINT : customParserEndpoint.trim();
-      const nextParserApiKey =
-        parserSourceMode === 'cloud' ? '' : customParserApiKey.trim();
+      const nextParserEndpoint = customParserEndpoint.trim();
+      const nextParserApiKey = customParserApiKey.trim();
       pendingSavedParserEndpointRef.current = nextParserEndpoint;
       setSavedParserEndpoint(nextParserEndpoint);
       setSavedParserApiKey(nextParserApiKey);
-      setSavedPopoEnhancementEnabled(draftPopoEnhancementEnabled);
-      setSavedPopoEnhancementEndpoint(draftPopoEnhancementEndpoint);
       onParserEndpointChange(nextParserEndpoint);
       onParserApiKeyChange(nextParserApiKey);
-      onPopoEnhancementEnabledChange(draftPopoEnhancementEnabled);
-      onPopoEnhancementEndpointChange(draftPopoEnhancementEndpoint);
       onReaderPreferencesChange(draftReaderPreferences);
       setSavedReaderPreferences(draftReaderPreferences);
 
@@ -1083,7 +971,6 @@ export function SettingsPanel({
       baseUrl={baseUrl}
       busy={busy}
       cachedModelCatalog={cachedModelCatalog}
-      cloudUnlocked={cloudUnlocked}
       collapsedProviderCount={PROVIDER_PRESETS.length > COLLAPSED_PROVIDER_COUNT ? PROVIDER_PRESETS.length : 0}
       customParserEndpoint={customParserEndpoint}
       customParserApiKey={customParserApiKey}
@@ -1137,8 +1024,6 @@ export function SettingsPanel({
       onNewProfile={newProfile}
       onParserEndpointChange={(nextValue) => {
         setCustomParserEndpoint(nextValue);
-        setParserSourceIntent('custom');
-        setParserSourceMode('custom');
         setSavedParserEndpoint(nextValue);
         onParserEndpointChange(nextValue);
         announceAutoSave('解析 URL 已更新。');
@@ -1148,20 +1033,6 @@ export function SettingsPanel({
         setSavedParserApiKey(nextValue);
         onParserApiKeyChange(nextValue);
         announceAutoSave('解析 API Key 已更新。');
-      }}
-      popoEnhancementEnabled={draftPopoEnhancementEnabled}
-      popoEnhancementEndpoint={draftPopoEnhancementEndpoint}
-      onPopoEnhancementEnabledChange={(nextValue) => {
-        setDraftPopoEnhancementEnabled(nextValue);
-        setSavedPopoEnhancementEnabled(nextValue);
-        onPopoEnhancementEnabledChange(nextValue);
-        announceAutoSave('Popo 增强设置已更新。');
-      }}
-      onPopoEnhancementEndpointChange={(nextValue) => {
-        setDraftPopoEnhancementEndpoint(nextValue);
-        setSavedPopoEnhancementEndpoint(nextValue);
-        onPopoEnhancementEndpointChange(nextValue);
-        announceAutoSave('Popo 增强 URL 已更新。');
       }}
       onReaderPreferencesChange={(nextPreferences) => {
         setDraftReaderPreferences(nextPreferences);
@@ -1187,7 +1058,6 @@ export function SettingsPanel({
       onDeleteProfile={(profileId) => deleteProfile(profileId)}
       onSaveProfile={() => saveCurrentProfile()}
       onResetWorkspaceRoot={() => void resetWorkspaceRoot()}
-      onSelectParserSourceMode={selectParserSourceMode}
       onSetActiveSettingsTab={setActiveSettingsTab}
       onAddAgent={() => {
         notify({
@@ -1221,7 +1091,6 @@ export function SettingsPanel({
           })
           .catch((caught) => notifyFailure('任务模型自动保存失败', caught));
       }}
-      onSetUnlockSecret={setUnlockSecret}
       onTemperatureChange={setTemperature}
       onTest={() => void test()}
       onTestProfile={(profile) => void testProfile(profile)}
@@ -1229,9 +1098,6 @@ export function SettingsPanel({
       onToggleProvidersExpanded={() => setProvidersExpanded((value) => !value)}
       onTopPChange={setTopP}
       onTranslationAutomationChange={saveTranslationAutomation}
-      onUnlockCloudParser={() => void unlockCloudParser()}
-      parserSourceIntent={parserSourceIntent}
-      parserSourceMode={parserSourceMode}
       providerLogo={(preset) => <ProviderLogo preset={preset} />}
       providerPreset={providerPreset}
       providerPresets={visibleProviderPresets}
@@ -1243,8 +1109,6 @@ export function SettingsPanel({
       themePresets={themePresets}
       uiScale={uiScale}
       topP={topP}
-      unlockBusy={unlockBusy}
-      unlockSecret={unlockSecret}
       workspaceCurrentLabel={formatPathForDisplay(workspaceRoot ?? workspaceSettings?.root ?? '')}
       workspaceDefaultLabel={formatPathForDisplay(workspaceSettings?.default_root ?? '')}
       workspaceBusy={workspaceBusy}
@@ -1361,9 +1225,6 @@ function formatEndpointForDisplay(value: string) {
   if (!trimmed) {
     return '未填写解析服务 URL';
   }
-  if (isCloudParserEndpoint(trimmed)) {
-    return 'NeuLab 云端解析服务';
-  }
   return trimmed;
 }
 
@@ -1374,8 +1235,6 @@ type PendingSettingsDraft = {
   draftAgentRuntimeSettings: AgentRuntimeSettings;
   draftAssistantProfileId: string | null;
   draftTranslationProfileId: string | null;
-  draftPopoEnhancementEnabled: boolean;
-  draftPopoEnhancementEndpoint: string;
   effectiveParserEndpoint: string;
   editingId: string | null;
   name: string;
@@ -1386,10 +1245,7 @@ type PendingSettingsDraft = {
   readerPreferences: ReaderPreferences;
   savedParserEndpoint: string;
   savedParserApiKey: string;
-  savedPopoEnhancementEnabled: boolean;
-  savedPopoEnhancementEndpoint: string;
   savedReaderPreferences: ReaderPreferences;
-  parserSourceMode: ParserSourceMode;
   savedAgentRuntimeSettings: AgentRuntimeSettings;
   settings: LlmSettingsState;
   temperature: string;
@@ -1441,10 +1297,7 @@ function hasPendingChanges(draft: PendingSettingsDraft) {
     draft.draftTranslationProfileId !== draft.settings.translation_profile_id;
   const parserChanged =
     draft.effectiveParserEndpoint.trim() !== draft.savedParserEndpoint.trim() ||
-    (draft.parserSourceMode === 'custom' && draft.customParserApiKey !== draft.savedParserApiKey);
-  const popoChanged =
-    draft.draftPopoEnhancementEnabled !== draft.savedPopoEnhancementEnabled ||
-    draft.draftPopoEnhancementEndpoint.trim() !== draft.savedPopoEnhancementEndpoint.trim();
+    draft.customParserApiKey !== draft.savedParserApiKey;
   const readerPreferencesChanged = !equalReaderPreferences(
     draft.readerPreferences,
     draft.savedReaderPreferences
@@ -1459,7 +1312,6 @@ function hasPendingChanges(draft: PendingSettingsDraft) {
     assistantChanged ||
     translationChanged ||
     parserChanged ||
-    popoChanged ||
     agentRuntimeChanged ||
     readerPreferencesChanged
   );

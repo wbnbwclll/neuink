@@ -64,10 +64,6 @@ import {
   type ReaderPreferences
 } from '../shared/lib/readerPreferences';
 import {
-  CLOUD_PARSER_ENDPOINT,
-  getEffectiveParserEndpoint
-} from '../shared/lib/parserSettings';
-import {
   applyNoteProposal,
   isSciverseConversationSource,
   type Conversation,
@@ -90,7 +86,7 @@ import type {
 } from '../shared/ipc/workspaceApi';
 import type { EntryMeta } from '../shared/types/domain';
 
-export const DEFAULT_MINERU_ENDPOINT = CLOUD_PARSER_ENDPOINT;
+export const DEFAULT_MINERU_ENDPOINT = '';
 // Internal and organization-specific service addresses belong in the local .env only.
 // Keep the source fallback empty so public builds do not expose deployment details.
 export const LEGACY_MINERU_ENDPOINTS = new Set(
@@ -99,12 +95,8 @@ export const LEGACY_MINERU_ENDPOINTS = new Set(
     .map((endpoint: string) => endpoint.trim())
     .filter(Boolean)
 );
-export const DEFAULT_POPO_ENHANCEMENT_ENDPOINT =
-  String(import.meta.env.VITE_POPO_ENHANCEMENT_ENDPOINT ?? '').trim();
 export const PARSER_ENDPOINT_STORAGE_KEY = 'neuink.parserEndpoint';
 export const PARSER_API_KEY_STORAGE_KEY = 'neuink.parserApiKey';
-export const POPO_ENHANCEMENT_ENABLED_STORAGE_KEY = 'neuink.popoEnhancementEnabled';
-export const POPO_ENHANCEMENT_ENDPOINT_STORAGE_KEY = 'neuink.popoEnhancementEndpoint';
 export const SIDEBAR_WIDTH_STORAGE_KEY = 'neuink.sidebarWidth';
 export const SIDEBAR_OPEN_STORAGE_KEY = 'neuink.sidebarOpen';
 export const SIDE_PANEL_STORAGE_KEY = 'neuink.sidePanel';

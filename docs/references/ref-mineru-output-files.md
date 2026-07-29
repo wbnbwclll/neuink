@@ -28,7 +28,7 @@ images/**
 
 - `crates/neuink-parser/src/normalizer.rs`
 - `crates/neuink-parser/src/mineru_middle.rs`
-- `crates/neuink-parser/src/cloud_mineru.rs`
+- `crates/neuink-parser/src/mineru_zip.rs`
 - `crates/neuink-parser/src/custom_endpoint.rs`
 
 ## 2. Workspace 中保留的产物

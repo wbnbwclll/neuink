@@ -92,10 +92,7 @@ import {
   readStoredReaderPreferences,
   type ReaderPreferences
 } from '../shared/lib/readerPreferences';
-import {
-  CLOUD_PARSER_ENDPOINT,
-  getEffectiveParserEndpoint
-} from '../shared/lib/parserSettings';
+import { getEffectiveParserEndpoint } from '../shared/lib/parserSettings';
 import {
   applyNoteProposal,
   isSciverseConversationSource,
@@ -146,15 +143,12 @@ import {
   ACTIVE_PARSE_STATUSES,
   ActivityButton,
   DEFAULT_MINERU_ENDPOINT,
-  DEFAULT_POPO_ENHANCEMENT_ENDPOINT,
   EMPTY_SIDE_PANE,
   LEGACY_MINERU_ENDPOINTS,
   LIBRARY_VIEW_STORAGE_KEY,
   PARSER_API_KEY_STORAGE_KEY,
   PARSER_ENDPOINT_STORAGE_KEY,
   PARSE_POLL_INTERVAL_MS,
-  POPO_ENHANCEMENT_ENABLED_STORAGE_KEY,
-  POPO_ENHANCEMENT_ENDPOINT_STORAGE_KEY,
   RECENT_READING_STORAGE_KEY,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
@@ -389,6 +383,15 @@ function escapeHtmlAttribute(value: string) {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
 
+function isHttpEndpoint(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export function App() {
   const workspace = useWorkspace();
   const { dismiss, notify } = useToast();
@@ -401,7 +404,7 @@ export function App() {
       return DEFAULT_MINERU_ENDPOINT;
     }
     const saved = window.localStorage.getItem(PARSER_ENDPOINT_STORAGE_KEY)?.trim();
-    if (!saved || LEGACY_MINERU_ENDPOINTS.has(saved)) {
+    if (!saved || LEGACY_MINERU_ENDPOINTS.has(saved) || !isHttpEndpoint(saved)) {
       return DEFAULT_MINERU_ENDPOINT;
     }
     return saved;
@@ -411,19 +414,6 @@ export function App() {
       return '';
     }
     return window.localStorage.getItem(PARSER_API_KEY_STORAGE_KEY) ?? '';
-  });
-  const [popoEnhancementEnabled, setPopoEnhancementEnabled] = useState(() => {
-    if (typeof window === 'undefined') {
-      return false;
-    }
-    return window.localStorage.getItem(POPO_ENHANCEMENT_ENABLED_STORAGE_KEY) === '1';
-  });
-  const [popoEnhancementEndpoint, setPopoEnhancementEndpoint] = useState(() => {
-    if (typeof window === 'undefined') {
-      return DEFAULT_POPO_ENHANCEMENT_ENDPOINT;
-    }
-    return window.localStorage.getItem(POPO_ENHANCEMENT_ENDPOINT_STORAGE_KEY)
-      ?? DEFAULT_POPO_ENHANCEMENT_ENDPOINT;
   });
   const [surfaceLayout, dispatchSurface] = useReducer(
     workspaceSurfaceReducer,
@@ -740,29 +730,6 @@ export function App() {
       window.localStorage.removeItem(PARSER_API_KEY_STORAGE_KEY);
     }
   }, [parserApiKey]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    if (popoEnhancementEnabled) {
-      window.localStorage.setItem(POPO_ENHANCEMENT_ENABLED_STORAGE_KEY, '1');
-    } else {
-      window.localStorage.removeItem(POPO_ENHANCEMENT_ENABLED_STORAGE_KEY);
-    }
-  }, [popoEnhancementEnabled]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    const trimmed = popoEnhancementEndpoint.trim();
-    if (trimmed) {
-      window.localStorage.setItem(POPO_ENHANCEMENT_ENDPOINT_STORAGE_KEY, trimmed);
-    } else {
-      window.localStorage.removeItem(POPO_ENHANCEMENT_ENDPOINT_STORAGE_KEY);
-    }
-  }, [popoEnhancementEndpoint]);
 
   useEffect(() => {
     if (typeof document === 'undefined') {
@@ -2256,10 +2223,6 @@ export function App() {
           readerPreferences={readerPreferences}
           onParserEndpointChange={setMineruEndpoint}
           onParserApiKeyChange={setParserApiKey}
-          popoEnhancementEnabled={popoEnhancementEnabled}
-          popoEnhancementEndpoint={popoEnhancementEndpoint}
-          onPopoEnhancementEnabledChange={setPopoEnhancementEnabled}
-          onPopoEnhancementEndpointChange={setPopoEnhancementEndpoint}
           onReaderPreferencesChange={updateReaderPreferences}
           onThemePresetChange={setThemePreset}
           onUiScaleChange={setUiScale}

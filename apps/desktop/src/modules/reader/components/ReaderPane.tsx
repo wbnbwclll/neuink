@@ -116,13 +116,9 @@ type ReaderPaneProps = {
   onPurgeTrashItem: (entryId: string, trashId: string) => Promise<void> | void;
   parserEndpoint: string;
   parserApiKey: string;
-  popoEnhancementEnabled: boolean;
-  popoEnhancementEndpoint: string;
   readerPreferences: ReaderPreferences;
   onParserEndpointChange: (value: string) => void;
   onParserApiKeyChange: (value: string) => void;
-  onPopoEnhancementEnabledChange: (value: boolean) => void;
-  onPopoEnhancementEndpointChange: (value: string) => void;
   onReaderPreferencesChange: (preferences: ReaderPreferences) => void;
   onThemePresetChange: (value: AppThemePresetId) => void;
   onUiScaleChange: (value: UiScale) => void;
@@ -222,13 +218,9 @@ export function ReaderPane({
   onPurgeTrashItem,
   parserEndpoint,
   parserApiKey,
-  popoEnhancementEnabled,
-  popoEnhancementEndpoint,
   readerPreferences,
   onParserEndpointChange,
   onParserApiKeyChange,
-  onPopoEnhancementEnabledChange,
-  onPopoEnhancementEndpointChange,
   onReaderPreferencesChange,
   onThemePresetChange,
   onUiScaleChange,
@@ -829,16 +821,12 @@ export function ReaderPane({
     <SettingsPanel
       parserEndpoint={parserEndpoint}
       parserApiKey={parserApiKey}
-      popoEnhancementEnabled={popoEnhancementEnabled}
-      popoEnhancementEndpoint={popoEnhancementEndpoint}
       readerPreferences={readerPreferences}
       themePreset={themePreset}
       themePresets={themePresets}
       uiScale={uiScale}
       onParserEndpointChange={onParserEndpointChange}
       onParserApiKeyChange={onParserApiKeyChange}
-      onPopoEnhancementEnabledChange={onPopoEnhancementEnabledChange}
-      onPopoEnhancementEndpointChange={onPopoEnhancementEndpointChange}
       onReaderPreferencesChange={onReaderPreferencesChange}
       workspaceRoot={workspaceRoot}
       onBeforeWorkspaceChange={onBeforeWorkspaceChange}

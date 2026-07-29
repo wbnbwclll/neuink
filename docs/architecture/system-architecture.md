@@ -20,7 +20,7 @@ React / TypeScript
 |---|---|
 | `neuink-domain` | ID、Entry、Tag、PDF、Source Link 等领域类型 |
 | `neuink-workspace` | Workspace 布局、原子写、Entry/Note/Annotation/Conversation 数据 |
-| `neuink-parser` | MinerU 云端和自定义端点客户端、结果归一化 |
+| `neuink-parser` | MinerU 自定义端点客户端、客户端 ZIP 导入与结果归一化 |
 | `neuink-search` | Keyword、Semantic、Hybrid、Embedding 与持久化向量记录 |
 | `neuink-job` | 本地任务和事件状态 |
 | `neuink-config` | 安装级与 Workspace 级配置类型 |

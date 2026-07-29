@@ -64,8 +64,6 @@ type TranslationAutomationSettingsLike = {
   segment_types: string[];
 };
 
-type ParserSourceMode = 'cloud' | 'custom';
-
 type SettingsTab =
   | 'models'
   | 'tasks'
@@ -82,11 +80,8 @@ export type SettingsPanelLayoutProps = {
   baseUrl: string;
   busy: boolean;
   cachedModelCatalog: { models: ModelPreset[]; updatedAt: string } | null;
-  cloudUnlocked: boolean;
   customParserEndpoint: string;
   customParserApiKey: string;
-  popoEnhancementEnabled: boolean;
-  popoEnhancementEndpoint: string;
   readerPreferences: ReaderPreferences;
   draftAssistantProfileId: string | null;
   draftTranslationProfileId: string | null;
@@ -115,8 +110,6 @@ export type SettingsPanelLayoutProps = {
   onNewProfile: () => void;
   onParserEndpointChange: (value: string) => void;
   onParserApiKeyChange: (value: string) => void;
-  onPopoEnhancementEnabledChange: (value: boolean) => void;
-  onPopoEnhancementEndpointChange: (value: string) => void;
   onReaderPreferencesChange: (preferences: ReaderPreferences) => void;
   onProviderPresetSelect: (label: string) => void;
   onRefreshModels: () => void;
@@ -124,7 +117,6 @@ export type SettingsPanelLayoutProps = {
   onDeleteProfile: (profileId: string) => Promise<void> | void;
   onSaveProfile: () => Promise<void> | void;
   onResetWorkspaceRoot: () => void;
-  onSelectParserSourceMode: (mode: ParserSourceMode) => void;
   onSetActiveSettingsTab: (value: SettingsTab) => void;
   onAddAgent: () => void;
   onAddSkillPackage: () => void;
@@ -137,13 +129,9 @@ export type SettingsPanelLayoutProps = {
   onSetTaskProfile: (task: 'assistant' | 'translation', profileId: string) => void;
   onThemePresetChange: (value: AppThemePresetId) => void;
   onUiScaleChange: (value: UiScale) => void;
-  onSetUnlockSecret: (value: string) => void;
   onTest: () => void;
   onTestProfile: (profile: LlmProfileLike) => void;
   profileTestStates: Record<string, { message?: string; status: 'error' | 'idle' | 'success' | 'testing' }>;
-  onUnlockCloudParser: () => void;
-  parserSourceIntent: ParserSourceMode;
-  parserSourceMode: ParserSourceMode;
   providerPreset: ProviderPreset | null;
   providerPresets: ProviderPreset[];
   providersExpanded: boolean;
@@ -154,8 +142,6 @@ export type SettingsPanelLayoutProps = {
   themePresets: AppThemePreset[];
   uiScale: UiScale;
   topP: string;
-  unlockBusy: boolean;
-  unlockSecret: string;
   workspaceCurrentLabel: string;
   workspaceDefaultLabel: string;
   workspaceBusy: boolean;

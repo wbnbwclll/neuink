@@ -1,17 +1,13 @@
 import {
-  Cloud,
   ExternalLink,
   FolderOpen,
   FolderPlus,
   Loader2,
-  LockKeyhole,
   MoveRight,
-  Server,
   X
 } from 'lucide-react';
 import { useState } from 'react';
 
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -27,7 +23,6 @@ import type { SettingsPanelLayoutProps } from './SettingsPanelLayout';
 
 export function DataSettingsSection({ props }: { props: SettingsPanelLayoutProps }) {
   const {
-    cloudUnlocked,
     customParserApiKey,
     customParserEndpoint,
     effectiveParserEndpointLabel,
@@ -39,19 +34,8 @@ export function DataSettingsSection({ props }: { props: SettingsPanelLayoutProps
     onOpenWorkspace,
     onParserApiKeyChange,
     onParserEndpointChange,
-    onPopoEnhancementEnabledChange,
-    onPopoEnhancementEndpointChange,
     onResetWorkspaceRoot,
-    onSelectParserSourceMode,
-    onSetUnlockSecret,
     onTranslationAutomationChange,
-    onUnlockCloudParser,
-    parserSourceIntent,
-    parserSourceMode,
-    popoEnhancementEnabled,
-    popoEnhancementEndpoint,
-    unlockBusy,
-    unlockSecret,
     workspaceBusy,
     workspaceCurrentLabel,
     workspaceDefaultLabel,
@@ -68,193 +52,73 @@ export function DataSettingsSection({ props }: { props: SettingsPanelLayoutProps
             <TabsContent forceMount value="data" className={settingsContentClassName}>
               <div className={settingsContentInnerClassName('grid gap-5')}>
                 <div className="grid gap-4 rounded-lg border bg-card p-4">
-                  <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold">MinerU 解析方式</h3>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      系统支持自定义 MinerU 服务和 MinerU 客户端 ZIP 两种方式。
+                    </p>
+                  </div>
+
+                  <div className="grid gap-3">
                     <div>
-                      <h3 className="text-sm font-semibold">MinerU 解析来源</h3>
+                      <h4 className="text-sm font-medium">方案一：自定义 MinerU 服务</h4>
                       <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                        云端解析只需要输入秘钥解锁；自定义 URL 才需要配置服务地址和 API Key。
+                        配置服务 URL 和可选 API Key，上传 PDF 后由服务完成解析。API Key 会通过
+                        <code> X-API-Key</code> 请求头发送。
                       </p>
                     </div>
-                    <Badge variant={parserSourceMode === 'cloud' ? 'default' : 'secondary'}>
-                      {parserSourceMode === 'cloud' ? '云端' : '自定义 URL'}
-                    </Badge>
-                  </div>
-    
-                  <div className="grid gap-3 xl:grid-cols-2">
-                    <button
-                      hidden
-                      className={`rounded-lg border px-4 py-4 text-left transition-colors ${
-                        parserSourceIntent === 'cloud'
-                          ? 'border-primary/35 bg-primary/6'
-                          : 'border-border/70 bg-background hover:border-primary/20 hover:bg-muted/25'
-                      }`}
-                      type="button"
-                      onClick={() => onSelectParserSourceMode('cloud')}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-start gap-3">
-                          <span className="rounded-xl bg-primary/10 p-2 text-primary">
-                            <Cloud size={16} />
-                          </span>
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-semibold">云端 MinerU</span>
-                              {!cloudUnlocked ? (
-                                <Badge className="bg-warning-surface text-warning hover:bg-warning-surface">未解锁</Badge>
-                              ) : null}
-                            </div>
-                            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                              使用内置 MinerU 云端解析，不需要填写自定义 URL 或 API Key。
-                            </p>
-                          </div>
-                        </div>
-                        {cloudUnlocked ? (
-                          <Badge variant={parserSourceMode === 'cloud' ? 'default' : 'outline'}>
-                            {parserSourceMode === 'cloud' ? '已启用' : '可用'}
-                          </Badge>
-                        ) : (
-                          <LockKeyhole size={15} className="text-muted-foreground" />
-                        )}
-                      </div>
-                    </button>
-    
-                    <button
-                      className={`rounded-lg border px-4 py-4 text-left transition-colors ${
-                        parserSourceIntent === 'custom'
-                          ? 'border-primary/35 bg-primary/6'
-                          : 'border-border/70 bg-background hover:border-primary/20 hover:bg-muted/25'
-                      }`}
-                      type="button"
-                      onClick={() => onSelectParserSourceMode('custom')}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-start gap-3">
-                          <span className="rounded-md bg-muted p-2 text-muted-foreground">
-                            <Server size={16} />
-                          </span>
-                          <div>
-                            <div className="text-sm font-semibold">自定义 MinerU URL</div>
-                            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                              使用你部署的 MinerU 解析服务。API Key 会由软件保存并随请求发送。
-                            </p>
-                          </div>
-                        </div>
-                        <Badge variant={parserSourceMode === 'custom' ? 'default' : 'outline'}>
-                          {parserSourceMode === 'custom' ? '已启用' : '可切换'}
-                        </Badge>
-                      </div>
-                    </button>
-                  </div>
-    
-                  {!cloudUnlocked && parserSourceIntent === 'cloud' ? (
-                    <div className="grid gap-3 rounded-md border border-warning/35 bg-warning-surface/40 p-3">
-                      <div>
-                        <h4 className="text-sm font-medium">输入秘钥后才会启用云端解析</h4>
-                        <p className="mt-1 text-xs text-muted-foreground">未解锁前不会启用云端解析。</p>
-                      </div>
-                      <div className="flex flex-col gap-2 sm:flex-row">
-                        <Input
-                          disabled={unlockBusy}
-                          placeholder="输入云端解析秘钥"
-                          type="password"
-                          value={unlockSecret}
-                          onChange={(event) => onSetUnlockSecret(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') {
-                              event.preventDefault();
-                              onUnlockCloudParser();
-                            }
-                          }}
-                        />
-                        <Button
-                          disabled={unlockBusy || !unlockSecret.trim()}
-                          type="button"
-                          variant="outline"
-                          onClick={onUnlockCloudParser}
-                        >
-                          {unlockBusy ? <Loader2 className="animate-spin" /> : null}
-                          解锁并启用
-                        </Button>
-                      </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="parser-endpoint">MinerU URL</Label>
+                      <Input
+                        id="parser-endpoint"
+                        placeholder="http://127.0.0.1:18000"
+                        value={customParserEndpoint}
+                        onChange={(event) => onParserEndpointChange(event.target.value)}
+                      />
                     </div>
-                  ) : null}
-    
-                  {parserSourceIntent === 'custom' ? (
-                    <>
-                      <div className="grid gap-2">
-                        <Label htmlFor="parser-endpoint">自定义 MinerU URL</Label>
-                        <Input
-                          id="parser-endpoint"
-                          placeholder="http://127.0.0.1:18000"
-                          value={customParserEndpoint}
-                          onChange={(event) => onParserEndpointChange(event.target.value)}
-                        />
-                      </div>
-    
-                      <div className="grid gap-2">
-                        <Label htmlFor="parser-api-key">自定义服务 API Key</Label>
-                        <Input
-                          id="parser-api-key"
-                          placeholder="可选"
-                          type="password"
-                          value={customParserApiKey}
-                          onChange={(event) => onParserApiKeyChange(event.target.value)}
-                        />
-                      </div>
-                      <AutoParseOnImportSetting />
-                    </>
-                  ) : null}
-    
-                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
-                    {
-                      parserSourceIntent === 'cloud' && !cloudUnlocked ? (
-                        <>
-                          <span className="block">你已点选云端 MinerU；保存前请先输入云端解析秘钥。</span>
-                          <span className="mt-1 block">云端解析不需要填写自定义 URL 或 API Key。</span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="block">
-                            保存后解析请求将发送到
-                            <span className="ml-1 font-mono text-[11px]">
-                              {effectiveParserEndpointLabel}
-                            </span>
-                          </span>
-                          {parserSourceIntent === 'cloud' ? (
-                            <span className="mt-1 block">云端解析不使用自定义 URL 或 API Key。</span>
-                          ) : null}
-                          <span className="mt-1 block">
-                            请在东北大学校园网环境下使用，不能使用 NEU-Mobile 网络。
-                          </span>
-                        </>
-                      )
-                    }
-                  </div>
-                </div>
-    
-                <div className="grid gap-4 rounded-lg border bg-card p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-sm font-semibold">Popo 增强</h3>
-                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                        主展示仍以 MinerU 结果为准；启用后可在后续增强流程中把 MinerU 产物提交给 Popo。
-                      </p>
+                    <div className="grid gap-2">
+                      <Label htmlFor="parser-api-key">服务 API Key</Label>
+                      <Input
+                        id="parser-api-key"
+                        placeholder="可选"
+                        type="password"
+                        value={customParserApiKey}
+                        onChange={(event) => onParserApiKeyChange(event.target.value)}
+                      />
                     </div>
-                    <Switch
-                      checked={popoEnhancementEnabled}
-                      onCheckedChange={onPopoEnhancementEnabledChange}
-                    />
+                    <AutoParseOnImportSetting />
+                    <div className="border-l-2 border-border pl-3 text-xs leading-5 text-muted-foreground">
+                      <p>服务可以返回 MinerU 兼容 JSON，也可以直接返回解析结果 ZIP。</p>
+                      <p className="mt-1">ZIP 响应必须满足：</p>
+                      <ul className="mt-1 list-disc space-y-1 pl-4">
+                        <li>HTTP 状态为 2xx。</li>
+                        <li>
+                          Content-Type 为 <code>application/zip</code> 或 <code>application/octet-stream</code>。
+                        </li>
+                        <li>
+                          包含 <code>*_content_list_v2.json</code> 或 <code>content_list_v2.json</code>；也兼容
+                          <code> *_content_list.json</code> 或 <code>content_list.json</code>。
+                        </li>
+                        <li>
+                          <code>*_middle.json</code> 和 <code>images/</code> 可选；内容引用图片时应包含对应图片文件。
+                        </li>
+                      </ul>
+                    </div>
+                    <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                      当前解析请求地址：
+                      <span className="ml-1 font-mono text-[11px]">
+                        {effectiveParserEndpointLabel}
+                      </span>
+                    </div>
                   </div>
-    
-                  <div className="grid gap-2">
-                    <Label htmlFor="popo-endpoint">Popo URL</Label>
-                    <Input
-                      id="popo-endpoint"
-                      disabled={!popoEnhancementEnabled}
-                      placeholder=""
-                      value={popoEnhancementEndpoint}
-                      onChange={(event) => onPopoEnhancementEndpointChange(event.target.value)}
-                    />
+
+                  <div className="grid gap-2 border-t pt-4">
+                    <h4 className="text-sm font-medium">方案二：导入 MinerU 客户端 ZIP</h4>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      无需配置 URL 或 API Key。ZIP 必须包含 <code>images/</code> 文件夹，以及上述任一种
+                      <code> content_list</code> JSON。使用 ZIP 直接创建新条目时，还必须包含
+                      <code> *_origin.pdf</code> 或其他 PDF 文件；向已有 PDF 条目导入时不需要重复包含 PDF。
+                    </p>
                   </div>
                 </div>
     
