@@ -102,7 +102,7 @@ export function TranslationTaskDialog({
     if (initializedForOpenRef.current || rows.length === 0) return;
     initializedForOpenRef.current = true;
     setSelectedTypes(new Set(ALL_SEGMENT_TYPES));
-    setSelected(new Set(actionableRows(rows).map((row) => row.segment.uid)));
+    setSelected(new Set());
   }, [open, rows]);
 
   const toggleType = (segmentType: SegmentType) => {
@@ -118,7 +118,6 @@ export function TranslationTaskDialog({
       for (const row of rows) {
         if (row.segment.segment_type !== segmentType) continue;
         if (enabled) next.delete(row.segment.uid);
-        else if (isActionable(row.status)) next.add(row.segment.uid);
       }
       return next;
     });
@@ -184,11 +183,10 @@ export function TranslationTaskDialog({
                 type="button"
                 variant="ghost"
                 onClick={() => {
-                  setSelectedTypes(new Set());
                   setSelected(new Set());
                 }}
               >
-                清空
+                清空选择
               </Button>
             </div>
           </div>

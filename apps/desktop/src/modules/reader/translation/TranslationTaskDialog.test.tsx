@@ -54,7 +54,7 @@ describe('TranslationTaskDialog', () => {
     });
   });
 
-  it('shows every content type and submits only the enabled types', async () => {
+  it('starts empty and lets the user select individual blocks', async () => {
     const onTranslate = vi.fn().mockResolvedValue(undefined);
     const heading = sourceSegment('heading-1', 'heading', 'A heading');
     const paragraph = sourceSegment('paragraph-1', 'paragraph', 'A paragraph');
@@ -69,14 +69,36 @@ describe('TranslationTaskDialog', () => {
     );
 
     await waitFor(() => {
-      expect(getByRole('button', { name: '翻译选中（2）' })).toBeTruthy();
+      expect(getByRole('button', { name: '翻译选中（0）' })).toBeTruthy();
     });
     expect(getByRole('button', { name: '公式 0' }).hasAttribute('disabled')).toBe(true);
 
-    fireEvent.click(getByRole('button', { name: '段落 1' }));
+    const checkboxes = getByRole('dialog').querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    expect(Array.from(checkboxes).every((checkbox) => !checkbox.checked)).toBe(true);
+    fireEvent.click(checkboxes[1]);
     fireEvent.click(getByRole('button', { name: '翻译选中（1）' }));
 
-    expect(onTranslate).toHaveBeenCalledWith([heading], 'pending');
+    expect(onTranslate).toHaveBeenCalledWith([paragraph], 'pending');
+  });
+
+  it('does not auto-select a whole type when it is shown again', async () => {
+    const paragraph = sourceSegment('paragraph-1', 'paragraph', 'A paragraph');
+    const { getByRole } = render(
+      <TranslationTaskDialog
+        open
+        segments={[paragraph]}
+        translation={null}
+        onOpenChange={vi.fn()}
+        onTranslate={vi.fn()}
+      />
+    );
+
+    await waitFor(() => expect(getByRole('button', { name: '翻译选中（0）' })).toBeTruthy());
+    fireEvent.click(getByRole('button', { name: '段落 1' }));
+    fireEvent.click(getByRole('button', { name: '段落 1' }));
+
+    expect(getByRole('button', { name: '翻译选中（0）' })).toBeTruthy();
+    expect(getByRole('checkbox')).toHaveProperty('checked', false);
   });
 
   it('treats legacy skipped blocks as pending and keeps the pending list visible', async () => {

@@ -110,6 +110,9 @@ export function usePdfAnnotationActions({
     }
 
     pendingDeleteRef.current.add(annotationId);
+    const cancelDelete = () => {
+      pendingDeleteRef.current.delete(annotationId);
+    };
     let toastId = "";
     toastId = notify({
       action: (
@@ -118,7 +121,7 @@ export function usePdfAnnotationActions({
           type="button"
           variant="outline"
           onClick={() => {
-            pendingDeleteRef.current.delete(annotationId);
+            cancelDelete();
             dismiss(toastId);
           }}
         >
@@ -127,6 +130,7 @@ export function usePdfAnnotationActions({
       ),
       description: "倒计时结束后将从当前条目中删除这条批注。",
       durationMs: 5200,
+      onDismiss: cancelDelete,
       onExpire: () => {
         if (!pendingDeleteRef.current.has(annotationId)) {
           return;
