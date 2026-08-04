@@ -8,6 +8,7 @@ import { ToastContext } from '@/shared/hooks/useToast';
 import type { SourceSegment } from '@/shared/types/domain';
 
 import { useSegmentNoteDraft } from './useSegmentNoteDraft';
+import { MAX_SEGMENT_NOTE_CHARACTERS } from './segmentNoteLimits';
 
 const segment: SourceSegment = {
   bbox: [100, 100, 900, 300],
@@ -84,5 +85,51 @@ describe('useSegmentNoteDraft', () => {
     expect(result.current.selectedSegment?.uid).toBe('real-segment');
     expect(result.current.noteText).toBe('Unsaved draft');
     vi.useRealTimers();
+  });
+
+  it('does not call the save callback when the Markdown text is over the limit', async () => {
+    const onSaveSegmentNote = vi.fn().mockResolvedValue([]);
+    const { result } = renderHook(
+      () => useSegmentNoteDraft({
+        entryId: 'entry-1',
+        notesBySegmentUid: new Map(),
+        onSaveSegmentNote
+      }),
+      { wrapper }
+    );
+
+    act(() => result.current.selectSegment(segment));
+    act(() => result.current.updateNoteText('x'.repeat(MAX_SEGMENT_NOTE_CHARACTERS + 1)));
+
+    await act(async () => {
+      await result.current.saveNote();
+    });
+
+    expect(onSaveSegmentNote).not.toHaveBeenCalled();
+  });
+
+  it('allows formatted Markdown when visible text is within the limit', async () => {
+    const onSaveSegmentNote = vi.fn().mockResolvedValue([]);
+    const { result } = renderHook(
+      () => useSegmentNoteDraft({
+        entryId: 'entry-1',
+        notesBySegmentUid: new Map(),
+        onSaveSegmentNote
+      }),
+      { wrapper }
+    );
+
+    act(() => result.current.selectSegment(segment));
+    act(() =>
+      result.current.updateNoteText(
+        `<span style="color: #da1e28">${'x'.repeat(MAX_SEGMENT_NOTE_CHARACTERS)}</span>`
+      )
+    );
+
+    await act(async () => {
+      await result.current.saveNote();
+    });
+
+    expect(onSaveSegmentNote).toHaveBeenCalled();
   });
 });

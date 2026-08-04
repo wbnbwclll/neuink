@@ -58,6 +58,11 @@ import {
 } from './ReaderSurfacePrimitives';
 import { SegmentNoteEditor } from './pdf-reader/SegmentNoteEditor';
 import { logicalSegmentUid } from './pdf-reader/readerUtils';
+import { segmentNoteErrorMessage } from './pdf-reader/segmentNoteError';
+import {
+  getSegmentNoteValidation,
+  getSegmentNoteVisibleText
+} from './pdf-reader/segmentNoteLimits';
 import { usePdfBytes } from './pdf-reader/usePdfBytes';
 import { usePdfDocument } from './pdf-reader/usePdfDocument';
 import { ReflowEntryReader } from './reflow/ReflowEntryReader';
@@ -706,6 +711,11 @@ function SegmentNotesOverview({
   const save = async () => {
     if (!selectedLogicalUid || busy) return false;
     if (!dirty) return true;
+    if (
+      getSegmentNoteValidation(getSegmentNoteVisibleText(draft)).overLimit
+    ) {
+      return false;
+    }
     setBusy(true);
     try {
       const nextNotes = await onSaveSegmentNote(entry.id, selectedLogicalUid, draft);
@@ -718,7 +728,7 @@ function SegmentNotesOverview({
       notify({
         tone: 'danger',
         title: '保存失败',
-        description: caught instanceof Error ? caught.message : undefined
+        description: segmentNoteErrorMessage(caught)
       });
       return false;
     } finally {
