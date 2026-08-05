@@ -13,6 +13,7 @@ export type ReaderPreferences = {
   reflowTranslationMode: 'source' | 'translation' | 'bilingual';
   reflowHoverSourceEnabled: boolean;
   showRegions: boolean;
+  pageDisplayMode: 'single' | 'dual';
 };
 
 const READER_PREFERENCES_STORAGE_KEY = 'neuink.reader.preferences';
@@ -31,7 +32,8 @@ const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   segmentNoteOpenGesture: 'button',
   reflowTranslationMode: 'source',
   reflowHoverSourceEnabled: true,
-  showRegions: false
+  showRegions: false,
+  pageDisplayMode: 'single' as const,
 };
 
 export function readStoredReaderPreferences(): ReaderPreferences {
@@ -78,7 +80,8 @@ export function equalReaderPreferences(left: ReaderPreferences, right: ReaderPre
     left.segmentNoteOpenGesture === right.segmentNoteOpenGesture &&
     left.reflowTranslationMode === right.reflowTranslationMode &&
     left.reflowHoverSourceEnabled === right.reflowHoverSourceEnabled &&
-    left.showRegions === right.showRegions
+    left.showRegions === right.showRegions &&
+    left.pageDisplayMode === right.pageDisplayMode
   );
 }
 
@@ -149,6 +152,10 @@ function normalizeReaderPreferences(value: unknown): ReaderPreferences {
     showRegions:
       typeof candidate.showRegions === 'boolean'
         ? candidate.showRegions
-        : DEFAULT_READER_PREFERENCES.showRegions
+        : DEFAULT_READER_PREFERENCES.showRegions,
+    pageDisplayMode:
+      candidate.pageDisplayMode === 'single' || candidate.pageDisplayMode === 'dual'
+        ? candidate.pageDisplayMode
+        : DEFAULT_READER_PREFERENCES.pageDisplayMode,
   };
 }
