@@ -30,7 +30,7 @@ describe('PDF segment preview layout', () => {
         isContinuation={false}
         listItemIndex={1}
         pageIdx={0}
-        previewPosition={{ x: 120, y: 120 }}
+        previewPosition={{ x: 120, segmentTop: 120, segmentBottom: 120 }}
         previewShowOriginal={false}
         previewShowNote={false}
         previewShowAnnotation={false}
@@ -102,7 +102,7 @@ describe('PDF segment preview layout', () => {
           }
         ]}
         previewNote="Saved segment note preview content"
-        previewPosition={{ x: 120, y: 120 }}
+        previewPosition={{ x: 120, segmentTop: 120, segmentBottom: 120 }}
         previewShowAnnotation
         previewShowNote
         previewShowOriginal={false}
@@ -231,13 +231,13 @@ describe('PDF segment preview layout', () => {
   it('tracks pointer movement while there is room beside it', () => {
     const first = buildPreviewLayout({
       hasFooter: false,
-      position: { x: 80, y: 80 },
+      position: { x: 80, segmentTop: 80, segmentBottom: 80 },
       preferScrollable: true,
       text: 'short list item',
     });
     const moved = buildPreviewLayout({
       hasFooter: false,
-      position: { x: 120, y: 110 },
+      position: { x: 120, segmentTop: 110, segmentBottom: 110 },
       preferScrollable: true,
       text: 'short list item',
     });
@@ -249,7 +249,7 @@ describe('PDF segment preview layout', () => {
   it('flips to the near side of the pointer at the viewport edges', () => {
     const layout = buildPreviewLayout({
       hasFooter: false,
-      position: { x: 920, y: 720 },
+      position: { x: 920, segmentTop: 720, segmentBottom: 720 },
       preferScrollable: true,
       text: 'short list item',
     });

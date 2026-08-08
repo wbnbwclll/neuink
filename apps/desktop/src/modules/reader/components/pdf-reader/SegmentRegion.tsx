@@ -65,7 +65,7 @@ function SegmentRegionImpl({
   isContinuation: boolean;
   listItemIndex?: number;
   pageIdx: number;
-  previewPosition: { x: number; y: number } | null;
+  previewPosition: { x: number; segmentTop: number; segmentBottom: number } | null;
   previewShowRegion: boolean;
   previewShowOriginal: boolean;
   previewShowNote: boolean;
@@ -484,7 +484,7 @@ function SegmentPreview({
   onPointerEnter,
   onPointerLeave
 }: {
-  position: { x: number; y: number };
+  position: { x: number; segmentTop: number; segmentBottom: number };
   isContinuation: boolean;
   listItemRegions: ListItemRegion[];
   pageIdx: number;
@@ -694,7 +694,7 @@ function getTranslationHint({
 
 type PreviewLayoutInput = {
   hasFooter: boolean;
-  position: { x: number; y: number };
+  position: { x: number; segmentTop: number; segmentBottom: number };
   preferScrollable: boolean;
   text: string;
 };
@@ -774,12 +774,12 @@ export function buildPreviewLayout({ hasFooter, position, preferScrollable, text
     viewportWidth - selected.width - PREVIEW_MARGIN,
   );
 
-  const belowSpace = viewportHeight - PREVIEW_MARGIN - position.y - pointerGap;
-  const aboveSpace = position.y - pointerGap - PREVIEW_MARGIN;
+  const belowSpace = viewportHeight - PREVIEW_MARGIN - position.segmentBottom - pointerGap;
+  const aboveSpace = position.segmentTop - pointerGap - PREVIEW_MARGIN;
   const placeBelow = belowSpace >= safeHeight || belowSpace >= aboveSpace;
   const preferredTop = placeBelow
-    ? position.y + pointerGap
-    : position.y - pointerGap - safeHeight;
+    ? position.segmentBottom + pointerGap
+    : position.segmentTop - pointerGap - safeHeight;
   const top = clamp(
     preferredTop,
     PREVIEW_MARGIN,
