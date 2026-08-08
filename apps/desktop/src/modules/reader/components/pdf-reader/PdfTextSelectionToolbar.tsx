@@ -306,7 +306,7 @@ export function PdfTextSelectionToolbar({
           disabled={busy}
           title="复制选中文字"
           type="button"
-          onClick={() => void copy(pending.selection.text, '选中文字已复制')}
+          onClick={() => void copy(pending.selection.text.replace(/\n+/g, ' '), '选中文字已复制')}
         >
           <ClipboardCopy size={14} aria-hidden="true" />
         </button>

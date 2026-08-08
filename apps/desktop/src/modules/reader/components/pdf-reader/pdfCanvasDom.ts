@@ -13,11 +13,12 @@ export function copyPdfTextSelection(
     return;
   }
 
-  const text = window.getSelection()?.toString() ?? '';
-  if (!text) {
+  const rawText = window.getSelection()?.toString() ?? '';
+  if (!rawText) {
     return;
   }
 
+  const text = rawText.replace(/\n+/g, ' ');
   event.clipboardData.setData('text/plain', text);
   event.preventDefault();
 }
