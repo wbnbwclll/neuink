@@ -334,6 +334,31 @@ export function SettingsPanel({
   }, [parserApiKey]);
 
   useEffect(() => {
+    if (customParserEndpoint === savedParserEndpoint) {
+      return;
+    }
+    pendingSavedParserEndpointRef.current = customParserEndpoint;
+    const timer = window.setTimeout(() => {
+      setSavedParserEndpoint(customParserEndpoint);
+      onParserEndpointChange(customParserEndpoint);
+      announceAutoSave('解析 URL 已更新。');
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [customParserEndpoint, savedParserEndpoint, onParserEndpointChange]);
+
+  useEffect(() => {
+    if (customParserApiKey === savedParserApiKey) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSavedParserApiKey(customParserApiKey);
+      onParserApiKeyChange(customParserApiKey);
+      announceAutoSave('解析 API Key 已更新。');
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [customParserApiKey, savedParserApiKey, onParserApiKeyChange]);
+
+  useEffect(() => {
     setDraftReaderPreferences(readerPreferences);
     setSavedReaderPreferences(readerPreferences);
   }, [readerPreferences]);
@@ -453,7 +478,7 @@ export function SettingsPanel({
           announceAutoSave('模型配置已更新。');
         })
         .catch((caught) => notifyFailure('模型配置自动保存失败', caught));
-    }, 600);
+    }, 1300);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -1022,18 +1047,8 @@ export function SettingsPanel({
       }}
       onNameChange={setName}
       onNewProfile={newProfile}
-      onParserEndpointChange={(nextValue) => {
-        setCustomParserEndpoint(nextValue);
-        setSavedParserEndpoint(nextValue);
-        onParserEndpointChange(nextValue);
-        announceAutoSave('解析 URL 已更新。');
-      }}
-      onParserApiKeyChange={(nextValue) => {
-        setCustomParserApiKey(nextValue);
-        setSavedParserApiKey(nextValue);
-        onParserApiKeyChange(nextValue);
-        announceAutoSave('解析 API Key 已更新。');
-      }}
+      onParserEndpointChange={setCustomParserEndpoint}
+      onParserApiKeyChange={setCustomParserApiKey}
       onReaderPreferencesChange={(nextPreferences) => {
         setDraftReaderPreferences(nextPreferences);
         setSavedReaderPreferences(nextPreferences);
