@@ -3,6 +3,11 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useToast } from "@/shared/hooks/useToast";
 import type { SegmentBlockNote, SourceSegment } from "@/shared/types/domain";
 import { logicalSegmentUid } from "./readerUtils";
+import { segmentNoteErrorMessage } from "./segmentNoteError";
+import {
+  getSegmentNoteValidation,
+  getSegmentNoteVisibleText,
+} from "./segmentNoteLimits";
 import {
   registerSegmentEditorCloseHandler,
   setSegmentEditorDirty,
@@ -60,6 +65,12 @@ export function useSegmentNoteDraft({
         return null;
       }
 
+      if (
+        getSegmentNoteValidation(getSegmentNoteVisibleText(noteText)).overLimit
+      ) {
+        return null;
+      }
+
       setNoteBusy(true);
 
       try {
@@ -82,7 +93,7 @@ export function useSegmentNoteDraft({
         notify({
           tone: "danger",
           title: "保存失败",
-          description: caught instanceof Error ? caught.message : undefined,
+          description: segmentNoteErrorMessage(caught),
         });
         return null;
       } finally {

@@ -3,13 +3,12 @@ import { Extension, markInputRule } from '@tiptap/core';
 import Color from '@tiptap/extension-color';
 import Highlight from '@tiptap/extension-highlight';
 import Placeholder from '@tiptap/extension-placeholder';
-import { TextStyle } from '@tiptap/extension-text-style';
 import UnderlineExtension from '@tiptap/extension-underline';
 import { Markdown } from '@tiptap/markdown';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { ChevronDown, ChevronRight, FileText, Languages, Loader2, MousePointer2, Save, Trash2, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -22,6 +21,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import { MarkdownTextStyle } from '@/modules/notes/editor/MarkdownTextStyle';
 import { sanitizePastedNoteHtml } from '@/modules/notes/editor/pasteSanitizer';
 import { SourceSnapshotPreview } from '@/shared/components/SourceSnapshotPreview';
 import type { AnnotationTextSelection, SourceSegment } from '@/shared/types/domain';
@@ -30,6 +30,10 @@ import { ReaderEmptyState, ReaderModeSwitch } from '../ReaderSurfacePrimitives';
 import { SegmentSourceContextPreview } from './SegmentSourceContextPreview';
 import { TipTapToolbar } from './TipTapToolbar';
 import { hasNoteText, segmentTypeLabel } from './readerUtils';
+import {
+  getSegmentNoteValidation,
+  getSegmentNoteVisibleText
+} from './segmentNoteLimits';
 import { useStoredCollapseState } from './useStoredCollapseState';
 
 const SegmentMarkdownShortcuts = Extension.create({
@@ -96,6 +100,10 @@ export function SegmentNoteEditor({
   onSave: () => Promise<boolean> | boolean | void;
 }) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [visibleNoteText, setVisibleNoteText] = useState(() =>
+    getSegmentNoteVisibleText(noteText)
+  );
+  const syncedSegmentUidRef = useRef<string | null>(segment?.uid ?? null);
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -105,10 +113,10 @@ export function SegmentNoteEditor({
           }
         }
       }),
-      TextStyle,
+      MarkdownTextStyle,
       Markdown,
       SegmentMarkdownShortcuts,
-      Color,
+      Color.configure({ types: ['textStyle'] }),
       Highlight.configure({ multicolor: true }),
       UnderlineExtension,
       Placeholder.configure({
@@ -120,17 +128,27 @@ export function SegmentNoteEditor({
     editorProps: {
       attributes: {
         class:
-          'segment-note-editor h-full min-h-0 overflow-x-hidden overflow-y-auto rounded-md border bg-white px-3 py-3 text-sm leading-6 outline-none focus:border-ring focus:ring-2 focus:ring-ring/20 [&_blockquote]:border-l-4 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-base [&_h2]:font-semibold [&_hr]:my-3 [&_hr]:border-border [&_ol]:ml-5 [&_ol]:list-decimal [&_pre]:my-2 [&_ul]:ml-5 [&_ul]:list-disc'
+          'segment-note-editor h-full min-h-0 overflow-x-hidden overflow-y-auto rounded-md border bg-white px-3 py-3 pb-8 text-sm leading-6 outline-none focus:border-ring focus:ring-2 focus:ring-ring/20 [&_blockquote]:border-l-4 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-base [&_h2]:font-semibold [&_hr]:my-3 [&_hr]:border-border [&_ol]:ml-5 [&_ol]:list-decimal [&_pre]:my-2 [&_ul]:ml-5 [&_ul]:list-disc'
       },
       transformPastedHTML: sanitizePastedNoteHtml
     },
     onUpdate: ({ editor: currentEditor }) => {
+      setVisibleNoteText(currentEditor.getText());
       onNoteTextChange(currentEditor.getMarkdown());
     }
   });
 
+  const noteValidation = getSegmentNoteValidation(visibleNoteText);
+
   useEffect(() => {
     if (!editor) {
+      return;
+    }
+
+    const segmentUid = segment?.uid ?? null;
+    const segmentChanged = syncedSegmentUidRef.current !== segmentUid;
+    if (!segmentChanged && editor.getMarkdown() === noteText) {
+      setVisibleNoteText(editor.getText());
       return;
     }
 
@@ -138,6 +156,8 @@ export function SegmentNoteEditor({
       contentType: 'markdown',
       emitUpdate: false
     });
+    syncedSegmentUidRef.current = segmentUid;
+    setVisibleNoteText(editor.getText());
   }, [editor, noteText, segment?.uid]);
 
   const translationPreviewText = translatedText?.trim() || null;
@@ -168,7 +188,7 @@ export function SegmentNoteEditor({
             ) : null}
 
             <Button
-              disabled={!segment || busy || !dirty}
+              disabled={!segment || busy || !dirty || noteValidation.overLimit}
               size="sm"
               type="button"
               onClick={() => void onSave()}
@@ -287,8 +307,17 @@ export function SegmentNoteEditor({
 
             <div className="grid min-h-0 min-w-0 flex-1 grid-rows-[auto_minmax(0,1fr)] overflow-hidden border-t border-border pt-3">
               <TipTapToolbar editor={editor} disabled={false} />
-              <div className="min-h-0 min-w-0 overflow-hidden [&_.tiptap]:h-full">
+              <div className="relative min-h-0 min-w-0 overflow-hidden [&_.tiptap]:h-full">
                 <EditorContent className="h-full min-h-0" editor={editor} />
+                <div
+                  aria-live="polite"
+                  className={cn(
+                    'pointer-events-none absolute bottom-2 right-2 rounded bg-white/90 px-1 text-[11px] leading-4 shadow-sm',
+                    noteValidation.overLimit ? 'text-destructive' : 'text-muted-foreground'
+                  )}
+                >
+                  {noteValidation.length} / {noteValidation.maxLength}
+                </div>
               </div>
             </div>
           </div>

@@ -7,6 +7,7 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::Utc;
+use neuink_domain::segment_note::validate_segment_note_text;
 use neuink_domain::{
     Annotation, AnnotationId, AnnotationImportance, AnnotationTextSelection, ContentItem, EntryId,
     EntryMeta, NoteId, PdfAsset, PdfParseState, PdfParseStatus, SegmentBlockNote, SegmentType,
@@ -680,6 +681,7 @@ impl Workspace {
         segment_uid: SegmentUid,
         text: String,
     ) -> Result<Vec<SegmentBlockNote>, WorkspaceError> {
+        validate_segment_note_text(&text)?;
         let segment_uid = self.resolve_source_segment(entry_id, &segment_uid)?.uid;
         let mut notes = self.read_segment_notes(entry_id)?;
         if let Some(note) = notes

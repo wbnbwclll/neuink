@@ -1,5 +1,6 @@
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
+use neuink_domain::segment_note::validate_segment_note_text;
 use neuink_domain::{ContentItem, EntryId, NoteId, SegmentUid};
 use neuink_workspace::Workspace;
 use serde::{Deserialize, Serialize};
@@ -193,6 +194,7 @@ fn apply_segment_proposal(
             ))
         }
     };
+    validate_segment_note_text(&text).map_err(|error| error.to_string())?;
     workspace
         .upsert_segment_note(&entry_id, segment_uid, text.clone())
         .map_err(|error| error.to_string())?;

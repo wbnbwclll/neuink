@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use neuink_domain::{
-    Annotation, EntryId, NeuinkDocument, SegmentBlockNote, SegmentUid, SourceSegment,
+    Annotation, DomainError, EntryId, NeuinkDocument, SegmentBlockNote, SegmentUid, SourceSegment,
 };
 use serde::Deserialize;
 use tauri::ipc::Response;
@@ -38,6 +38,41 @@ pub struct PdfReaderResponse {
     pub segments: Vec<SourceSegment>,
     pub segment_notes: Vec<SegmentBlockNote>,
     pub annotations: Vec<Annotation>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SegmentNoteCommandError {
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<usize>,
+    pub retryable: bool,
+}
+
+impl SegmentNoteCommandError {
+    fn from_workspace_error(error: neuink_workspace::WorkspaceError) -> Self {
+        match error {
+            neuink_workspace::WorkspaceError::Domain(DomainError::SegmentNoteTooLong {
+                actual,
+                max,
+            }) => Self {
+                code: "segment_note_too_long".to_string(),
+                message: format!("segment note is too long: actual={actual}, max={max}"),
+                actual: Some(actual),
+                max: Some(max),
+                retryable: false,
+            },
+            error => Self {
+                code: "segment_note_save_failed".to_string(),
+                message: error.to_string(),
+                actual: None,
+                max: None,
+                retryable: false,
+            },
+        }
+    }
 }
 
 #[tauri::command]
@@ -90,12 +125,12 @@ pub async fn read_pdf_bytes(request: ReadPdfBytesRequest) -> Result<Response, St
 #[tauri::command]
 pub fn upsert_segment_note(
     request: UpsertSegmentNoteRequest,
-) -> Result<Vec<SegmentBlockNote>, String> {
-    let workspace =
-        neuink_workspace::Workspace::open(request.root).map_err(|error| error.to_string())?;
+) -> Result<Vec<SegmentBlockNote>, SegmentNoteCommandError> {
+    let workspace = neuink_workspace::Workspace::open(request.root)
+        .map_err(SegmentNoteCommandError::from_workspace_error)?;
     workspace
         .upsert_segment_note(&request.entry_id, request.segment_uid, request.text)
-        .map_err(|error| error.to_string())
+        .map_err(SegmentNoteCommandError::from_workspace_error)
 }
 
 #[tauri::command]
@@ -107,4 +142,31 @@ pub fn delete_segment_note(
     workspace
         .delete_segment_note(&request.entry_id, request.segment_uid)
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn serializes_segment_note_limit_errors_with_machine_readable_fields() {
+        let error = SegmentNoteCommandError::from_workspace_error(
+            neuink_workspace::WorkspaceError::Domain(DomainError::SegmentNoteTooLong {
+                actual: 501,
+                max: 500,
+            }),
+        );
+
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            json!({
+                "code": "segment_note_too_long",
+                "message": "segment note is too long: actual=501, max=500",
+                "actual": 501,
+                "max": 500,
+                "retryable": false
+            })
+        );
+    }
 }

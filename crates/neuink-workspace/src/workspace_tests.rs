@@ -780,6 +780,43 @@ fn stores_real_segment_uid_for_group_targeted_segment_note() {
 }
 
 #[test]
+fn rejects_segment_note_over_limit_before_writing() {
+    let root = std::env::temp_dir().join(format!("neuink_workspace_{}", unique_suffix()));
+    let workspace = Workspace::create(&root).unwrap();
+    let entry = workspace.create_entry("A paper").unwrap();
+    let segment = neuink_domain::SourceSegment::new(
+        neuink_domain::SegmentType::Paragraph,
+        0,
+        None,
+        "Segment".to_string(),
+    );
+    let segment_uid = segment.uid.clone();
+    workspace.write_segments(&entry.id, &[segment]).unwrap();
+    workspace
+        .upsert_segment_note(&entry.id, segment_uid.clone(), "valid".to_string())
+        .unwrap();
+
+    let max = neuink_domain::segment_note::MAX_SEGMENT_NOTE_CHARACTERS;
+    let error = workspace
+        .upsert_segment_note(&entry.id, segment_uid, "x".repeat(max + 1))
+        .expect_err("over-limit segment note should fail");
+
+    assert!(matches!(
+        error,
+        crate::WorkspaceError::Domain(neuink_domain::DomainError::SegmentNoteTooLong {
+            actual,
+            max: actual_max
+        }) if actual == max + 1 && actual_max == max
+    ));
+    assert_eq!(
+        workspace.read_segment_notes(&entry.id).unwrap()[0].text,
+        "valid"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn write_mineru_output_response_preserves_embedded_artifacts() {
     let root = std::env::temp_dir().join(format!("neuink_workspace_{}", unique_suffix()));
     let workspace = Workspace::create(&root).unwrap();
