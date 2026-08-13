@@ -1,4 +1,5 @@
 import {
+  Columns2,
   Download,
   Eye,
   ListChecks,
@@ -133,6 +134,23 @@ export function ReaderToolbar({
           preferences={readerPreferences}
           onChange={onReaderPreferencesChange}
         />
+
+        <Button
+          className="shrink-0"
+          size="icon-sm"
+          title={readerPreferences.pageDisplayMode === 'dual' ? '切换为单页' : '切换为双页'}
+          type="button"
+          variant={readerPreferences.pageDisplayMode === 'dual' ? 'secondary' : 'outline'}
+          onClick={() =>
+            onReaderPreferencesChange({
+              ...readerPreferences,
+              pageDisplayMode:
+                readerPreferences.pageDisplayMode === 'dual' ? 'single' : 'dual',
+            })
+          }
+        >
+          <Columns2 size={14} aria-hidden="true" />
+        </Button>
 
         <div className="flex shrink-0 items-center gap-1">
           <Button size="icon-sm" title="缩小" type="button" variant="outline" onClick={onZoomOut}>

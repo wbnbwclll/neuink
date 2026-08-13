@@ -49,6 +49,7 @@ import {
   PDF_RAIL_WIDTH,
   PDF_ZOOM_STEP,
 } from "./pdf-reader/readerConstants";
+import type { PageSegments } from "./pdf-reader/types";
 import {
   groupSegmentsByPage,
   hasNoteText,
@@ -453,6 +454,7 @@ export function MineruPdfReader({
     entryId: entry.id,
     onInteractionStart: () => setHoveredSegmentUid(null),
     viewportWidth: pdfViewportWidth,
+    pageDisplayMode: readerPreferences.pageDisplayMode,
   });
   const {
     flashSegment,
@@ -476,6 +478,18 @@ export function MineruPdfReader({
     () => groupSegmentsByPage(segments, pageCount),
     [pageCount, segments],
   );
+
+  const rows = useMemo(() => {
+    if (readerPreferences.pageDisplayMode === 'dual') {
+      const result: PageSegments[][] = [];
+      for (let i = 0; i < pages.length; i += 2) {
+        result.push(pages.slice(i, i + 2));
+      }
+      return result;
+    }
+    return pages.map((p) => [p]);
+  }, [pages, readerPreferences.pageDisplayMode]);
+
   const parseStatus = entry.status;
   const parseMessage = entry.parseMessage;
   useEffect(() => {
@@ -1080,7 +1094,7 @@ export function MineruPdfReader({
             hoveredSegmentUid={hoveredSegmentUid}
             annotationsBySegmentUid={annotationsBySegmentUid}
             notesBySegmentUid={notesBySegmentUid}
-            pages={pages}
+            rows={rows}
             pageWidth={pageWidth}
             leftInset={PDF_RAIL_WIDTH}
             hoverPreviewEnabled={readerPreferences.hoverPreviewEnabled}

@@ -5,6 +5,7 @@ import {
   PDF_MAX_ZOOM,
   PDF_MIN_ZOOM,
   PDF_RAIL_WIDTH,
+  PDF_SPREAD_GAP,
   PDF_VIEWPORT_PADDING,
   PDF_ZOOM_STEP,
 } from "./readerConstants";
@@ -22,12 +23,14 @@ type UsePdfReaderZoomOptions = {
   entryId: string;
   onInteractionStart: () => void;
   viewportWidth: number;
+  pageDisplayMode: 'single' | 'dual';
 };
 
 export function usePdfReaderZoom({
   entryId,
   onInteractionStart,
   viewportWidth,
+  pageDisplayMode,
 }: UsePdfReaderZoomOptions) {
   const [zoom, setZoom] = useState(() => readStoredPdfZoom(entryId));
   const [zoomSuppressRegions, setZoomSuppressRegions] = useState(false);
@@ -53,12 +56,12 @@ export function usePdfReaderZoom({
   );
 
   const pageWidth = useMemo(() => {
-    const fitWidth = Math.max(
-      MIN_PAGE_WIDTH,
-      viewportWidth - PDF_RAIL_WIDTH - PDF_VIEWPORT_PADDING,
-    );
-    return fitWidth * zoom;
-  }, [viewportWidth, zoom]);
+    const available = viewportWidth - PDF_RAIL_WIDTH - PDF_VIEWPORT_PADDING;
+    if (pageDisplayMode === 'dual') {
+      return Math.max(MIN_PAGE_WIDTH, (available - PDF_SPREAD_GAP) / 2) * zoom;
+    }
+    return Math.max(MIN_PAGE_WIDTH, available) * zoom;
+  }, [viewportWidth, zoom, pageDisplayMode]);
 
   const beginZoomInteraction = useCallback(() => {
     onInteractionStart();
