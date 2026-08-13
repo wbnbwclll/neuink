@@ -135,7 +135,8 @@ function PdfSourcePageImpl({
   } | null>(null);
   const [previewPosition, setPreviewPosition] = useState<{
     x: number;
-    y: number;
+    segmentTop: number;
+    segmentBottom: number;
   } | null>(null);
   const [previewRegionId, setPreviewRegionId] = useState<string | null>(null);
   const [localHoveredGroupUid, setLocalHoveredGroupUid] = useState<string | null>(null);
@@ -354,7 +355,8 @@ function PdfSourcePageImpl({
     const nextPreviewPosition = region && buttons === 0
       ? {
           x: hitLayerRect.left + (region.bbox[0] / 1000) * hitLayerRect.width,
-          y: hitLayerRect.top + (region.bbox[1] / 1000) * hitLayerRect.height
+          segmentTop: hitLayerRect.top + (region.bbox[1] / 1000) * hitLayerRect.height,
+          segmentBottom: hitLayerRect.top + (region.bbox[3] / 1000) * hitLayerRect.height
         }
       : null;
     if (
@@ -363,7 +365,8 @@ function PdfSourcePageImpl({
     ) {
       setPreviewPosition((current) =>
         current?.x === nextPreviewPosition?.x &&
-        current?.y === nextPreviewPosition?.y
+        current?.segmentTop === nextPreviewPosition?.segmentTop &&
+        current?.segmentBottom === nextPreviewPosition?.segmentBottom
           ? current
           : nextPreviewPosition,
       );
