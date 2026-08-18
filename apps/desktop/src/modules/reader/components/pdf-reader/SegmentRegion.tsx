@@ -1,4 +1,3 @@
-import { layout, prepare } from '@chenglou/pretext';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { CSSProperties, KeyboardEvent, MouseEvent } from 'react';
@@ -15,8 +14,6 @@ import { ListHoverPreview, listItemTextAtIndex } from './ListHoverPreview';
 import { parseListItemRegions, type ListItemRegion } from './listItemRegions';
 
 const PREVIEW_MARGIN = 12;
-const PREVIEW_FONT_FAMILY =
-  '"Geist Variable", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif';
 const PREVIEW_COLUMN_GAP = 18;
 const REPLACEMENT_MIN_WIDTH = 24;
 const REPLACEMENT_MIN_HEIGHT = 8;
@@ -399,11 +396,12 @@ function buildReplacementTextStyle({
   const preferredMaxSize = isHeading ? 30 : isTable ? 16 : 21;
   const heightMaxSize = Math.max(minSize, Math.floor(availableHeight * (isHeading ? 0.78 : 0.72)));
   const maxSize = Math.max(minSize, Math.min(preferredMaxSize, heightMaxSize));
+  const lineUnits = measurePreviewLineUnits(measuredText);
 
   for (let fontSize = maxSize; fontSize >= minSize; fontSize -= 1) {
     const lineHeight = replacementLineHeight(fontSize, isHeading);
     const estimatedHeight = estimateTextHeight(
-      measuredText,
+      lineUnits,
       availableWidth,
       fontSize,
       lineHeight
@@ -740,13 +738,19 @@ export function buildPreviewLayout({ hasFooter, position, preferScrollable, text
       );
     });
 
+  const lineUnits = measurePreviewLineUnits(text);
   const measuredCandidates = candidates.map((candidate) => {
     const contentWidth = Math.max(
       180,
       candidate.width - 16 - Math.max(0, candidate.columns - 1) * PREVIEW_COLUMN_GAP
     );
     const columnWidth = Math.max(160, contentWidth / candidate.columns);
-    const textHeight = estimateTextHeight(text, columnWidth, candidate.fontSize, candidate.lineHeight);
+    const textHeight = estimateTextHeight(
+      lineUnits,
+      columnWidth,
+      candidate.fontSize,
+      candidate.lineHeight
+    );
     const chromeHeight = 52 + (hasFooter ? 30 : 0);
     const estimatedHeight = Math.ceil(textHeight / candidate.columns) + chromeHeight;
 
@@ -804,20 +808,34 @@ export function buildPreviewLayout({ hasFooter, position, preferScrollable, text
   };
 }
 
-function estimateTextHeight(text: string, width: number, fontSize: number, lineHeight: number) {
-  try {
-    const prepared = prepare(text || ' ', `${fontSize}px ${PREVIEW_FONT_FAMILY}`, {
-      whiteSpace: 'pre-wrap'
-    });
-    const measured = layout(prepared, width, lineHeight);
-    return Math.max(lineHeight, Math.ceil(measured.height));
-  } catch {
-    const averageCharsPerLine = Math.max(20, Math.floor(width / Math.max(5, fontSize * 0.55)));
-    const lineCount = text
-      .split(/\r?\n/)
-      .reduce((total, line) => total + Math.max(1, Math.ceil(line.length / averageCharsPerLine)), 0);
-    return Math.max(lineHeight, lineCount * lineHeight);
-  }
+function estimateTextHeight(
+  lineUnits: number[],
+  width: number,
+  fontSize: number,
+  lineHeight: number
+) {
+  const unitsPerLine = Math.max(12, width / fontSize);
+  const lineCount = lineUnits.reduce(
+    (total, units) => total + Math.max(1, Math.ceil(units / unitsPerLine)),
+    0
+  );
+  return Math.max(lineHeight, lineCount * lineHeight);
+}
+
+function measurePreviewLineUnits(text: string) {
+  return text.split(/\r?\n/).map((line) => {
+    let units = 0;
+    for (const character of line) units += previewCharacterWidth(character);
+    return units;
+  });
+}
+
+function previewCharacterWidth(character: string) {
+  if (/\s/.test(character)) return 0.35;
+  if (character.charCodeAt(0) > 0xff) return 1;
+  if (/[A-Z0-9]/.test(character)) return 0.68;
+  if (/\p{P}/u.test(character)) return 0.4;
+  return 0.55;
 }
 
 function hasTableLikeContent(text: string) {

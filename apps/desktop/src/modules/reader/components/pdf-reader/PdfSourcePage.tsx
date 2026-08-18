@@ -24,6 +24,7 @@ import {
   type PdfTextSelectionHighlight,
 } from "./PdfCanvasPage";
 import { hasPdfTextSelection } from "./pdfCanvasDom";
+import { notifyPdfInteraction } from "./pdfRenderQueue";
 import {
   PdfTextSelectionToolbar,
   type PendingPdfTextSelection,
@@ -282,14 +283,14 @@ function PdfSourcePageImpl({
     element: HTMLDivElement,
     clientX: number,
     clientY: number,
+    elementRect = element.getBoundingClientRect(),
   ) => {
-    const rect = element.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
+    if (elementRect.width <= 0 || elementRect.height <= 0) {
       return null;
     }
 
-    const x = ((clientX - rect.left) / rect.width) * 1000;
-    const y = ((clientY - rect.top) / rect.height) * 1000;
+    const x = ((clientX - elementRect.left) / elementRect.width) * 1000;
+    const y = ((clientY - elementRect.top) / elementRect.height) * 1000;
 
     if (x < 0 || x > 1000 || y < 0 || y > 1000) {
       return null;
@@ -333,6 +334,7 @@ function PdfSourcePageImpl({
     clientY: number,
     buttons: number,
   ) => {
+    notifyPdfInteraction();
     if (suppressRegions || !hoverPreviewEnabled) {
       clearHoveredRegion();
       return;
@@ -343,15 +345,25 @@ function PdfSourcePageImpl({
       return;
     }
 
+    // Pointer samples only arrive while the cursor is over the page hit layer,
+    // so any stale "pointer inside the preview card" flag must be false. The
+    // card's own pointerleave never fires when it unmounts or re-anchors away
+    // from a stationary cursor, which otherwise left previews stuck forever.
+    if (previewPointerInsideRef.current) {
+      previewPointerInsideRef.current = false;
+    }
+    cancelListPreviewClear();
+
+    const hitLayerRect = element.getBoundingClientRect();
     const region = findRegionAtPoint(
       element,
       clientX,
       clientY,
+      hitLayerRect,
     );
 
     const nextGroupUid = region?.hoverGroupUid ?? null;
     const nextRegionId = region?.id ?? null;
-    const hitLayerRect = element.getBoundingClientRect();
     const nextPreviewPosition = region && buttons === 0
       ? {
           x: hitLayerRect.left + (region.bbox[0] / 1000) * hitLayerRect.width,
@@ -391,6 +403,7 @@ function PdfSourcePageImpl({
   };
 
   const queueHoveredSegmentUpdate = (event: ReactPointerEvent<HTMLDivElement>) => {
+    notifyPdfInteraction();
     pendingHoverSampleRef.current = {
       buttons: event.buttons,
       clientX: event.clientX,
@@ -416,6 +429,7 @@ function PdfSourcePageImpl({
   };
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    notifyPdfInteraction();
     if (event.button !== 0) {
       pointerDownRef.current = null;
       return;

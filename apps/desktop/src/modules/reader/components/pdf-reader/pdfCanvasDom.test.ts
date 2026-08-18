@@ -1,13 +1,25 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { hasPdfTextSelection } from './pdfCanvasDom';
+import { hasPdfTextSelection, scheduleIdleWork } from './pdfCanvasDom';
 
 describe('hasPdfTextSelection', () => {
   afterEach(() => {
+    vi.useRealTimers();
     window.getSelection()?.removeAllRanges();
     document.body.replaceChildren();
+  });
+
+  it('cancels delayed idle work without invoking it', () => {
+    vi.useFakeTimers();
+    const work = vi.fn();
+
+    const cancel = scheduleIdleWork(work, 200);
+    cancel();
+    vi.runAllTimers();
+
+    expect(work).not.toHaveBeenCalled();
   });
 
   it('recognizes a non-empty selection that belongs to the PDF text layer', () => {

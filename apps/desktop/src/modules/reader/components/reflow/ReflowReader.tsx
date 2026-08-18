@@ -269,7 +269,7 @@ export function ReflowReader({
           })
         ) : (
           <div className="rounded-md border bg-card px-4 py-8 text-center text-sm text-muted-foreground">
-            鐟滅増鎸告晶?Entry 閺夆晜蓱閻ュ懘寮垫径濠傝闂佹彃绉电敮鎾绘儍閸曨啩鎺楀几閹邦剚鍋ラ柕?
+            此 Entry 尚未解析出可显示的正文。
           </div>
         )}
         </article>

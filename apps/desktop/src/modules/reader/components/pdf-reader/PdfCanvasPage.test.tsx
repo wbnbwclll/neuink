@@ -5,10 +5,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
 
 const textLayerRender = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const textLayerContainers = vi.hoisted(() => [] as HTMLElement[]);
 
 vi.mock('pdfjs-dist', () => ({
   TextLayer: class TextLayerMock {
+    private readonly container: HTMLElement;
+
+    constructor({ container }: { container: HTMLElement }) {
+      this.container = container;
+      textLayerContainers.push(container);
+    }
+
     render() {
+      this.container.append(document.createElement('span'));
       return textLayerRender();
     }
 
@@ -22,6 +31,7 @@ afterEach(() => {
   cleanup();
   textLayerRender.mockReset();
   textLayerRender.mockResolvedValue(undefined);
+  textLayerContainers.length = 0;
   vi.restoreAllMocks();
 });
 
@@ -121,6 +131,53 @@ describe('PdfCanvasPage', () => {
     expect(view.container.querySelector('[data-pdf-text-highlight="true"]')).not.toBeNull();
   });
 
+  it('adds the text layer without rasterizing a preloaded page again', async () => {
+    const fixture = createPdfFixture(Promise.resolve());
+    mockCanvasContexts(fixture.drawImage);
+    const view = render(
+      <PdfCanvasPage
+        pageIdx={0}
+        pageWidth={600}
+        pdfDocument={fixture.document}
+        renderEnabled
+        renderPriority="preload"
+      />
+    );
+
+    await waitFor(() => expect(fixture.drawImage).toHaveBeenCalledOnce());
+    expect(fixture.render).toHaveBeenCalledOnce();
+
+    view.rerender(
+      <PdfCanvasPage
+        pageIdx={0}
+        pageWidth={600}
+        pdfDocument={fixture.document}
+        renderEnabled
+        renderPriority="visible"
+      />
+    );
+
+    await waitFor(() => expect(textLayerRender).toHaveBeenCalledOnce());
+    expect(fixture.render).toHaveBeenCalledOnce();
+  });
+
+  it('builds the text layer off-DOM and commits it only after completion', async () => {
+    const pendingTextLayer = deferred<void>();
+    textLayerRender.mockImplementationOnce(() => pendingTextLayer.promise);
+    const fixture = createPdfFixture(Promise.resolve());
+    mockCanvasContexts(fixture.drawImage);
+    const view = renderPage(fixture.document);
+
+    await waitFor(() => expect(textLayerRender).toHaveBeenCalledOnce());
+    const visibleTextLayer = view.container.querySelector('.pdf-text-layer');
+    expect(visibleTextLayer?.childElementCount).toBe(0);
+    expect(textLayerContainers[0]).not.toBe(visibleTextLayer);
+    expect(textLayerContainers[0]?.isConnected).toBe(false);
+
+    await act(async () => pendingTextLayer.resolve());
+    await waitFor(() => expect(visibleTextLayer?.childElementCount).toBe(1));
+  });
+
   it('releases the canvas bitmap and text layer when rendering is disabled', async () => {
     const fixture = createPdfFixture(Promise.resolve());
     mockCanvasContexts(fixture.drawImage);
@@ -145,6 +202,35 @@ describe('PdfCanvasPage', () => {
     await waitFor(() => expect(canvas?.width).toBe(0));
     expect(canvas?.height).toBe(0);
     expect(textLayer?.childElementCount).toBe(0);
+  });
+
+  it('renders again after a page leaves and re-enters the render window', async () => {
+    const fixture = createPdfFixture(Promise.resolve());
+    mockCanvasContexts(fixture.drawImage);
+    const view = renderPage(fixture.document);
+
+    await waitFor(() => expect(fixture.drawImage).toHaveBeenCalledOnce());
+    view.rerender(
+      <PdfCanvasPage
+        pageIdx={0}
+        pageWidth={600}
+        pdfDocument={fixture.document}
+        renderEnabled={false}
+        renderPriority="preload"
+      />
+    );
+    view.rerender(
+      <PdfCanvasPage
+        pageIdx={0}
+        pageWidth={600}
+        pdfDocument={fixture.document}
+        renderEnabled
+        renderPriority="visible"
+      />
+    );
+
+    await waitFor(() => expect(fixture.drawImage).toHaveBeenCalledTimes(2));
+    expect(fixture.render).toHaveBeenCalledTimes(2);
   });
 });
 

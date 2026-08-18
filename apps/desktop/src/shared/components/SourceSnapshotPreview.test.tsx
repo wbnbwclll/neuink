@@ -24,4 +24,20 @@ describe('SourceSnapshotPreview', () => {
       'graph TD\n A --> B',
     );
   });
+
+  it('renders syntax-free paragraphs through the plain-text fast path', () => {
+    render(
+      <SourceSnapshotPreview markdown={'这是一段不含任何 Markdown 语法的普通文本。'} />
+    );
+
+    expect(
+      screen.getByText('这是一段不含任何 Markdown 语法的普通文本。').tagName
+    ).toBe('P');
+  });
+
+  it('still applies the markdown pipeline to formatted text', () => {
+    render(<SourceSnapshotPreview markdown={'**加粗结论**与后续正文'} />);
+
+    expect(screen.getByText('加粗结论').tagName).toBe('STRONG');
+  });
 });

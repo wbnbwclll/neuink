@@ -11,9 +11,14 @@ import {
   isPdfRenderCancellation,
   scheduleIdleWork
 } from './pdfCanvasDom';
+import {
+  schedulePdfRenderJob,
+  type PdfRenderJobHandle
+} from './pdfRenderQueue';
 import { schedulePdfRenderContinuation } from './pdfRenderScheduler';
 
 const DEFAULT_PAGE_ASPECT_RATIO = 1.414;
+const TEXT_LAYER_RENDER_DELAY_MS = 240;
 
 export type PdfTextSelectionHighlight = {
   color: AnnotationHighlightColor;
@@ -36,30 +41,39 @@ function PdfCanvasPageImpl({
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textLayerRef = useRef<HTMLDivElement | null>(null);
+  const pageRef = useRef<PDFPageProxy | null>(null);
+  const rasterJobRef = useRef<PdfRenderJobHandle | null>(null);
+  const renderPriorityRef = useRef(renderPriority);
   const hasRenderedPageRef = useRef(false);
+  const renderedPageWidthRef = useRef<number | null>(null);
   const pageAspectRatioRef = useRef(DEFAULT_PAGE_ASPECT_RATIO);
-  const [pageSize, setPageSize] = useState<{
-    height: number;
-    width: number;
-  } | null>(null);
+  const [pageSize, setPageSize] = useState<{ height: number; width: number } | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
+
+  renderPriorityRef.current = renderPriority;
 
   useEffect(() => {
     hasRenderedPageRef.current = false;
+    renderedPageWidthRef.current = null;
     pageAspectRatioRef.current = DEFAULT_PAGE_ASPECT_RATIO;
     setPageSize(null);
+
+    return () => {
+      pageRef.current?.cleanup?.();
+      pageRef.current = null;
+    };
   }, [pageIdx, pdfDocument]);
 
   useEffect(() => {
-    if (!renderEnabled || !hasRenderedPageRef.current) {
-      return;
-    }
+    rasterJobRef.current?.setKind(rasterJobKind(renderPriority));
+  }, [renderPriority]);
 
+  useEffect(() => {
+    if (!renderEnabled || !hasRenderedPageRef.current) return;
     const nextSize = {
       width: pageWidth,
       height: pageWidth * pageAspectRatioRef.current
     };
-
     setPageSize(nextSize);
     applyPdfLayerSize(canvasRef.current, nextSize);
     applyPdfLayerSize(textLayerRef.current, nextSize);
@@ -69,6 +83,10 @@ function PdfCanvasPageImpl({
     if (renderEnabled) return;
     releasePdfPageLayers(canvasRef.current, textLayerRef.current);
     hasRenderedPageRef.current = false;
+    renderedPageWidthRef.current = null;
+    setPageSize(null);
+    pageRef.current?.cleanup?.();
+    pageRef.current = null;
   }, [renderEnabled]);
 
   useEffect(
@@ -77,161 +95,184 @@ function PdfCanvasPageImpl({
   );
 
   useEffect(() => {
-    if (!renderEnabled) {
+    if (!renderEnabled) return undefined;
+    const canvas = canvasRef.current;
+    const textLayerElement = textLayerRef.current;
+    if (!canvas || !textLayerElement) return undefined;
+    if (hasRenderedPageRef.current && renderedPageWidthRef.current === pageWidth) {
       return undefined;
     }
 
     let cancelled = false;
     let renderTask: RenderTask | null = null;
-    let textLayer: TextLayer | null = null;
-    let page: PDFPageProxy | null = null;
     let renderCanvas: HTMLCanvasElement | null = null;
-    let cancelTextLayerSchedule: (() => void) | null = null;
     let cancelRenderContinuation: (() => void) | null = null;
-    const renderDelay = renderPriority === 'visible'
-      ? hasRenderedPageRef.current ? 120 : 0
-      : 420 + (pageIdx % 4) * 90;
 
-    async function renderPage() {
-      const canvas = canvasRef.current;
-      const textLayerElement = textLayerRef.current;
+    const releaseRenderCanvas = () => {
+      if (!renderCanvas) return;
+      renderCanvas.width = 0;
+      renderCanvas.height = 0;
+      renderCanvas = null;
+    };
 
-      if (!canvas || !textLayerElement) {
-        return;
-      }
+    const renderPage = async (signal: AbortSignal) => {
+      renderTask = null;
+      releaseRenderCanvas();
+      const abortRaster = () => {
+        renderTask?.cancel();
+        cancelRenderContinuation?.();
+        cancelRenderContinuation = null;
+        releaseRenderCanvas();
+      };
+      signal.addEventListener('abort', abortRaster, { once: true });
 
       try {
         setRenderError(null);
-
-        page = await pdfDocument.getPage(pageIdx + 1);
-
-        if (cancelled) {
-          return;
-        }
+        const page = await pdfDocument.getPage(pageIdx + 1);
+        if (cancelled || signal.aborted) return;
+        pageRef.current = page;
 
         const baseViewport = page.getViewport({ scale: 1 });
         const scale = pageWidth / baseViewport.width;
         const viewport = page.getViewport({ scale });
-        const nextSize = {
-          width: viewport.width,
-          height: viewport.height
-        };
+        const nextSize = { width: viewport.width, height: viewport.height };
         const outputScale = window.devicePixelRatio || 1;
         renderCanvas = document.createElement('canvas');
         const renderContext = renderCanvas.getContext('2d');
         const visibleContext = canvas.getContext('2d');
-
         if (!renderContext || !visibleContext) {
           setRenderError('Unable to create the PDF canvas context.');
           return;
         }
 
+        applyTextLayerViewport(textLayerElement, nextSize, scale);
         renderCanvas.width = Math.floor(viewport.width * outputScale);
         renderCanvas.height = Math.floor(viewport.height * outputScale);
-        applyPdfLayerSize(canvas, nextSize);
-        applyPdfLayerSize(textLayerElement, nextSize);
-        textLayerElement.style.setProperty('--total-scale-factor', `${scale}`);
-        textLayerElement.style.setProperty('--scale-round-x', '1px');
-        textLayerElement.style.setProperty('--scale-round-y', '1px');
-
         renderTask = page.render({
           canvas: renderCanvas,
           canvasContext: renderContext,
           viewport,
-          transform:
-            outputScale === 1
-              ? undefined
-              : [outputScale, 0, 0, outputScale, 0, 0]
+          transform: outputScale === 1
+            ? undefined
+            : [outputScale, 0, 0, outputScale, 0, 0]
         });
         renderTask.onContinue = (continueRendering: () => void) => {
           cancelRenderContinuation?.();
           cancelRenderContinuation = schedulePdfRenderContinuation(
             continueRendering,
-            renderPriority
+            renderPriorityRef.current
           );
         };
-
         await renderTask.promise;
         cancelRenderContinuation = null;
-
-        if (cancelled) {
-          return;
-        }
+        if (cancelled || signal.aborted || !renderCanvas) return;
 
         canvas.width = renderCanvas.width;
         canvas.height = renderCanvas.height;
         applyPdfLayerSize(canvas, nextSize);
         visibleContext.clearRect(0, 0, canvas.width, canvas.height);
         visibleContext.drawImage(renderCanvas, 0, 0);
-        renderCanvas.width = 0;
-        renderCanvas.height = 0;
-        renderCanvas = null;
-
+        releaseRenderCanvas();
         pageAspectRatioRef.current = baseViewport.height / baseViewport.width;
         hasRenderedPageRef.current = true;
+        renderedPageWidthRef.current = pageWidth;
         setPageSize(nextSize);
-
-        if (renderPriority === 'preload') {
-          return;
+      } catch (caught) {
+        if (!cancelled && !signal.aborted && !isPdfRenderCancellation(caught)) {
+          setRenderError(
+            caught instanceof Error ? caught.message : 'Unable to render this PDF page.'
+          );
         }
+      } finally {
+        signal.removeEventListener('abort', abortRaster);
+      }
+    };
 
-        await new Promise<void>((resolve) => {
-          cancelTextLayerSchedule = scheduleIdleWork(resolve);
-        });
-        cancelTextLayerSchedule = null;
-        if (cancelled) {
-          return;
-        }
+    const job = schedulePdfRenderJob({
+      kind: rasterJobKind(renderPriorityRef.current),
+      retryOnPreempt: true,
+      run: renderPage
+    });
+    rasterJobRef.current = job;
 
-        try {
-          textLayerElement.replaceChildren();
-          textLayer = new TextLayer({
-            container: textLayerElement,
+    return () => {
+      cancelled = true;
+      job.cancel();
+      if (rasterJobRef.current === job) rasterJobRef.current = null;
+      renderTask?.cancel();
+      cancelRenderContinuation?.();
+      releaseRenderCanvas();
+    };
+  }, [pageIdx, pageWidth, pdfDocument, renderEnabled]);
+
+  useEffect(() => {
+    const textLayerElement = textLayerRef.current;
+    if (!textLayerElement) return undefined;
+    textLayerElement.replaceChildren();
+    if (
+      !renderEnabled ||
+      renderPriority !== 'visible' ||
+      !hasRenderedPageRef.current ||
+      renderedPageWidthRef.current !== pageWidth ||
+      !pageRef.current ||
+      !pageSize
+    ) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let cancelTextLayerJob: (() => void) | null = null;
+    const page = pageRef.current;
+    const baseViewport = page.getViewport({ scale: 1 });
+    const viewport = page.getViewport({ scale: pageWidth / baseViewport.width });
+    const cancelSchedule = scheduleIdleWork(() => {
+      if (cancelled) return;
+      const job = schedulePdfRenderJob({
+        kind: 'text-layer',
+        retryOnPreempt: true,
+        run: async (signal) => {
+          if (cancelled) return;
+          const stagingLayer = document.createElement('div');
+          const textLayer = new TextLayer({
+            container: stagingLayer,
             textContentSource: page.streamTextContent({
               includeMarkedContent: true,
               disableNormalization: true
             }),
             viewport
           });
-          applyPdfLayerSize(textLayerElement, nextSize);
-
-          await textLayer.render();
-        } catch (caught) {
-          if (!cancelled && !isPdfRenderCancellation(caught)) {
-            console.warn('[pdf-reader] PDF text layer rendering failed.', {
-              errorName: caught instanceof Error ? caught.name : 'UnknownError'
-            });
+          const abortTextLayer = () => textLayer.cancel();
+          signal.addEventListener('abort', abortTextLayer, { once: true });
+          try {
+            await textLayer.render();
+            if (cancelled || signal.aborted) return;
+            const minFontSize = stagingLayer.style.getPropertyValue('--min-font-size');
+            if (minFontSize) {
+              textLayerElement.style.setProperty('--min-font-size', minFontSize);
+            }
+            textLayerElement.replaceChildren(...stagingLayer.childNodes);
+          } catch (caught) {
+            if (!cancelled && !signal.aborted && !isPdfRenderCancellation(caught)) {
+              console.warn('[pdf-reader] PDF text layer rendering failed.', {
+                errorName: caught instanceof Error ? caught.name : 'UnknownError'
+              });
+            }
+          } finally {
+            signal.removeEventListener('abort', abortTextLayer);
+            stagingLayer.replaceChildren();
           }
         }
-      } catch (caught) {
-        if (!cancelled && !isPdfRenderCancellation(caught)) {
-          setRenderError(
-            caught instanceof Error ? caught.message : 'Unable to render this PDF page.'
-          );
-        }
-      }
-    }
-
-    const renderTimeout = window.setTimeout(() => {
-      void renderPage();
-    }, renderDelay);
+      });
+      cancelTextLayerJob = job.cancel;
+    }, TEXT_LAYER_RENDER_DELAY_MS);
 
     return () => {
       cancelled = true;
-      window.clearTimeout(renderTimeout);
-      renderTask?.cancel();
-      textLayer?.cancel();
-      cancelRenderContinuation?.();
-      cancelTextLayerSchedule?.();
-      if (renderCanvas) {
-        renderCanvas.width = 0;
-        renderCanvas.height = 0;
-        renderCanvas = null;
-      }
-      page?.cleanup?.();
-      page = null;
+      cancelSchedule();
+      cancelTextLayerJob?.();
+      textLayerElement.replaceChildren();
     };
-  }, [pageIdx, pageWidth, pdfDocument, renderEnabled, renderPriority]);
+  }, [pageIdx, pageWidth, pdfDocument, renderEnabled, renderPriority, pageSize]);
 
   return (
     <div
@@ -243,23 +284,17 @@ function PdfCanvasPageImpl({
         width: pageSize ? `${pageSize.width}px` : `${pageWidth}px`
       }}
     >
-      <canvas
-        ref={canvasRef}
-        className="absolute inset-0 z-0 block bg-white"
-      />
-
+      <canvas ref={canvasRef} className="absolute inset-0 z-0 block bg-white" />
       <div
         ref={textLayerRef}
         className="pdf-text-layer absolute inset-0 z-[2]"
         onCopy={(event) => copyPdfTextSelection(event, textLayerRef.current)}
       />
-
       {!pageSize ? (
         <div className="absolute inset-0 z-[3] grid place-items-center text-xs text-muted-foreground">
           <Loader2 className="animate-spin" size={16} aria-hidden="true" />
         </div>
       ) : null}
-
       {renderError ? (
         <div className="absolute inset-0 z-[3] grid place-items-center bg-background/90 px-4 text-center text-sm text-destructive">
           {renderError}
@@ -292,6 +327,21 @@ export function PdfTextSelectionHighlightLayer({
   );
 }
 
+function rasterJobKind(priority: 'preload' | 'visible') {
+  return priority === 'visible' ? 'visible-raster' as const : 'preload-raster' as const;
+}
+
+function applyTextLayerViewport(
+  element: HTMLDivElement,
+  size: { height: number; width: number },
+  scale: number
+) {
+  applyPdfLayerSize(element, size);
+  element.style.setProperty('--total-scale-factor', `${scale}`);
+  element.style.setProperty('--scale-round-x', '1px');
+  element.style.setProperty('--scale-round-y', '1px');
+}
+
 function releasePdfPageLayers(
   canvas: HTMLCanvasElement | null,
   textLayer: HTMLDivElement | null
@@ -319,14 +369,8 @@ function textSelectionHighlightStyle(
 }
 
 function textSelectionColor(color: AnnotationHighlightColor) {
-  if (color === 'green') {
-    return 'rgb(110 231 183 / 0.38)';
-  }
-  if (color === 'blue') {
-    return 'rgb(125 211 252 / 0.38)';
-  }
-  if (color === 'pink') {
-    return 'rgb(249 168 212 / 0.38)';
-  }
+  if (color === 'green') return 'rgb(110 231 183 / 0.38)';
+  if (color === 'blue') return 'rgb(125 211 252 / 0.38)';
+  if (color === 'pink') return 'rgb(249 168 212 / 0.38)';
   return 'rgb(253 224 71 / 0.4)';
 }

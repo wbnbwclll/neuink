@@ -203,7 +203,9 @@ export function PdfReaderDocumentPane({
                     sourceEntryId={entry.id}
                     sourceBacklinksBySegmentUid={sourceBacklinksBySegmentUid}
                     sourceLinkHint={sourceLinkHint}
-                    suppressRegions={suppressRegions || !visible}
+                    // A page in the render window must remain interactive even
+                    // while IntersectionObserver catches up after a smooth scroll.
+                    suppressRegions={suppressRegions || !renderEnabled}
                     translationBySegmentUid={translationBySegmentUid}
                     translationStatus={translationStatus}
                     translationMode={translationMode}

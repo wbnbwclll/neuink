@@ -34,8 +34,9 @@ export function hasPdfTextSelection(textLayerElement: HTMLElement | null) {
   );
 }
 
-export function scheduleIdleWork(callback: () => void) {
+export function scheduleIdleWork(callback: () => void, delayMs = 0) {
   let completed = false;
+  let idleCancel: (() => void) | null = null;
   const finish = () => {
     if (completed) {
       return;
@@ -44,18 +45,22 @@ export function scheduleIdleWork(callback: () => void) {
     callback();
   };
 
-  if (typeof window.requestIdleCallback === 'function') {
-    const handle = window.requestIdleCallback(finish, { timeout: 500 });
-    return () => {
-      window.cancelIdleCallback(handle);
-      finish();
-    };
-  }
+  const scheduleIdleCallback = () => {
+    if (typeof window.requestIdleCallback === 'function') {
+      const handle = window.requestIdleCallback(finish, { timeout: 500 });
+      idleCancel = () => window.cancelIdleCallback(handle);
+      return;
+    }
 
-  const handle = window.setTimeout(finish, 80);
+    const handle = window.setTimeout(finish, 80);
+    idleCancel = () => window.clearTimeout(handle);
+  };
+
+  const delayHandle = window.setTimeout(scheduleIdleCallback, delayMs);
   return () => {
-    window.clearTimeout(handle);
-    finish();
+    completed = true;
+    window.clearTimeout(delayHandle);
+    idleCancel?.();
   };
 }
 

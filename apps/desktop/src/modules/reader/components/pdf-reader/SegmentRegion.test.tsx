@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SegmentRegion, buildPreviewLayout } from './SegmentRegion';
@@ -19,7 +19,7 @@ describe('PDF segment preview layout', () => {
     vi.restoreAllMocks();
   });
 
-  it('shows only the translation matching the hovered list item', () => {
+  it('shows only the translation matching the hovered list item', async () => {
     render(
       <SegmentRegion
         active
@@ -76,11 +76,13 @@ describe('PDF segment preview layout', () => {
       />,
     );
 
-    expect(document.body.textContent).toContain('第二项译文');
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('第二项译文');
+    });
     expect(document.body.textContent).not.toContain('第一项译文');
   });
 
-  it('shows the saved note and annotations when their preview sections are enabled', () => {
+  it('shows the saved note and annotations when their preview sections are enabled', async () => {
     render(
       <SegmentRegion
         active
@@ -131,7 +133,9 @@ describe('PDF segment preview layout', () => {
       />
     );
 
-    expect(document.body.textContent).toContain('Saved segment note preview content');
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('Saved segment note preview content');
+    });
     expect(document.body.textContent).toContain('Note and annotation preview content');
   });
 
