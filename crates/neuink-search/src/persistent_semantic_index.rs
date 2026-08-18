@@ -40,6 +40,17 @@ impl PersistentSemanticSearchIndex {
         )
     }
 
+    /// Opens the index from disk only when the cached snapshot matches the
+    /// current fingerprint. Never embeds documents or writes to disk.
+    pub fn open_cached(
+        path: impl AsRef<Path>,
+        documents: &[SearchDocument],
+        include: &SearchInclude,
+        fingerprint: u64,
+    ) -> SearchResult<Option<Self>> {
+        Self::try_open(path.as_ref(), documents, include, fingerprint)
+    }
+
     pub fn open_or_build_with_progress(
         path: impl AsRef<Path>,
         documents: &[SearchDocument],

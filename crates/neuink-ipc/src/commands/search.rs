@@ -22,7 +22,6 @@ use neuink_workspace::{
 use serde::{de::IgnoredAny, Deserialize, Serialize};
 
 use super::embedding_resources::embedding_model_dir;
-use super::workspace::current_workspace_root;
 
 const SEARCH_INDEX_CACHE_LIMIT: usize = 8;
 const SEMANTIC_INDEX_CACHE_LIMIT: usize = 3;
@@ -152,16 +151,9 @@ static SEARCH_BUILD_STATUS: OnceLock<Mutex<HashMap<String, SearchIndexBuildStatu
     OnceLock::new();
 static SEMANTIC_BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-pub fn spawn_search_cache_workers<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
-    if let Ok(root) = current_workspace_root(&app) {
-        begin_search_build(&root, "启动后准备构建向量索引");
-    }
-    let warmup_app = app.clone();
-    thread::Builder::new()
-        .name("neuink-search-cache-warmup".to_string())
-        .spawn(move || warm_search_caches(warmup_app))
-        .ok();
-
+pub fn spawn_search_cache_workers<R: tauri::Runtime>(_app: tauri::AppHandle<R>) {
+    // Semantic index building is user-initiated (rebuild_search_index); startup
+    // only keeps the periodic cache eviction loop alive.
     thread::Builder::new()
         .name("neuink-search-cache-cleanup".to_string())
         .spawn(clean_search_caches_loop)
@@ -392,49 +384,53 @@ fn rebuild_search_index_impl(
     embedding_model_dir: PathBuf,
     request: RebuildSearchIndexRequest,
 ) -> Result<RebuildSearchIndexResponse, String> {
-    let (options, include) = search_scope_options(request.segments_only);
+    // The manual build intentionally keeps the previous disk snapshot so
+    // `open_or_build_with_progress` only embeds documents that are new or
+    // changed since the last build instead of re-embedding the workspace.
     let workspace = Workspace::open(&request.root).map_err(|error| error.to_string())?;
-    let records = workspace
-        .collect_search_records(options.clone())
-        .map_err(|error| error.to_string())?;
-    let documents = records
-        .iter()
-        .cloned()
-        .filter_map(search_document)
-        .collect::<Vec<_>>();
-    let semantic_document_count = documents
-        .iter()
-        .filter(|document| search_include_contains(&include, document.source.kind))
-        .count();
-    let records_fingerprint = records_fingerprint(&records);
+    let provider =
+        cached_embedding_provider(embedding_model_dir).map_err(|error| error.to_string())?;
 
-    clear_semantic_cache_for_scope(&request.root, &options, &include);
-    let cache_dir = WorkspaceLayout::new(request.root.clone()).cache_dir();
-    let namespace = semantic_cache_namespace(&request.root, &options, &include);
-    let semantic_disk_cache_path = semantic_index_path(cache_dir, &namespace);
-    if semantic_disk_cache_path.exists() {
-        fs::remove_file(&semantic_disk_cache_path).map_err(|error| error.to_string())?;
-    }
+    // A global build also refreshes the segments-only scope so assistant
+    // segment search keeps working after the startup warmup was removed.
+    let scopes = if request.segments_only {
+        vec![search_scope_options(true)]
+    } else {
+        vec![search_scope_options(false), search_scope_options(true)]
+    };
+    let mut semantic_document_count = 0;
+    for (options, include) in scopes {
+        // Each scope must fingerprint the exact record set its searches use,
+        // otherwise the disk snapshot never matches at query time.
+        let records = workspace
+            .collect_search_records(options.clone())
+            .map_err(|error| error.to_string())?;
+        let documents = records
+            .iter()
+            .cloned()
+            .filter_map(search_document)
+            .collect::<Vec<_>>();
+        semantic_document_count = semantic_document_count.max(documents.len());
+        if documents.is_empty() {
+            continue;
+        }
 
-    let keyword_index = cached_index(
-        &request.root,
-        &options,
-        records_fingerprint,
-        documents.clone(),
-    )?;
-    let _ = keyword_index.generation();
-
-    if semantic_document_count > 0 {
-        let provider =
-            cached_embedding_provider(embedding_model_dir).map_err(|error| error.to_string())?;
+        let records_fingerprint = records_fingerprint(&records);
+        let keyword_index = cached_index(
+            &request.root,
+            &options,
+            records_fingerprint,
+            documents.clone(),
+        )?;
+        let _ = keyword_index.generation();
         let _ = cached_semantic_index(
             &request.root,
             &options,
             records_fingerprint,
             &include,
             &documents,
-            provider,
-            Some(if request.segments_only {
+            provider.clone(),
+            Some(if options.include_segments && !options.include_entry_meta {
                 "segments"
             } else {
                 "global"
@@ -509,15 +505,19 @@ fn run_semantic_search(
     }
 
     let provider = cached_embedding_provider(embedding_model_dir)?;
-    let semantic_index = cached_semantic_index(
+    let semantic_index = try_cached_semantic_index(
         root,
         options,
         records_fingerprint,
         &query.include,
         documents,
-        provider.clone(),
-        Some(semantic_scope_label(&query.include)),
-    )?;
+    )
+    .ok_or_else(|| {
+        neuink_search::SearchError::EmbeddingUnavailable(
+            "向量索引尚未构建或已过期。请在搜索面板点击「构建向量索引」后再使用语义/混合搜索。"
+                .to_string(),
+        )
+    })?;
     let semantic_results = semantic_index.search(
         &query,
         &normalized_query,
@@ -680,6 +680,56 @@ fn cached_semantic_index(
     Ok(index)
 }
 
+/// Returns a semantic index only when it is already available (memory cache or
+/// a fingerprint-current disk snapshot). Never triggers embedding work, so
+/// search requests stay cheap until the user explicitly builds the index.
+fn try_cached_semantic_index(
+    root: &PathBuf,
+    options: &WorkspaceSearchOptions,
+    records_fingerprint: u64,
+    include: &SearchInclude,
+    documents: &[SearchDocument],
+) -> Option<Arc<PersistentSemanticSearchIndex>> {
+    let cache_key = semantic_cache_key(root, options, include);
+    let cache = SEMANTIC_INDEX_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(index) = cache
+        .lock()
+        .ok()?
+        .get_mut(&cache_key)
+        .filter(|cached| cached.fingerprint == records_fingerprint)
+        .map(|cached| {
+            cached.last_used = Instant::now();
+            cached.index.clone()
+        })
+    {
+        return Some(index);
+    }
+
+    let cache_dir = WorkspaceLayout::new(root.clone()).cache_dir();
+    let namespace = semantic_cache_namespace(root, options, include);
+    let index_path = semantic_index_path(cache_dir, &namespace);
+    let index = PersistentSemanticSearchIndex::open_cached(
+        &index_path,
+        documents,
+        include,
+        records_fingerprint,
+    )
+    .ok()??;
+    let index = Arc::new(index);
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(
+            cache_key,
+            CachedSemanticIndex {
+                fingerprint: records_fingerprint,
+                index: index.clone(),
+                last_used: Instant::now(),
+            },
+        );
+        trim_semantic_cache(&mut cache);
+    }
+    Some(index)
+}
+
 fn semantic_cache_key(
     root: &PathBuf,
     options: &WorkspaceSearchOptions,
@@ -722,26 +772,6 @@ fn search_scope_status_options(
         options,
         include,
     )
-}
-
-fn clear_semantic_cache_for_scope(
-    root: &PathBuf,
-    options: &WorkspaceSearchOptions,
-    include: &SearchInclude,
-) {
-    if let Some(cache) = SEMANTIC_INDEX_CACHE.get() {
-        if let Ok(mut cache) = cache.lock() {
-            cache.remove(&semantic_cache_key(root, options, include));
-        }
-    }
-}
-
-fn semantic_scope_label(include: &SearchInclude) -> &'static str {
-    if !include.entry_meta && include.segments {
-        "segments"
-    } else {
-        "global"
-    }
 }
 
 fn search_scope_display_name(scope: &str) -> &'static str {
@@ -938,100 +968,6 @@ fn unix_time_ms() -> u64 {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
-}
-
-fn warm_search_caches<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
-    let root = match current_workspace_root(&app) {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("search cache warmup skipped: {error}");
-            return;
-        }
-    };
-    let embedding_model_dir = match embedding_model_dir(&app) {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("search cache warmup embedding path unavailable: {error}");
-            return;
-        }
-    };
-
-    let warmups = [
-        (
-            WorkspaceSearchOptions::default(),
-            SearchInclude::default(),
-            "global",
-        ),
-        (
-            WorkspaceSearchOptions {
-                include_entry_meta: false,
-                include_notes: false,
-                include_segments: true,
-            },
-            SearchInclude {
-                entry_meta: false,
-                notes: false,
-                segments: true,
-            },
-            "segments",
-        ),
-    ];
-
-    for (options, include, label) in warmups {
-        if let Err(error) = warm_search_scope(&root, &embedding_model_dir, options, include) {
-            eprintln!("search cache warmup {label} skipped: {error}");
-            fail_search_build(&root, &error);
-            return;
-        }
-    }
-    clean_disk_vector_cache(&root);
-    finish_search_build(&root, "启动向量索引已全部就绪".to_string());
-}
-
-fn warm_search_scope(
-    root: &PathBuf,
-    embedding_model_dir: &PathBuf,
-    options: WorkspaceSearchOptions,
-    include: SearchInclude,
-) -> Result<(), String> {
-    let label = semantic_scope_label(&include);
-    update_search_build_progress(
-        root,
-        label,
-        "collecting",
-        0,
-        0,
-        format!("正在收集{}搜索内容", search_scope_display_name(label)),
-    );
-    let workspace = Workspace::open(root).map_err(|error| error.to_string())?;
-    let records = workspace
-        .collect_search_records(options.clone())
-        .map_err(|error| error.to_string())?;
-    let documents = records
-        .iter()
-        .cloned()
-        .filter_map(search_document)
-        .collect::<Vec<_>>();
-    if documents.is_empty() {
-        return Ok(());
-    }
-
-    let fingerprint = records_fingerprint(&records);
-    let keyword_index = cached_index(root, &options, fingerprint, documents.clone())?;
-    let provider = cached_embedding_provider(embedding_model_dir.clone())
-        .map_err(|error| error.to_string())?;
-    let _semantic_index = cached_semantic_index(
-        root,
-        &options,
-        fingerprint,
-        &include,
-        &documents,
-        provider,
-        Some(label),
-    )
-    .map_err(|error| error.to_string())?;
-    let _ = keyword_index.generation();
-    Ok(())
 }
 
 fn clean_search_caches_loop() {

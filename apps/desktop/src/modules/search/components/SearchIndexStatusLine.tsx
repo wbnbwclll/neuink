@@ -98,6 +98,17 @@ export function SearchIndexStatusLine({
     );
   }
 
+  if (status.semantic_status === 'needs_build') {
+    return (
+      <div className={cn('flex min-w-0 items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-300', className)}>
+        <Database className="size-3 shrink-0" aria-hidden="true" />
+        <span className="min-w-0 truncate" title="构建会占用大量 CPU，界面可能暂时卡顿，首次构建可能需要数分钟。">
+          {status.message}，点击右侧「构建」开始
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div className={cn('flex min-w-0 items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-300', className)}>
       <Database className="size-3 shrink-0" aria-hidden="true" />
