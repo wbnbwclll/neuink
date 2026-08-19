@@ -30,8 +30,18 @@ import type {
   AssistantNoteProposal,
 } from "@/shared/types/assistant";
 import type { TagMeta } from "@/shared/types/domain";
+import type { ResearchOutline } from "@/shared/types/research";
 
-import { AssistantHarnessError, runAssistantHarness } from "../harness/engine";
+import {
+  AssistantHarnessError,
+  loadWorkspaceAgentRuntimeSettings,
+  runAssistantHarness,
+} from "../harness/engine";
+import { runResearchHarness } from "../../research/harness";
+import {
+  latestResearchOutlineFromHistory,
+  latestResearchRunFromHistory,
+} from "../../research/resume";
 import {
   assistantRunBaseScope,
   buildConversationMentionScope,
@@ -57,6 +67,7 @@ export type QueuedAssistantDraft = {
   activeNote: AssistantActiveNote | null;
   activeSegment: AssistantActiveSegment | null;
   activeSurface: AssistantActiveSurfaceSnapshot;
+  confirmedOutline?: ResearchOutline | null;
   contextItems: AssistantContextItem[];
   contextPlan: AssistantContextPlan | null;
   question: string;
@@ -150,6 +161,7 @@ type AssistantRunControllerOptions = {
   noteProposalsByMessageId: Record<string, AssistantNoteProposal[]>;
   onAddAssistantContext: (context: AssistantContextInput) => void;
   onCreateAssistantEntry: (title: string) => Promise<LibraryEntry>;
+  confirmedOutline?: ResearchOutline | null;
   preferredAgentId?: string | null;
   profiles: LlmProfile[];
   resetComposer: boolean;
@@ -190,6 +202,7 @@ export async function runAssistantPanelTask({
   noteProposalsByMessageId,
   onAddAssistantContext,
   onCreateAssistantEntry,
+  confirmedOutline,
   preferredAgentId,
   profiles,
   resetComposer,
@@ -244,6 +257,19 @@ export async function runAssistantPanelTask({
   let streamRenderTimer: number | null = null;
   try {
     const conversationMessages = conversation?.messages ?? [];
+    // 只有「开始研究」按钮显式携带大纲（第二轮）或用户原样重发同一主题时才走第二轮；
+    // 新主题一律走第一轮 rephrase，避免误用上一轮大纲跳过澄清。
+    const restoredOutline = latestResearchOutlineFromHistory(conversationMessages);
+    const resolvedConfirmedOutline =
+      confirmedOutline === undefined
+        ? restoredOutline && restoredOutline.topic === trimmedQuestion.trim()
+          ? restoredOutline
+          : null
+        : confirmedOutline;
+    const resumedResearchRun =
+      resolvedConfirmedOutline && preferredAgentId
+        ? latestResearchRunFromHistory(conversationMessages)
+        : null;
     const baseScope = assistantRunBaseScope({
       conversationScope: conversation?.scope_snapshot,
       currentScope: scope,
@@ -422,114 +448,140 @@ export async function runAssistantPanelTask({
     };
 
     const runEntries = entries;
-    const grounded = await runAssistantHarness({
-      abortSignal: runAbortController.signal,
-      availableEntries: runEntries.map((entry) => ({
-        description: entry.fields.description ?? "",
-        id: entry.id,
-        title: entry.title,
-        updatedAt: entry.updatedAt,
-      })),
-      availableNotes: runEntries.flatMap((entry) =>
-        entry.contents.map((note) => ({
-          entryId: entry.id,
-          entryTitle: entry.title,
-          noteId: note.note_id,
-          title: note.title,
-        })),
-      ),
-      availableTags: tags.map((tag) => ({
-        id: tag.id,
-        name: tag.name,
-        parentId: tag.parent_id,
-      })),
-      assistantContext: runContext,
-      contextPlan: submittedContextPlan,
-      composerSnapshot: submittedComposerSnapshot,
-      conversationId: currentConversation.id,
-      conversationHistory: currentConversation.messages,
-      currentEntry: runEntry,
-      currentNote: runNote,
-      currentSegment: runSegment,
-      currentSurface: runSurface,
-      destinationEntryId: null,
-      mentionScope: runScope,
-      tagMentionScopes: buildTagMentionScopes({
-        entries,
-        tagIds: [
-          ...composerMentionsFromMessages(conversationMessages),
-          ...submittedComposerSnapshot.mentions,
-        ].flatMap((mention) =>
-          mention.kind === "tag" && mention.tagId ? [mention.tagId] : [],
-        ),
-        tags,
-      }),
-      onCreateEntry: async (title) => {
-        const entry = await onCreateAssistantEntry(title);
-        onAddAssistantContext({
-          entryId: entry.id,
-          entryTitle: entry.title,
-          id: `entry:${entry.id}`,
-          kind: "entry",
-        });
-        return {
-          description: entry.fields.description ?? "",
-          id: entry.id,
-          title: entry.title,
-          updatedAt: entry.updatedAt,
-        };
-      },
-      onDelta: (delta) => {
-        streamedAnswer += delta;
-        scheduleStreamingDraft();
-      },
-      onNoteProposal: undefined,
-      onToolEvent: (event) => {
-        assistantToolEvents = mergeToolTraceEvent(assistantToolEvents, event);
-        const messageId = persistedAssistantMessageId ?? assistantMessageId;
-        const draftParts = buildAssistantMessageParts({
-          content: streamedAnswer,
-          noteProposals: assistantNoteProposals,
-          toolEvents: assistantToolEvents,
-        });
-        const applyDraft = (current: Conversation | null) =>
-          updateConversationMessageLocally(
-            current,
-            messageId,
-            {
-              content: streamedAnswer,
-              note_proposals: assistantNoteProposals,
-              parts: draftParts,
-              tool_events: assistantToolEvents,
-            },
-            currentConversation.id,
-          );
-        setToolEventsByMessageId((current) => ({
-          ...current,
-          [messageId]: assistantToolEvents,
-        }));
-        setConversation(applyDraft);
-        syncAssistantBackgroundRunState({
-          abortController: runAbortController,
-          conversation: applyDraft(
-            getAssistantBackgroundRun()?.conversation ?? null,
-          ),
-          noteProposalsByMessageId:
-            getAssistantBackgroundRun()?.noteProposalsByMessageId ?? {},
-          toolEventsByMessageId: {
-            ...(getAssistantBackgroundRun()?.toolEventsByMessageId ?? {}),
-            [messageId]: assistantToolEvents,
+    const runtimeSettings = await loadWorkspaceAgentRuntimeSettings(root);
+    const handleDelta = (delta: string) => {
+      streamedAnswer += delta;
+      scheduleStreamingDraft();
+    };
+    const handleToolEvent = (event: AssistantToolTraceEvent) => {
+      assistantToolEvents = mergeToolTraceEvent(assistantToolEvents, event);
+      const messageId = persistedAssistantMessageId ?? assistantMessageId;
+      const draftParts = buildAssistantMessageParts({
+        content: streamedAnswer,
+        noteProposals: assistantNoteProposals,
+        toolEvents: assistantToolEvents,
+      });
+      const applyDraft = (current: Conversation | null) =>
+        updateConversationMessageLocally(
+          current,
+          messageId,
+          {
+            content: streamedAnswer,
+            note_proposals: assistantNoteProposals,
+            parts: draftParts,
+            tool_events: assistantToolEvents,
           },
+          currentConversation.id,
+        );
+      setToolEventsByMessageId((current) => ({
+        ...current,
+        [messageId]: assistantToolEvents,
+      }));
+      setConversation(applyDraft);
+      syncAssistantBackgroundRunState({
+        abortController: runAbortController,
+        conversation: applyDraft(
+          getAssistantBackgroundRun()?.conversation ?? null,
+        ),
+        noteProposalsByMessageId:
+          getAssistantBackgroundRun()?.noteProposalsByMessageId ?? {},
+        toolEventsByMessageId: {
+          ...(getAssistantBackgroundRun()?.toolEventsByMessageId ?? {}),
+          [messageId]: assistantToolEvents,
+        },
+      });
+      persistAssistantDraft();
+    };
+
+    const isResearchRun = preferredAgentId === runtimeSettings.researchAssistant.id;
+    const researchProfile =
+      profiles.find(
+        (profile) => profile.id === runtimeSettings.researchAssistant.llmProfileId,
+      ) ?? selectedProfile;
+    const grounded = isResearchRun
+      ? await runResearchHarness({
+          abortSignal: runAbortController.signal,
+          confirmedOutline: resolvedConfirmedOutline,
+          conversationHistory: currentConversation.messages,
+          conversationId: currentConversation.id,
+          onDelta: handleDelta,
+          onToolEvent: handleToolEvent,
+          question: trimmedQuestion,
+          root,
+          runtimeSettings,
+          scope: runScope,
+          settings: researchProfile,
+        })
+      : await runAssistantHarness({
+          abortSignal: runAbortController.signal,
+          availableEntries: runEntries.map((entry) => ({
+            description: entry.fields.description ?? "",
+            id: entry.id,
+            title: entry.title,
+            updatedAt: entry.updatedAt,
+          })),
+          availableNotes: runEntries.flatMap((entry) =>
+            entry.contents.map((note) => ({
+              entryId: entry.id,
+              entryTitle: entry.title,
+              noteId: note.note_id,
+              title: note.title,
+            })),
+          ),
+          availableTags: tags.map((tag) => ({
+            id: tag.id,
+            name: tag.name,
+            parentId: tag.parent_id,
+          })),
+          assistantContext: runContext,
+          contextPlan: submittedContextPlan,
+          composerSnapshot: submittedComposerSnapshot,
+          conversationId: currentConversation.id,
+          conversationHistory: currentConversation.messages,
+          currentEntry: runEntry,
+          currentNote: runNote,
+          currentSegment: runSegment,
+          currentSurface: runSurface,
+          destinationEntryId: null,
+          mentionScope: runScope,
+          tagMentionScopes: buildTagMentionScopes({
+            entries,
+            tagIds: [
+              ...composerMentionsFromMessages(conversationMessages),
+              ...submittedComposerSnapshot.mentions,
+            ].flatMap((mention) =>
+              mention.kind === "tag" && mention.tagId ? [mention.tagId] : [],
+            ),
+            tags,
+          }),
+          onCreateEntry: async (title) => {
+            const entry = await onCreateAssistantEntry(title);
+            onAddAssistantContext({
+              entryId: entry.id,
+              entryTitle: entry.title,
+              id: `entry:${entry.id}`,
+              kind: "entry",
+            });
+            return {
+              description: entry.fields.description ?? "",
+              id: entry.id,
+              title: entry.title,
+              updatedAt: entry.updatedAt,
+            };
+          },
+          onDelta: handleDelta,
+          onNoteProposal: undefined,
+          onToolEvent: handleToolEvent,
+          question: trimmedQuestion,
+          preferredAgentId,
+          profiles,
+          resumeFromNodeId:
+            resumedResearchRun ? resumedResearchRun.resumeFromNodeId : undefined,
+          resumedFromRunId: resumedResearchRun ? resumedResearchRun.runId : undefined,
+          root,
+          scope: runScope,
+          settings: selectedProfile,
         });
-        persistAssistantDraft();
-      },
-      question: trimmedQuestion,
-      preferredAgentId,
-      profiles,
-      root,
-      scope: runScope,
-      settings: selectedProfile,
-    });
 
     if (streamRenderTimer !== null) {
       window.clearTimeout(streamRenderTimer);
@@ -555,6 +607,8 @@ export async function runAssistantPanelTask({
         ),
       ]),
       noteProposals: finalNoteProposals,
+      researchOutline: grounded.researchOutline,
+      researchProgress: grounded.researchProgress,
       tagProposals: finalTagProposals,
       plan: grounded.plan,
       sourceLinks: grounded.sources,

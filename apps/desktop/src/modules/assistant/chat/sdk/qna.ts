@@ -27,7 +27,8 @@ import type {
   AssistantNoteProposal,
   AssistantTagProposal,
   AssistantTaskPlan,
-  AssistantTaskState
+  AssistantTaskState,
+  GroundedAnswer
 } from '@/shared/types/assistant';
 import type { AgentExecutionSelection, AgentRuntimeSettings } from '@/shared/types/agentRuntime';
 import { buildAgentSystemPrompt } from '@/shared/lib/agentRuntimeSettings';
@@ -38,18 +39,7 @@ import { createAssistantTools, modelToolName } from '../../shared/sdk/tools';
 import { buildScopeContext } from '../../shared/scope';
 import { AgentLoopGuard, createAgentLoopState } from '../../shared/agent-core';
 
-export type GroundedAnswer = {
-  agentLoopState?: import('@/shared/types/agentRuntime').AgentLoopState;
-  agentRun?: AssistantAgentRun;
-  answer: string;
-  entryMetaProposals?: AssistantEntryMetaProposal[];
-  noteProposals?: AssistantNoteProposal[];
-  tagProposals?: AssistantTagProposal[];
-  plan?: AssistantTaskPlan;
-  sources: ConversationSourceLink[];
-  taskState?: AssistantTaskState;
-  toolEvents?: AssistantToolTraceEvent[];
-};
+export type { GroundedAnswer } from '@/shared/types/assistant';
 
 type EvidenceSections = {
   documentContext: string;

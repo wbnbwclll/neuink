@@ -89,8 +89,13 @@ import type {
   AssistantTaskState
 } from '@/shared/types/assistant';
 import type { TagMeta } from '@/shared/types/domain';
+import type {
+  ResearchOutline,
+  ResearchProgressEvent
+} from '@/shared/types/research';
 import { useToast } from '@/shared/hooks/useToast';
 
+import { buildResearchParts } from '../../research/parts';
 import { ChatMessage } from './ChatMessage';
 import { AssistantRunStatus } from './AssistantRunStatus';
 import {
@@ -352,6 +357,8 @@ export function buildAssistantMessageParts({
   entryMetaProposals = [],
   memory,
   noteProposals = [],
+  researchOutline,
+  researchProgress = [],
   tagProposals = [],
   plan,
   sourceLinks = [],
@@ -366,6 +373,8 @@ export function buildAssistantMessageParts({
   entryMetaProposals?: AssistantEntryMetaProposal[];
   memory?: AssistantConversationMemory | null;
   noteProposals?: AssistantNoteProposal[];
+  researchOutline?: ResearchOutline;
+  researchProgress?: ResearchProgressEvent[];
   tagProposals?: AssistantTagProposal[];
   plan?: AssistantTaskPlan;
   sourceLinks?: ConversationSourceLink[];
@@ -443,6 +452,8 @@ export function buildAssistantMessageParts({
       type: 'text'
     });
   }
+
+  parts.push(...buildResearchParts({ outline: researchOutline, progress: researchProgress }));
 
   for (const source of sourceLinks) {
     parts.push({

@@ -31,7 +31,8 @@ import {
 } from '@/shared/lib/agentRuntimeSettings';
 
 import { assistantContextCharBudget, assistantNoteCharBudget } from '../../shared/sdk/contextBudget';
-import { answerWithKeywordGrounding, type GroundedAnswer } from '../sdk/qna';
+import { answerWithKeywordGrounding } from '../sdk/qna';
+import type { GroundedAnswer } from '@/shared/types/assistant';
 import { registerEvidence } from '../../shared/runtime/evidenceLedger';
 import { createCompiledTaskState, transitionTaskState } from '../../shared/runtime/taskState';
 import { finalizeVerifiedProposals } from '../runtime/verifiedProposal';
@@ -489,7 +490,7 @@ function recordNode(
   });
 }
 
-async function loadWorkspaceAgentRuntimeSettings(root: string) {
+export async function loadWorkspaceAgentRuntimeSettings(root: string) {
   try {
     const [workspaceSettings, registrySkills] = await Promise.all([
       loadAgentRuntimeSettings(root),

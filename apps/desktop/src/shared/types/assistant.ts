@@ -501,3 +501,18 @@ export type AssistantActiveNote = {
   noteId: NoteId;
   noteTitle: string;
 };
+
+export type GroundedAnswer = {
+  agentLoopState?: import('@/shared/types/agentRuntime').AgentLoopState;
+  agentRun?: AssistantAgentRun;
+  answer: string;
+  entryMetaProposals?: AssistantEntryMetaProposal[];
+  noteProposals?: AssistantNoteProposal[];
+  plan?: AssistantTaskPlan;
+  researchOutline?: import('@/shared/types/research').ResearchOutline;
+  researchProgress?: import('@/shared/types/research').ResearchProgressEvent[];
+  sources: import('@/shared/ipc/assistantApi').ConversationSourceLink[];
+  tagProposals?: AssistantTagProposal[];
+  taskState?: AssistantTaskState;
+  toolEvents?: import('@/shared/ipc/assistantApi').AssistantToolTraceEvent[];
+};

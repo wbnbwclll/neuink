@@ -39,6 +39,12 @@ import type {
   AssistantTagProposal,
   AssistantTaskPlan
 } from '@/shared/types/assistant';
+import type { ResearchOutline } from '@/shared/types/research';
+import {
+  ResearchParts,
+  researchOutlineFromParts,
+  researchProgressFromParts
+} from '../../research/components/ResearchParts';
 import { buildNoteProposalPreview } from './noteProposalPreview';
 import { EntryMetaProposalCard } from './EntryMetaProposalCard';
 import { TagProposalList } from './TagProposalList';
@@ -60,6 +66,8 @@ type ChatMessageProps = {
   onRejectEntryMetaProposal?: (proposal: AssistantEntryMetaProposal) => void;
   onRejectTagProposal?: (proposal: AssistantTagProposal) => void;
   onRetryAgentRun?: (question: string) => void;
+  onStartResearch?: (outline: ResearchOutline) => void;
+  onStartResearchDisabled?: boolean;
 };
 
 function ChatMessageComponent({
@@ -76,7 +84,9 @@ function ChatMessageComponent({
   onRejectNoteProposal,
   onRejectEntryMetaProposal,
   onRejectTagProposal,
-  onRetryAgentRun
+  onRetryAgentRun,
+  onStartResearch,
+  onStartResearchDisabled = false
 }: ChatMessageProps) {
   const messageParts = message.parts ?? [];
   const content = message.content || textFromParts(messageParts);
@@ -91,6 +101,8 @@ function ChatMessageComponent({
   const resolvedMemory = memoryFromParts(messageParts);
   const contextItems = contextItemsFromParts(messageParts);
   const contextPlan = contextPlanFromParts(messageParts);
+  const researchOutline = researchOutlineFromParts(messageParts);
+  const researchProgress = researchProgressFromParts(messageParts);
   const sourceLinks =
     message.source_links.length > 0 ? message.source_links : sourceLinksFromParts(messageParts);
   const discoveredSciverseSources = sciverseSourcesFromToolParts(messageParts);
@@ -120,6 +132,14 @@ function ChatMessageComponent({
         streaming={streaming}
         onOpenSource={onOpenSource}
       />
+      {message.role === 'assistant' ? (
+        <ResearchParts
+          disabled={onStartResearchDisabled}
+          outline={researchOutline}
+          onStartResearch={onStartResearch}
+          progress={researchProgress}
+        />
+      ) : null}
       {message.role === 'assistant' && resolvedNoteProposals.length > 0 ? (
         <NoteProposalList
           proposals={resolvedNoteProposals}
