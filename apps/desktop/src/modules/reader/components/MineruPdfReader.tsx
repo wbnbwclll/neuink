@@ -967,6 +967,8 @@ export function MineruPdfReader({
         onRetryFailedTranslation={() => void retryFailedTranslation()}
         onOpenTranslationTask={() => setTranslationTaskOpen(true)}
         onReaderPreferencesChange={onReaderPreferencesChange}
+        onReparsePdf={() => void retryPdfParse()}
+        reparseBusy={parseRetryBusy}
         onTagSuggestionsOpenChange={setTagSuggestionsOpen}
         onZoomIn={() =>
           updateZoom((currentZoom) => currentZoom + PDF_ZOOM_STEP)

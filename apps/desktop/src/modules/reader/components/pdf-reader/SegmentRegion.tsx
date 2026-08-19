@@ -36,6 +36,7 @@ function SegmentRegionImpl({
   previewNote,
   previewAnnotations,
   relatedImagePath,
+  relatedCaptionText,
   regionBbox,
   regionId,
   segment,
@@ -71,6 +72,7 @@ function SegmentRegionImpl({
   previewNote: string | null;
   previewAnnotations: Annotation[];
   relatedImagePath?: string | null;
+  relatedCaptionText?: string | null;
   regionBbox: readonly [number, number, number, number];
   regionId: string;
   segment: SourceSegment;
@@ -292,6 +294,7 @@ function SegmentRegionImpl({
           noteText={previewNote}
           annotations={previewAnnotations}
           relatedImagePath={relatedImagePath}
+          relatedCaptionText={relatedCaptionText}
           segment={segment}
           translatedText={translatedText}
           translationStatus={translationStatus}
@@ -464,6 +467,7 @@ function SegmentPreview({
   listItemRegions,
   pageIdx,
   relatedImagePath,
+  relatedCaptionText,
   segment,
   showOriginal,
   showNote,
@@ -487,6 +491,7 @@ function SegmentPreview({
   listItemRegions: ListItemRegion[];
   pageIdx: number;
   relatedImagePath?: string | null;
+  relatedCaptionText?: string | null;
   segment: SourceSegment;
   showOriginal: boolean;
   showNote: boolean;
@@ -510,6 +515,7 @@ function SegmentPreview({
   }
 
   const originalText = segment.markdown ?? segment.text;
+  const captionText = relatedCaptionText?.trim() || null;
   const isScrollableList = segment.segment_type === 'list';
   const showTranslationPreview =
     showTranslation && translationVisible && Boolean(translatedText);
@@ -532,6 +538,7 @@ function SegmentPreview({
 
   const layoutText = [
     showOriginal ? originalText : null,
+    showOriginal ? captionText : null,
     showTranslationPreview ? translatedText : null,
     showNotePreview ? noteText : null,
     showAnnotationPreview ? annotations.map((annotation) => annotation.content).join('\n') : null
@@ -593,6 +600,19 @@ function SegmentPreview({
                   workspaceRoot={workspaceRoot}
                 />
               )}
+            </div>
+          ) : null}
+          {showOriginal && captionText ? (
+            <div className="border-t pt-2">
+              <div className="mb-1 text-[11px] font-semibold text-muted-foreground">题注</div>
+              <SourceSnapshotPreview
+                allowScroll={false}
+                compact
+                markdown={captionText}
+                segmentType="paragraph"
+                sourceEntryId={sourceEntryId}
+                workspaceRoot={workspaceRoot}
+              />
             </div>
           ) : null}
           {showTranslationPreview && translatedText ? (

@@ -33,6 +33,7 @@ import {
   updateEntryTagDrag
 } from '@/shared/lib/entryDragData';
 import type { TagMeta, TrashItem } from '@/shared/types/domain';
+import { useToast } from '@/shared/hooks/useToast';
 
 import type { LibraryEntry, LibraryView } from '../../library/components/LibrarySidebar';
 import { buildTagPathById, collectDescendantTagIds } from '../../library/utils/tagTree';
@@ -60,6 +61,7 @@ type EntryLibraryViewProps = {
   onPurgeEntry: (entryId: string) => Promise<void> | void;
   onPurgeTrashItem: (entryId: string, trashId: string) => Promise<void> | void;
   onRefreshParseStatus: () => Promise<void> | void;
+  onReparseEntry: (entryId: string) => Promise<void> | void;
   onRestoreEntry: (entryId: string) => Promise<void> | void;
   onRestoreTrashItem: (entryId: string, trashId: string) => Promise<void> | void;
   onSelectEntry: (id: string) => void;
@@ -86,6 +88,7 @@ export function EntryLibraryView({
   onPurgeEntry,
   onPurgeTrashItem,
   onRefreshParseStatus,
+  onReparseEntry,
   onRestoreEntry,
   onRestoreTrashItem,
   onSelectEntry,
@@ -101,6 +104,7 @@ export function EntryLibraryView({
   const suppressEntryClickRef = useRef(false);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
   const [emptyTrashBusy, setEmptyTrashBusy] = useState(false);
+  const { notify } = useToast();
   const isTrashView = libraryView === 'trash';
   useEffect(() => {
     setQuery('');
@@ -457,6 +461,24 @@ export function EntryLibraryView({
                       <ContextMenuItem onSelect={() => onOpenEntryInSidePane(item.id)}>
                         <PanelRight size={13} aria-hidden="true" />
                         在右侧打开
+                      </ContextMenuItem>
+                    ) : null}
+                    {!isTrashView && (item.status === 'Parsed' || item.status === 'Failed') ? (
+                      <ContextMenuItem
+                        disabled={activeJobs > 0}
+                        onSelect={() => {
+                          void Promise.resolve(onReparseEntry(item.id))
+                            .then(() =>
+                              notify({
+                                title: '已重新提交解析',
+                                description: `${item.title} 已重新加入解析队列，解析结果会覆盖现有内容。`
+                              })
+                            )
+                            .catch(() => undefined);
+                        }}
+                      >
+                        <RotateCcw size={13} aria-hidden="true" />
+                        重新解析
                       </ContextMenuItem>
                     ) : null}
                     {isTrashView ? (

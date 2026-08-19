@@ -78,6 +78,106 @@ describe('groupSegmentsByPage', () => {
     expect(pages[0].regions.map((region) => region.segment.text)).toEqual(['First reference']);
     expect(pages[1].regions.map((region) => region.segment.text)).toEqual(['Second reference']);
   });
+
+  it('synthesizes a caption hit strip below its visual-group figure', () => {
+    const figure: SourceSegment = {
+      asset_path: 'images/figure.jpg',
+      bbox: [125, 226, 874, 381],
+      markdown: null,
+      page_idx: 0,
+      raw_type: 'image',
+      segment_type: 'figure',
+      text: '```mermaid\ngraph TD\n```',
+      uid: 'figure-1',
+      visual_group_id: 'visual-image-p0',
+    };
+    const caption: SourceSegment = {
+      asset_path: 'images/figure.jpg',
+      bbox: null,
+      block_role: 'caption',
+      markdown: null,
+      page_idx: 0,
+      raw_type: 'image',
+      segment_type: 'paragraph',
+      text: 'Figure 1: demo caption',
+      uid: 'figure-1-caption',
+      visual_group_id: 'visual-image-p0',
+    };
+    const bodyBelow: SourceSegment = {
+      bbox: [53, 440, 947, 520],
+      markdown: null,
+      page_idx: 0,
+      segment_type: 'paragraph',
+      text: 'Body text under the figure.',
+      uid: 'body-1',
+    };
+
+    const page = groupSegmentsByPage([figure, caption, bodyBelow], 1)[0];
+    const captionRegion = page.regions.find((region) => region.id === 'figure-1-caption');
+
+    expect(captionRegion).toBeDefined();
+    expect(captionRegion?.bbox).toEqual([125, 381, 874, 440]);
+    expect(captionRegion?.sourceSegment.text).toBe('Figure 1: demo caption');
+    // 同组命中：hover 题注时图片区域一起高亮
+    expect(captionRegion?.hoverGroupUid).toBe(
+      page.regions.find((region) => region.id === 'figure-1')?.hoverGroupUid,
+    );
+  });
+
+  it('synthesizes a table caption strip above the table body', () => {
+    const table: SourceSegment = {
+      bbox: [93, 103, 470, 247],
+      markdown: null,
+      page_idx: 0,
+      raw_type: 'table',
+      segment_type: 'table',
+      text: '| a | b |',
+      uid: 'table-1',
+      visual_group_id: 'visual-table-p0',
+    };
+    const caption: SourceSegment = {
+      bbox: null,
+      block_role: 'caption',
+      markdown: null,
+      page_idx: 0,
+      raw_type: 'table',
+      segment_type: 'paragraph',
+      text: 'Table 1: demo caption',
+      uid: 'table-1-caption',
+      visual_group_id: 'visual-table-p0',
+    };
+    const headerAbove: SourceSegment = {
+      bbox: [53, 0, 947, 60],
+      markdown: null,
+      page_idx: 0,
+      segment_type: 'page_header',
+      text: 'Header',
+      uid: 'header-1',
+    };
+
+    const page = groupSegmentsByPage([table, caption, headerAbove], 1)[0];
+    const captionRegion = page.regions.find((region) => region.id === 'table-1-caption');
+
+    expect(captionRegion?.bbox).toEqual([93, 60, 470, 103]);
+  });
+
+  it('skips caption synthesis when no visual-group anchor has a bbox', () => {
+    const caption: SourceSegment = {
+      bbox: null,
+      block_role: 'caption',
+      markdown: null,
+      page_idx: 0,
+      raw_type: 'image',
+      segment_type: 'paragraph',
+      text: 'Figure 9: orphan caption',
+      uid: 'orphan-caption',
+      visual_group_id: 'visual-image-orphan',
+    };
+
+    const page = groupSegmentsByPage([caption], 1)[0];
+
+    expect(page.regions).toHaveLength(0);
+  });
 });
 
 describe('scrollToSegment', () => {

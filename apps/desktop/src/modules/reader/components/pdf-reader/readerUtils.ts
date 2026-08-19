@@ -34,6 +34,38 @@ export function groupSegmentsByPage(
     });
   });
 
+  // MinerU v2 emits captions as inline items without their own bbox, so they
+  // would never hit-test. Synthesize a strip for them in the gap adjacent to
+  // their visual-group anchor (below figures, above tables).
+  segments
+    .filter(
+      (segment) =>
+        !normalizeBbox(segment.bbox) &&
+        (segment.block_role === "caption" || segment.block_role === "footnote") &&
+        segment.visual_group_id,
+    )
+    .forEach((segment) => {
+      const pageIdx = clamp(segment.page_idx, 0, pageCount - 1);
+      const regions = regionsByPage[pageIdx];
+      if (!regions) {
+        return;
+      }
+      const stripBbox = captionStripBbox(segment, regions);
+      if (!stripBbox) {
+        return;
+      }
+      regions.push({
+        bbox: stripBbox,
+        hoverGroupUid: segmentHoverGroupUid(segment),
+        id: segment.uid,
+        isContinuation: false,
+        relationGroupUid: segmentRelationGroupUid(segment),
+        pageIdx,
+        segment,
+        sourceSegment: segment,
+      });
+    });
+
   return realSegmentsByPage.map((pageSegments, pageIdx) => ({
     pageIdx,
     regions: regionsByPage[pageIdx].sort(compareRegionItems),
@@ -345,6 +377,55 @@ function segmentRegionsFor(
 
 function segmentHoverGroupUid(segment: SourceSegment) {
   return segmentRelationGroupUid(segment) ?? segment.uid;
+}
+
+function captionStripBbox(
+  caption: SourceSegment,
+  regions: SegmentRegionItem[],
+): readonly [number, number, number, number] | null {
+  const groupId = caption.visual_group_id;
+  const anchorBboxes = regions
+    .filter(
+      (region) =>
+        region.sourceSegment.visual_group_id === groupId &&
+        region.sourceSegment.block_role !== "caption" &&
+        region.sourceSegment.block_role !== "footnote",
+    )
+    .map((region) => region.bbox);
+  if (anchorBboxes.length === 0) {
+    return null;
+  }
+
+  const x0 = Math.min(...anchorBboxes.map((bbox) => bbox[0]));
+  const x1 = Math.max(...anchorBboxes.map((bbox) => bbox[2]));
+  const anchorTop = Math.min(...anchorBboxes.map((bbox) => bbox[1]));
+  const anchorBottom = Math.max(...anchorBboxes.map((bbox) => bbox[3]));
+  // Only regions that horizontally overlap the anchor can bound the strip;
+  // columns beside the anchor must not shrink it.
+  const blockers = regions.filter(
+    (region) =>
+      region.sourceSegment.visual_group_id !== groupId &&
+      Math.min(region.bbox[2], x1) - Math.max(region.bbox[0], x0) > 10,
+  );
+
+  if (caption.raw_type === "table") {
+    // Table captions conventionally sit above the table body.
+    const limit = blockers
+      .filter((region) => region.bbox[3] <= anchorTop + 1)
+      .reduce((max, region) => Math.max(max, region.bbox[3]), 0);
+    if (limit >= anchorTop - 2) {
+      return null;
+    }
+    return [x0, limit, x1, anchorTop];
+  }
+
+  const limit = blockers
+    .filter((region) => region.bbox[1] >= anchorBottom - 1)
+    .reduce((min, region) => Math.min(min, region.bbox[1]), 1000);
+  if (limit <= anchorBottom + 2) {
+    return null;
+  }
+  return [x0, anchorBottom, x1, limit];
 }
 
 function segmentRelationGroupUid(segment: SourceSegment) {

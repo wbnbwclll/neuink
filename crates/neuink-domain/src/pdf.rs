@@ -50,6 +50,8 @@ impl PdfParseState {
                 | (Parsing, Failed)
                 | (Parsing, Canceled)
                 | (Failed, Queued)
+                // A successfully parsed entry can be re-submitted for parsing.
+                | (Succeeded, Queued)
         )
     }
 }
@@ -90,6 +92,14 @@ mod tests {
         assert!(PdfParseState::can_transition(
             PdfParseStatus::Parsing,
             PdfParseStatus::Succeeded
+        ));
+    }
+
+    #[test]
+    fn succeeded_can_queue_reparse() {
+        assert!(PdfParseState::can_transition(
+            PdfParseStatus::Succeeded,
+            PdfParseStatus::Queued
         ));
     }
 }

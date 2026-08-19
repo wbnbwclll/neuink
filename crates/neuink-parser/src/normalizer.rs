@@ -166,7 +166,15 @@ fn append_v2_segments_with_continuations(
     state: &mut V2ContinuationState,
 ) {
     for mut segment in block_segments {
-        if segment.segment_type != SegmentType::Paragraph {
+        // Captions/footnotes render as paragraphs but belong to their visual
+        // group; they must never become the continuation source, otherwise a
+        // page-break continuation fragment would inherit the caption text.
+        if segment.segment_type != SegmentType::Paragraph
+            || matches!(
+                segment.block_role.as_deref(),
+                Some("caption") | Some("footnote")
+            )
+        {
             segments.push(segment);
             continue;
         }
@@ -1126,6 +1134,110 @@ mod tests {
         assert!(document.segments[0].continuation_group_id.is_some());
         assert_eq!(document.segments[2].text, "next paragraph");
         assert!(document.segments[2].continuation_group_id.is_none());
+    }
+
+    #[test]
+    fn continuation_after_page_end_figure_keeps_paragraph_source() {
+        let value = json!({
+            "content_list_v2": [
+                [
+                    {
+                        "type": "paragraph",
+                        "content": {"paragraph_content": [{"type": "text", "content": "split paragraph head"}]},
+                        "bbox": [90, 100, 450, 180]
+                    },
+                    {
+                        "type": "image",
+                        "bbox": [90, 200, 450, 500],
+                        "content": {
+                            "image_caption": [{"type": "text", "content": "Figure 1 demo"}]
+                        }
+                    }
+                ],
+                [
+                    {
+                        "type": "paragraph",
+                        "content": {"paragraph_content": []},
+                        "bbox": [90, 80, 450, 160]
+                    }
+                ]
+            ]
+        });
+
+        let document = normalize_parser_response(&value).unwrap();
+
+        let paragraph = document
+            .segments
+            .iter()
+            .find(|segment| segment.text == "split paragraph head")
+            .expect("paragraph head");
+        let caption = document
+            .segments
+            .iter()
+            .find(|segment| segment.block_role.as_deref() == Some("caption"))
+            .expect("figure caption");
+        let continuation = document
+            .segments
+            .iter()
+            .find(|segment| segment.page_idx == 1)
+            .expect("page-2 continuation");
+
+        assert_eq!(continuation.text, "split paragraph head");
+        assert_eq!(
+            paragraph.continuation_group_id,
+            continuation.continuation_group_id
+        );
+        assert!(continuation.continuation_group_id.is_some());
+        assert!(caption.continuation_group_id.is_none());
+    }
+
+    #[test]
+    fn continuation_after_page_start_figure_keeps_previous_page_source() {
+        let value = json!({
+            "content_list_v2": [
+                [{
+                    "type": "paragraph",
+                    "content": {"paragraph_content": [{"type": "text", "content": "cross page body"}]},
+                    "bbox": [90, 700, 450, 820]
+                }],
+                [
+                    {
+                        "type": "image",
+                        "bbox": [90, 60, 450, 300],
+                        "content": {
+                            "image_caption": [{"type": "text", "content": "Figure 2 demo"}]
+                        }
+                    },
+                    {
+                        "type": "paragraph",
+                        "content": {"paragraph_content": []},
+                        "bbox": [90, 320, 450, 400]
+                    }
+                ]
+            ]
+        });
+
+        let document = normalize_parser_response(&value).unwrap();
+
+        let caption = document
+            .segments
+            .iter()
+            .find(|segment| segment.block_role.as_deref() == Some("caption"))
+            .expect("figure caption");
+        let continuation = document
+            .segments
+            .iter()
+            .find(|segment| {
+                segment.page_idx == 1
+                    && segment.segment_type == SegmentType::Paragraph
+                    && segment.block_role.is_none()
+            })
+            .expect("page-2 continuation");
+
+        assert_eq!(caption.text, "Figure 2 demo");
+        assert_eq!(continuation.text, "cross page body");
+        assert!(continuation.continuation_group_id.is_some());
+        assert!(caption.continuation_group_id.is_none());
     }
 
     #[test]

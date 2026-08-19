@@ -47,6 +47,8 @@ export function ReaderToolbar({
   onRetryFailedTranslation,
   onOpenTranslationTask,
   onReaderPreferencesChange,
+  onReparsePdf,
+  reparseBusy = false,
   onZoomIn,
   onZoomOut
 }: {
@@ -72,6 +74,8 @@ export function ReaderToolbar({
   onRetryFailedTranslation: () => void;
   onOpenTranslationTask: () => void;
   onReaderPreferencesChange: (preferences: ReaderPreferences) => void;
+  onReparsePdf?: () => void;
+  reparseBusy?: boolean;
   onZoomIn: () => void;
   onZoomOut: () => void;
 }) {
@@ -126,6 +130,25 @@ export function ReaderToolbar({
           >
             <ListChecks size={14} aria-hidden="true" />
             {translationBusy ? '翻译任务进行中' : '翻译任务'}
+          </Button>
+        ) : null}
+
+        {entry.status === 'Parsed' && onReparsePdf ? (
+          <Button
+            className="shrink-0"
+            disabled={reparseBusy}
+            size="sm"
+            title="重新调用解析服务解析当前 PDF，会覆盖现有解析结果（用当前应用的解析逻辑重新生成）"
+            type="button"
+            variant="outline"
+            onClick={onReparsePdf}
+          >
+            {reparseBusy ? (
+              <Loader2 className="animate-spin" size={14} aria-hidden="true" />
+            ) : (
+              <RotateCcw size={14} aria-hidden="true" />
+            )}
+            重新解析
           </Button>
         ) : null}
 

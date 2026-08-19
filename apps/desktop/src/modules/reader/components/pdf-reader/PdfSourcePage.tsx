@@ -787,12 +787,18 @@ function PdfSourcePageImpl({
                   previewShowAnnotation={hoverPreviewShowAnnotation}
                   previewShowTranslation={hoverPreviewShowTranslation}
                   relatedImagePath={
-                    region.sourceSegment.asset_path ??
-                    relatedImagePathForSegment(
-                      region.sourceSegment,
-                      page.segments,
-                    )
+                    isCaptionRole(region.sourceSegment)
+                      ? null
+                      : region.sourceSegment.asset_path ??
+                        relatedImagePathForSegment(
+                          region.sourceSegment,
+                          page.segments,
+                        )
                   }
+                  relatedCaptionText={relatedCaptionTextForSegment(
+                    region.sourceSegment,
+                    page.segments,
+                  )}
                   regionBbox={region.bbox}
                   regionId={region.id}
                   segment={region.segment}
@@ -981,6 +987,37 @@ function relatedImagePathForSegment(
     candidates[0]?.item.text ??
     null
   );
+}
+
+// MinerU v2 keeps captions as separate segments sharing the visual group of
+// their figure/table; surface their text when hovering the visual itself.
+function relatedCaptionTextForSegment(
+  segment: SourceSegment,
+  segments: SourceSegment[],
+) {
+  const groupId = segment.visual_group_id;
+  if (!groupId) {
+    return null;
+  }
+
+  return (
+    segments
+      .filter(
+        (item) =>
+          item.uid !== segment.uid &&
+          item.visual_group_id === groupId &&
+          (item.block_role === "caption" || item.block_role === "footnote"),
+      )
+      .map((item) => item.text)
+      .filter(Boolean)
+      .join("\n\n") || null
+  );
+}
+
+// Hovering a caption shows its text only; the image belongs to the visual
+// region, not the caption strip.
+function isCaptionRole(segment: SourceSegment) {
+  return segment.block_role === "caption" || segment.block_role === "footnote";
 }
 
 function sourceBacklinksForSegment(

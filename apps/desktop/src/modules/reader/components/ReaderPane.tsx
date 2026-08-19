@@ -571,6 +571,7 @@ export function ReaderPane({
         onPurgeEntry={onPurgeEntry}
         onPurgeTrashItem={onPurgeTrashItem}
         onRefreshParseStatus={onRefreshParseStatus}
+        onReparseEntry={onRetryPdfParse}
         onRestoreEntry={onRestoreEntry}
         onRestoreTrashItem={onRestoreTrashItem}
         onSelectEntry={onSelectEntry}
