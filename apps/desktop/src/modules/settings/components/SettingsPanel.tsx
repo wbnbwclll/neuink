@@ -63,7 +63,7 @@ import {
   listOpenAiCompatibleModels,
   testOpenAiCompatibleConnection,
   type ProviderModelInfo
-} from '../../assistant/sdk/provider';
+} from '../../assistant/shared/sdk/provider';
 import { SettingsPanelLayout } from './SettingsPanelLayout';
 import {
   resolveWorkspaceSelection,

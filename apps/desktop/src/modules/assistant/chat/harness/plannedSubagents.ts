@@ -19,13 +19,13 @@ import {
   resolveAllowedSubagents
 } from '@/shared/lib/agentRuntimeSettings';
 
-import { runSubagentTask } from '../runtime/subagent';
+import { runSubagentTask } from '../../shared/runtime/subagent';
 import {
   emitHarnessEvent,
   errorMessage,
   throwIfAborted,
   upsertRunNode
-} from './runState';
+} from '../../shared/harness/runState';
 import { compactVerifierText } from './verification';
 
 type PlannedSubagentResult = {

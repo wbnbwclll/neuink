@@ -37,8 +37,8 @@ import {
   WORKSPACE_SPLIT_MIN_LEFT_WIDTH,
   WORKSPACE_SPLIT_MIN_RIGHT_WIDTH
 } from './workspaceSplit';
-import { AssistantPanel } from '../modules/assistant/components/AssistantPanel';
-import type { AssistantComposerDraft } from '../modules/assistant/components/AssistantComposerEditor';
+import { AssistantPanel } from '../modules/assistant/chat/components/AssistantPanel';
+import type { AssistantComposerDraft } from '../modules/assistant/chat/components/AssistantComposerEditor';
 import type { SourceLinkOpenTarget } from '../modules/notes/editor/SourceLinkNode';
 import { LibrarySidebar, type LibraryEntry, type LibraryView } from '../modules/library/components/LibrarySidebar';
 import { buildTagPathById } from '../modules/library/utils/tagTree';

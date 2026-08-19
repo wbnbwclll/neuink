@@ -30,10 +30,10 @@ import {
   selectAgentExecution
 } from '@/shared/lib/agentRuntimeSettings';
 
-import { assistantContextCharBudget, assistantNoteCharBudget } from '../sdk/contextBudget';
+import { assistantContextCharBudget, assistantNoteCharBudget } from '../../shared/sdk/contextBudget';
 import { answerWithKeywordGrounding, type GroundedAnswer } from '../sdk/qna';
-import { registerEvidence } from '../runtime/evidenceLedger';
-import { createCompiledTaskState, transitionTaskState } from '../runtime/taskState';
+import { registerEvidence } from '../../shared/runtime/evidenceLedger';
+import { createCompiledTaskState, transitionTaskState } from '../../shared/runtime/taskState';
 import { finalizeVerifiedProposals } from '../runtime/verifiedProposal';
 import { AssistantVerificationError } from './verification';
 import { verifyHarnessResult } from './verification';
@@ -55,9 +55,9 @@ import {
   markRunningNodesFailed,
   throwIfAborted,
   upsertRunNode
-} from './runState';
+} from '../../shared/harness/runState';
 
-export { AssistantHarnessError } from './runState';
+export { AssistantHarnessError } from '../../shared/harness/runState';
 
 type RunAssistantHarnessOptions = {
   abortSignal?: AbortSignal;

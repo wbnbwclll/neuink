@@ -30,10 +30,15 @@
 
 ## 模块边界
 
-- `agent-core/`：Markov/POMDP 充分状态、turn/tool 预算、循环与无进展保护；
-- `harness/`：主循环装配、显式上下文 hydration、Verifier 与 AgentRun；
-- `runtime/`：TaskState、Evidence Ledger 和 Verified Proposal；
-- `sdk/`：Provider、原子读取/副作用工具、结构化 Proposal Tools 和模型调用；
-- `components/`：对话、上下文、Proposal Diff 与 Apply/Reject UI。
+两个并列 agent（chat / research）共享同一套平台层，只有 pipeline 不同（对齐 DeepTutor `agents/chat` + `agents/research` + `core/agentic`）。
+
+- `shared/`（平台，两个 agent 复用，零 agent 依赖）：
+  - `agent-core/`：turn/tool 预算、循环与无进展保护（`AgentLoopGuard`）；
+  - `sdk/`：Provider、`createAssistantTools` 工具注册表（含 `summarizeToolResult` 侧车）、MCP 工具描述、上下文预算、Entry Meta 工具实现；
+  - `harness/runState.ts`：AgentRun 节点、`errorMessage`/`isAbortError` 等运行状态；
+  - `runtime/`：TaskState 状态机、Evidence Ledger、Subagent 任务执行；
+  - `scope.ts`：`buildScopeContext`（ScopeSnapshot → 模型只读上下文文本）。
+- `chat/`（主助手）：面板与对话 UI（`components/`）、主助手 pipeline（`sdk/qna.ts` 模型循环、`harness/` 上下文 hydration/执行合同/Verifier/澄清、`runtime/` 澄清与 Verified Proposal）以及 Note/Tag/Entry Meta 的 Proposal/Draft capability。
+- `research/`（研究助手）：深度研究 pipeline（改写→分解→队列研究→引文报告）与大纲 UI，后续阶段落地。
 
 `create_entry` 是明确授权的原子副作用，并在单次 Agent run 内按参数幂等。`read_note(entry_id, note_id)` 允许 Agent 读取任意明确引用的 Note，不依赖 UI 正则预选 current note。Note、Entry Meta 和 Tag 修改仍只生成可审核 Proposal；真实 Note 写盘只允许 UI 调用 `apply_note_proposal`。后端按 `taskId + proposalId` 读取持久化 Verified Proposal，执行 digest、基础内容 Hash、幂等和 journal recovery 校验。

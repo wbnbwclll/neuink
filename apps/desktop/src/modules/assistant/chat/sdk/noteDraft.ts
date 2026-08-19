@@ -16,13 +16,13 @@ import type {
   AssistantTaskPlan
 } from '@/shared/types/assistant';
 
-import { assistantContextCharBudget } from './contextBudget';
+import { assistantContextCharBudget } from '../../shared/sdk/contextBudget';
 import {
   buildDraftProposal,
   citedEvidenceSources,
   resolveTargetNote
 } from './noteProposal';
-import { createNeuinkModel, generationSettings } from './provider';
+import { createNeuinkModel, generationSettings } from '../../shared/sdk/provider';
 
 export { citedEvidenceSources } from './noteProposal';
 

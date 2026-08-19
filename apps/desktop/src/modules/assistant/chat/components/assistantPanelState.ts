@@ -150,7 +150,7 @@ import {
 } from './assistantContextTargets';
 import { AssistantHarnessError, runAssistantHarness } from '../harness/engine';
 import { planAssistantContext } from '../harness/contextPlanner';
-import { estimateTokensFromChars, modelContextTokens } from '../sdk/contextBudget';
+import { estimateTokensFromChars, modelContextTokens } from '../../shared/sdk/contextBudget';
 
 type AssistantPanelProps = {
   activeEntry: LibraryEntry | null;

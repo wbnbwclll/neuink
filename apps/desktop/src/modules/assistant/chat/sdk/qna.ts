@@ -32,10 +32,11 @@ import type {
 import type { AgentExecutionSelection, AgentRuntimeSettings } from '@/shared/types/agentRuntime';
 import { buildAgentSystemPrompt } from '@/shared/lib/agentRuntimeSettings';
 
-import { createNeuinkModel, generationSettings } from './provider';
-import { assistantContextCharBudget } from './contextBudget';
-import { createAssistantTools, modelToolName } from './tools';
-import { AgentLoopGuard, createAgentLoopState } from '../agent-core';
+import { createNeuinkModel, generationSettings } from '../../shared/sdk/provider';
+import { assistantContextCharBudget } from '../../shared/sdk/contextBudget';
+import { createAssistantTools, modelToolName } from '../../shared/sdk/tools';
+import { buildScopeContext } from '../../shared/scope';
+import { AgentLoopGuard, createAgentLoopState } from '../../shared/agent-core';
 
 export type GroundedAnswer = {
   agentLoopState?: import('@/shared/types/agentRuntime').AgentLoopState;
@@ -994,22 +995,6 @@ function renderQnaUserPrompt(
     (prompt, [key, value]) => prompt.split(`{{${key}}}`).join(value),
     template
   );
-}
-
-function buildScopeContext(scope: ScopeSnapshot) {
-  const entries = scope.entry_ids
-    .map((entryId, index) => {
-      const title = scope.entry_titles[index] ?? entryId;
-      return `- ${title} (${entryId})`;
-    })
-    .slice(0, 30);
-
-  return [
-    scope.tag_names.length > 0 ? `Tags: ${scope.tag_names.join(' / ')}` : '',
-    entries.length > 0 ? `Entries:\n${entries.join('\n')}` : 'Entries: all parsed entries'
-  ]
-    .filter(Boolean)
-    .join('\n');
 }
 
 function buildCurrentNoteContext(contextSnapshot?: AssistantContextSnapshot | null) {

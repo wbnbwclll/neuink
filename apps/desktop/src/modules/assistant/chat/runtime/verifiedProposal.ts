@@ -1,6 +1,6 @@
 import type { AssistantNoteProposal } from '@/shared/types/assistant';
 
-import { stableHash } from './evidenceLedger';
+import { stableHash } from '../../shared/runtime/evidenceLedger';
 
 export function finalizeVerifiedProposals(
   proposals: AssistantNoteProposal[],

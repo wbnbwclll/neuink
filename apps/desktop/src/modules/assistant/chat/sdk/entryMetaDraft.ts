@@ -7,9 +7,9 @@ import type {
   AssistantTaskPlan
 } from '@/shared/types/assistant';
 
-import { assistantContextCharBudget } from './contextBudget';
-import { buildEntryMetaProposal } from './entryMetaProposal';
-import { createNeuinkModel, generationSettings } from './provider';
+import { assistantContextCharBudget } from '../../shared/sdk/contextBudget';
+import { buildEntryMetaProposal } from '../../shared/sdk/entryMetaProposal';
+import { createNeuinkModel, generationSettings } from '../../shared/sdk/provider';
 import { requestAssistantClarification } from '../runtime/clarification';
 
 type GenerateEntryMetaDraftOptions = {

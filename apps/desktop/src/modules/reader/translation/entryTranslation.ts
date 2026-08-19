@@ -13,7 +13,7 @@ import {
 } from '@/shared/ipc/workspaceApi';
 import type { SourceSegment } from '@/shared/types/domain';
 
-import { createNeuinkModel, generationSettings } from '../../assistant/sdk/provider';
+import { createNeuinkModel, generationSettings } from '../../assistant/shared/sdk/provider';
 
 const MAX_PAPER_CONTEXT_BUDGET = 28_000;
 const MAX_BATCH_CHAR_BUDGET = 7_500;
