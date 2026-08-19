@@ -87,6 +87,15 @@
   width: 100%;
 }
 
+/* 徽章宽度跟随内容；Badge 基类的 shrink-0 + 原 max-w-28 会让两个长标签
+   同时截断到同一上限，看起来像等宽胶囊。这里允许按比例收缩并出省略号。 */
+.entry-tag-primary,
+.entry-tag-secondary {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
 @container entry-tag-badges (max-width: 240px) {
   .entry-tag-secondary,
   .entry-tag-default-count {

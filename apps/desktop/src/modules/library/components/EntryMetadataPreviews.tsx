@@ -37,7 +37,7 @@ export function CompactEntryTags({ tags }: { tags: string[] }) {
     <div className="grid h-12 min-w-0 grid-rows-[minmax(0,1fr)_auto]">
       <div className="flex min-w-0 items-center gap-1 overflow-hidden">
         {visible.map((tag) => (
-          <Badge className="min-w-0 flex-1 truncate" key={tag} title={tag} variant="secondary">
+          <Badge className="min-w-0 max-w-full shrink truncate" key={tag} title={tag} variant="secondary">
             {tagLeaf(tag)}
           </Badge>
         ))}
