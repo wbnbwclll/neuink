@@ -20,11 +20,13 @@ import type {
   AgentProfile,
   AgentMcpServer,
   AgentRuntimeSettings,
+  ResearchAssistantProfile,
+  ResearchDepth,
   SkillPackage,
   SubagentProfile
 } from '@/shared/types/agentRuntime';
 
-export type AgentSettingsView = 'main-agent' | 'subagents' | 'skills';
+export type AgentSettingsView = 'main-agent' | 'subagents' | 'research' | 'skills';
 
 type AgentSettingsSectionProps = {
   llmProfiles: { id: string; model: string; name: string }[];
@@ -142,6 +144,73 @@ export function AgentSettingsSection({
             runtimeSettings={runtimeSettings}
             onUpdateRuntimeSettings={onUpdateRuntimeSettings}
           />
+        </EditorPanel>
+      </div>
+    );
+  }
+
+  if (view === 'research') {
+    const agent = runtimeSettings.researchAssistant;
+    return (
+      <div className="grid gap-6">
+        <div>
+          <h2 className="text-base font-semibold">研究助手</h2>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            与主助手并列的独立聊天角色，执行多阶段深度调研：先澄清主题并拆分为可确认大纲，再逐块研究、产出带引用标注的报告。当前为只读沙箱，不写笔记。
+          </p>
+        </div>
+
+        <EditorPanel description="配置研究助手的模型、提示词、研究深度与可用 Skills。" title="研究助手">
+          <AgentCommonFields
+            agent={agent}
+            llmProfiles={llmProfiles}
+            roleLabel="研究助手"
+            onUpdate={onUpdateAgent}
+          />
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label="研究深度">
+              <Select
+                value={agent.research.depth}
+                onValueChange={(value) =>
+                  onUpdateAgent({
+                    ...agent,
+                    research: {
+                      ...agent.research,
+                      depth: value as ResearchAssistantProfile['research']['depth']
+                    }
+                  })
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(['quick', 'standard', 'deep', 'manual'] as const).map((depth) => (
+                    <SelectItem key={depth} value={depth}>
+                      {depthLabel(depth)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <ReadOnlyValue label="沙箱" value={agent.sandbox ?? 'read-only'} />
+          </div>
+          <ReadOnlyValue label="可用工具" value={agent.enabledToolIds.join(', ') || 'none'} />
+          <TagSelector
+            label="允许加载的 Skills"
+            options={runtimeSettings.skillPackages.map((skillPackage) => ({
+              id: skillPackage.id,
+              label: skillPackage.name
+            }))}
+            selectedIds={agent.allowedSkillPackageIds}
+            onToggle={(skillPackageId) =>
+              onUpdateAgent({
+                ...agent,
+                allowedSkillPackageIds: toggleId(agent.allowedSkillPackageIds, skillPackageId)
+              })
+            }
+          />
+          <McpServerSelector agent={agent} runtimeSettings={runtimeSettings} onUpdate={onUpdateAgent} />
         </EditorPanel>
       </div>
     );
@@ -869,4 +938,14 @@ function ResourceList({ paths, title }: { paths: string[]; title: string }) {
 
 function toggleId(ids: string[], id: string) {
   return ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id];
+}
+
+function depthLabel(depth: ResearchDepth) {
+  const labels: Record<ResearchDepth, string> = {
+    quick: '快查（1 轮）',
+    standard: '常规（3 轮）',
+    deep: '深入（5 轮，并行）',
+    manual: '手动'
+  };
+  return labels[depth];
 }

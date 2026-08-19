@@ -6,6 +6,7 @@ import type {
   AgentToolId,
   AgentToolPackage,
   MainAssistantProfile,
+  ResearchAssistantProfile,
   SkillPackage,
   SkillPackageCategory,
   SubagentOutputKind,
@@ -53,6 +54,16 @@ const PATCH_TOOL_IDS: AgentToolId[] = [
   'skill.load'
 ];
 
+const RESEARCH_TOOL_IDS: AgentToolId[] = [
+  'search_segments',
+  'read_segment_content',
+  'read_entry_assistant_context',
+  'search_sciverse_evidence',
+  'read_sciverse_content',
+  'skill.search',
+  'skill.load'
+];
+
 function createMainAssistant(partial: Partial<MainAssistantProfile>): MainAssistantProfile {
   return {
     allowedSkillPackageIds: partial.allowedSkillPackageIds ?? [...DEFAULT_FEATURE_SKILL_IDS],
@@ -79,6 +90,44 @@ function createMainAssistant(partial: Partial<MainAssistantProfile>): MainAssist
       partial.systemPrompt ??
       'You are Neuink Main Assistant. Stay grounded in workspace evidence, use skills only after loading them, and create user-confirmable proposals for note or Entry metadata writes.',
     visibleInUi: false
+  };
+}
+
+function createResearchAssistant(
+  partial: Partial<ResearchAssistantProfile>
+): ResearchAssistantProfile {
+  return {
+    allowedSkillPackageIds: partial.allowedSkillPackageIds ?? [...DEFAULT_FEATURE_SKILL_IDS],
+    allowedSubagentIds: partial.allowedSubagentIds ?? [],
+    allowedMcpServerIds: partial.allowedMcpServerIds ?? [],
+    description:
+      partial.description ??
+      'Neuink 研究助手，执行多阶段深度调研：先澄清主题并拆分为可确认大纲，再逐块研究、产出带引用标注的报告。',
+    enabledToolIds: partial.enabledToolIds ?? RESEARCH_TOOL_IDS,
+    id: 'research-assistant',
+    kind: 'research_assistant',
+    llmProfileId: partial.llmProfileId ?? null,
+    name: partial.name ?? 'Neuink 研究助手',
+    permissions: partial.permissions ?? {
+      canInvokeSubagents: false,
+      canInvokeTools: true,
+      canReadWorkspaceWide: true,
+      canUseSkills: true,
+      canWriteProposals: false
+    },
+    research: {
+      depth: partial.research?.depth ?? 'standard',
+      manualSubtopics: partial.research?.manualSubtopics ?? null,
+      manualMaxIterations: partial.research?.manualMaxIterations ?? null,
+      rephraseMaxRounds: partial.research?.rephraseMaxRounds ?? 3,
+      blockMaxIterations: partial.research?.blockMaxIterations ?? 3,
+      noteMaxTokens: partial.research?.noteMaxTokens ?? 1500
+    },
+    sandbox: partial.sandbox ?? 'read-only',
+    systemPrompt:
+      partial.systemPrompt ??
+      'You are Neuink Research Assistant. Run a multi-phase deep research pipeline: clarify the topic, decompose it into a user-confirmable outline, research each subtopic with citable evidence, and produce a citation-annotated report. Chat-only output; never write notes or entries.',
+    visibleInUi: true
   };
 }
 
@@ -148,6 +197,7 @@ function createSkillPackage(
 
 export const DEFAULT_AGENT_RUNTIME_SETTINGS: AgentRuntimeSettings = {
   mainAssistant: createMainAssistant({}),
+  researchAssistant: createResearchAssistant({}),
   mcpServers: [],
   subagents: [
     createSubagent({
@@ -226,6 +276,7 @@ export function normalizeAgentRuntimeSettings(
   }
   return {
     mainAssistant: normalizeMainAssistant(settings.mainAssistant),
+    researchAssistant: normalizeResearchAssistant(settings.researchAssistant),
     mcpServers: normalizeMcpServers(settings.mcpServers),
     subagents: normalizeSubagents(settings.subagents),
     skillPackages: Array.isArray(settings.skillPackages)
@@ -234,6 +285,13 @@ export function normalizeAgentRuntimeSettings(
     toolPackages: normalizeToolPackages(settings.toolPackages),
     version: 3
   };
+}
+
+function normalizeResearchAssistant(value: unknown) {
+  if (!value || typeof value !== 'object') {
+    return DEFAULT_AGENT_RUNTIME_SETTINGS.researchAssistant;
+  }
+  return createResearchAssistant(value as Partial<ResearchAssistantProfile>);
 }
 
 export function mergeRegistrySkillPackages(
@@ -409,6 +467,9 @@ export function resolveAgentProfile(settings: AgentRuntimeSettings, agentId?: st
   if (!agentId || agentId === settings.mainAssistant.id) {
     return settings.mainAssistant;
   }
+  if (agentId === settings.researchAssistant.id) {
+    return settings.researchAssistant;
+  }
   return settings.subagents.find((agent) => agent.id === agentId) ?? settings.mainAssistant;
 }
 
@@ -508,9 +569,12 @@ export function selectAgentExecution(
   preferredAgentId?: string | null,
   invocationPlan?: AgentInvocationPlan | null
 ): AgentExecutionSelection {
-  void preferredAgentId;
   void plan;
-  const agent = settings.mainAssistant;
+  const agent =
+    preferredAgentId === settings.researchAssistant.id
+      ? settings.researchAssistant
+      : settings.subagents.find((candidate) => candidate.id === preferredAgentId) ??
+        settings.mainAssistant;
   const packageIds = new Set([
     ...agent.allowedSkillPackageIds,
     ...(invocationPlan?.skillIdsToLoad ?? []),
@@ -551,7 +615,9 @@ export function buildAgentSystemPrompt(
     `Agent Sandbox: ${agent.sandbox ?? 'read-only'}`,
     agent.kind === 'subagent'
       ? 'Subagent contract: execute the delegated task only, return structured findings, and do not behave like a reusable Skill.'
-      : 'Main assistant contract: answer the user directly, use skills/tools deliberately, and delegate narrow work to subagents when useful.',
+      : agent.kind === 'research_assistant'
+        ? 'Research assistant contract: first clarify the topic and decompose it into a user-confirmable outline, then research each subtopic with citable evidence, and produce a citation-annotated report. Chat-only output; never write notes or entries.'
+        : 'Main assistant contract: answer the user directly, use skills/tools deliberately, and delegate narrow work to subagents when useful.',
     skillPackages.length > 0
       ? `Available Skill Metadata:\n${skillPackages.map(skillPackageMetadataLine).join('\n')}`
       : 'Available Skill Metadata: none',

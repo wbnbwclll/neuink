@@ -134,6 +134,24 @@ export type MainAssistantProfile = AgentBaseProfile & {
   kind: 'main_assistant';
 };
 
+export type ResearchMode = 'notes' | 'report' | 'comparison' | 'learning_path';
+
+export type ResearchDepth = 'quick' | 'standard' | 'deep' | 'manual';
+
+export type ResearchAssistantResearchConfig = {
+  depth: ResearchDepth;
+  manualSubtopics?: number | null;
+  manualMaxIterations?: number | null;
+  rephraseMaxRounds: number;
+  blockMaxIterations: number;
+  noteMaxTokens: number;
+};
+
+export type ResearchAssistantProfile = AgentBaseProfile & {
+  kind: 'research_assistant';
+  research: ResearchAssistantResearchConfig;
+};
+
 export type SubagentOutputKind = 'evidence' | 'patch_plan' | 'skill_selection';
 
 export type SubagentProfile = AgentBaseProfile & {
@@ -143,10 +161,14 @@ export type SubagentProfile = AgentBaseProfile & {
   subagentManifestPath?: string | null;
 };
 
-export type AgentProfile = MainAssistantProfile | SubagentProfile;
+export type AgentProfile =
+  | MainAssistantProfile
+  | SubagentProfile
+  | ResearchAssistantProfile;
 
 export type AgentRuntimeSettings = {
   mainAssistant: MainAssistantProfile;
+  researchAssistant: ResearchAssistantProfile;
   mcpServers: AgentMcpServer[];
   subagents: SubagentProfile[];
   skillPackages: SkillPackage[];

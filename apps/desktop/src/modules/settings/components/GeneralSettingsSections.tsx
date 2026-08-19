@@ -444,6 +444,29 @@ export function GeneralSettingsSections({ props }: { props: SettingsPanelLayoutP
                 </div>
               </TabsContent>
       
+              <TabsContent forceMount value="research" className={settingsContentClassName}>
+                <div className={settingsContentInnerClassName('grid gap-4')}>
+                  <AgentSettingsSection
+                    llmProfiles={settings.profiles}
+                    onAddAgent={onAddAgent}
+                    onAddSkillPackage={onAddSkillPackage}
+                    onImportSkillPackage={onImportSkillPackage}
+                    onRemoveAgent={onRemoveAgent}
+                    onRemoveSkillPackage={onRemoveSkillPackage}
+                    onOpenSkillPackageFolder={onOpenSkillPackageFolder}
+                    onSelectAgent={onSelectAgent}
+                    onSelectSkillPackage={onSelectSkillPackage}
+                    onUpdateAgent={onUpdateAgent}
+                    onUpdateRuntimeSettings={onUpdateRuntimeSettings}
+                    onUpdateSkillPackage={onUpdateSkillPackage}
+                    runtimeSettings={runtimeSettings}
+                    selectedAgentId={selectedAgentId}
+                    selectedSkillPackageId={selectedSkillPackageId}
+                    view="research"
+                  />
+                </div>
+              </TabsContent>
+
               <TabsContent forceMount value="subagents" className={settingsContentClassName}>
                 <div className={settingsContentInnerClassName('grid gap-4')}>
                   <AgentSettingsSection
