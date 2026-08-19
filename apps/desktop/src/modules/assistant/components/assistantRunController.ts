@@ -150,6 +150,7 @@ type AssistantRunControllerOptions = {
   noteProposalsByMessageId: Record<string, AssistantNoteProposal[]>;
   onAddAssistantContext: (context: AssistantContextInput) => void;
   onCreateAssistantEntry: (title: string) => Promise<LibraryEntry>;
+  preferredAgentId?: string | null;
   profiles: LlmProfile[];
   resetComposer: boolean;
   root: string;
@@ -189,6 +190,7 @@ export async function runAssistantPanelTask({
   noteProposalsByMessageId,
   onAddAssistantContext,
   onCreateAssistantEntry,
+  preferredAgentId,
   profiles,
   resetComposer,
   root,
@@ -522,6 +524,7 @@ export async function runAssistantPanelTask({
         persistAssistantDraft();
       },
       question: trimmedQuestion,
+      preferredAgentId,
       profiles,
       root,
       scope: runScope,

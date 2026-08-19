@@ -62,6 +62,8 @@ pub struct AgentScopeSnapshot {
 pub struct AgentRuntimeSettings {
     pub main_assistant: AgentProfile,
     #[serde(default)]
+    pub research_assistant: Option<AgentProfile>,
+    #[serde(default)]
     pub mcp_servers: Vec<AgentMcpServer>,
     #[serde(default)]
     pub subagents: Vec<AgentProfile>,

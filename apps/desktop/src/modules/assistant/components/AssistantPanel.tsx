@@ -32,6 +32,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select';
+import { cn } from '@/lib/utils';
 import type { LibraryEntry } from '@/modules/library/components/LibrarySidebar';
 import {
   deleteAgentRun,
@@ -40,6 +41,7 @@ import {
   getLlmSettings,
   listAgentRuns,
   listConversations,
+  loadAgentRuntimeSettings,
   loadConversation,
   renameConversation,
   setTaskLlmProfile,
@@ -65,6 +67,11 @@ import type {
   AssistantNoteProposal,
   AssistantTagProposal
 } from '@/shared/types/assistant';
+import {
+  normalizeAgentRuntimeSettings,
+  readAgentRuntimeSettings
+} from '@/shared/lib/agentRuntimeSettings';
+import type { ResearchAssistantProfile } from '@/shared/types/agentRuntime';
 import type { TagMeta } from '@/shared/types/domain';
 import { useToast } from '@/shared/hooks/useToast';
 
@@ -179,6 +186,8 @@ export function AssistantPanel({
   const { notify } = useToast();
   const [profiles, setProfiles] = useState<LlmProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const [preferredAgentId, setPreferredAgentId] = useState<string | null>(null);
+  const [researchAssistant, setResearchAssistant] = useState<ResearchAssistantProfile | null>(null);
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -330,6 +339,31 @@ export function AssistantPanel({
   }, []);
 
   useEffect(() => {
+    if (!root) {
+      setResearchAssistant(null);
+      return;
+    }
+    let cancelled = false;
+    const applyResearchAssistant = (settings: ResearchAssistantProfile) => {
+      if (!cancelled) {
+        setResearchAssistant(settings);
+      }
+    };
+    void loadAgentRuntimeSettings(root)
+      .then((settings) => {
+        applyResearchAssistant(
+          normalizeAgentRuntimeSettings(settings ?? readAgentRuntimeSettings()).researchAssistant
+        );
+      })
+      .catch(() => {
+        applyResearchAssistant(readAgentRuntimeSettings().researchAssistant);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [root]);
+
+  useEffect(() => {
     const syncBackgroundRun = () => {
       const run = getAssistantBackgroundRun();
       if (!run) {
@@ -454,6 +488,7 @@ export function AssistantPanel({
       noteProposalsByMessageId,
       onAddAssistantContext,
       onCreateAssistantEntry,
+      preferredAgentId,
       profiles,
       resetComposer: !queued,
       root,
@@ -972,6 +1007,37 @@ export function AssistantPanel({
                 <Settings />
               </Button>
             </div>
+          </div>
+
+          <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg border bg-muted/20 p-1">
+            <button
+              aria-pressed={preferredAgentId === null}
+              className={cn(
+                'min-h-7 rounded-md px-2 py-1 text-xs font-medium transition',
+                preferredAgentId === null
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+              type="button"
+              onClick={() => setPreferredAgentId(null)}
+            >
+              主助手
+            </button>
+            <button
+              aria-pressed={preferredAgentId !== null}
+              className={cn(
+                'min-h-7 rounded-md px-2 py-1 text-xs font-medium transition',
+                preferredAgentId !== null
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+              disabled={!researchAssistant}
+              title={researchAssistant ? researchAssistant.name : '研究助手不可用'}
+              type="button"
+              onClick={() => setPreferredAgentId(researchAssistant?.id ?? 'research-assistant')}
+            >
+              研究助手
+            </button>
           </div>
 
           <div className="mt-2 min-w-0">

@@ -238,6 +238,7 @@ export function SettingsPanel({
     | 'reader'
     | 'external-tools'
     | 'main-agent'
+    | 'research'
     | 'subagents'
     | 'skills'
   >(
@@ -502,6 +503,13 @@ export function SettingsPanel({
       updateAgentRuntimeSettings({
         ...draftAgentRuntimeSettings,
         mainAssistant: nextAgent
+      });
+      return;
+    }
+    if (nextAgent.kind === 'research_assistant') {
+      updateAgentRuntimeSettings({
+        ...draftAgentRuntimeSettings,
+        researchAssistant: nextAgent
       });
       return;
     }
@@ -1133,6 +1141,10 @@ export function SettingsPanel({
       onThemePresetChange={onThemePresetChange}
       onUiScaleChange={onUiScaleChange}
       onRemoveAgent={(agentId) => {
+        if (agentId === draftAgentRuntimeSettings.researchAssistant.id) {
+          notify({ title: '内置研究 Agent 不能删除', description: '可以在 Agent 设置中调整其行为。' });
+          return;
+        }
         void agentId;
         notify({ title: '内置子 Agent 不能删除', description: '可以在 Agent 设置中将其停用。' });
       }}

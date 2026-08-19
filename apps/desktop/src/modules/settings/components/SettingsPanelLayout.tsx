@@ -7,6 +7,7 @@ import {
   Palette,
   PlugZap,
   Server,
+  Sparkles,
   Workflow
 } from 'lucide-react';
 import type { ReactNode } from 'react';
@@ -72,6 +73,7 @@ type SettingsTab =
   | 'reader'
   | 'external-tools'
   | 'main-agent'
+  | 'research'
   | 'subagents'
   | 'skills';
 
@@ -176,6 +178,7 @@ const SETTINGS_SECTIONS = [
   { value: 'reader' as const, icon: BookOpen, title: '阅读' },
   { value: 'external-tools' as const, icon: PlugZap, title: '外部工具' },
   { value: 'main-agent' as const, icon: Bot, title: '主 Agent' },
+  { value: 'research' as const, icon: Sparkles, title: '研究 Agent' },
   { value: 'subagents' as const, icon: Workflow, title: '子 Agent' },
   { value: 'skills' as const, icon: Archive, title: 'Skills' }
 ];
