@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/tooltip';
 import { Tabs } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
+import type { LlmApiProtocol } from '@/shared/ipc/assistantApi';
 import type { ReaderPreferences } from '@/shared/lib/readerPreferences';
 import type { AppThemePreset, AppThemePresetId } from '@/shared/lib/themePresets';
 import type { UiScale } from '@/shared/lib/uiScale';
@@ -40,6 +41,7 @@ type LlmProfileLike = {
   model: string;
   base_url: string;
   api_key?: string | null;
+  api_protocol?: LlmApiProtocol | null;
   max_context_length?: number | null;
   max_output_tokens?: number | null;
   temperature?: number | null;
@@ -77,6 +79,7 @@ type SettingsTab =
 
 export type SettingsPanelLayoutProps = {
   activeSettingsTab: SettingsTab;
+  apiProtocol: LlmApiProtocol;
   baseUrl: string;
   busy: boolean;
   cachedModelCatalog: { models: ModelPreset[]; updatedAt: string } | null;
@@ -95,6 +98,7 @@ export type SettingsPanelLayoutProps = {
   modelRefreshBusy: boolean;
   name: string;
   onBack?: () => void;
+  onApiProtocolChange: (value: LlmApiProtocol) => void;
   onBaseUrlChange: (value: string) => void;
   onOpenWorkspace: () => void;
   onCreateWorkspace: () => void;

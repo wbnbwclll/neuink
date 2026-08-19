@@ -10,7 +10,8 @@ import { citedEvidenceSources, generateNoteDraftProposal } from './noteDraft';
 vi.mock('ai', () => ({ generateText: vi.fn() }));
 vi.mock('@/shared/ipc/assistantApi', () => ({
   isLocalConversationSource: (source: ConversationSourceLink) => source.provider !== 'sciverse',
-  readEntryAssistantContext: vi.fn()
+  readEntryAssistantContext: vi.fn(),
+  resolveLlmApiProtocol: (protocol: string | null | undefined) => protocol ?? 'openai_compatible'
 }));
 vi.mock('@/shared/ipc/workspaceApi', () => ({ readNote: vi.fn() }));
 
@@ -96,6 +97,7 @@ describe('generateNoteDraftProposal', () => {
       },
       settings: {
         api_key: 'test',
+        api_protocol: 'openai_compatible',
         base_url: 'http://localhost',
         id: 'test',
         max_context_length: 8192,
@@ -179,6 +181,7 @@ describe('generateNoteDraftProposal', () => {
       },
       settings: {
         api_key: 'test',
+        api_protocol: 'openai_compatible',
         base_url: 'http://localhost',
         id: 'test',
         max_context_length: 8192,
@@ -260,6 +263,7 @@ describe('generateNoteDraftProposal', () => {
       },
       settings: {
         api_key: 'test',
+        api_protocol: 'openai_compatible',
         base_url: 'http://localhost',
         id: 'test',
         max_context_length: 8192,
@@ -333,6 +337,7 @@ describe('generateNoteDraftProposal', () => {
       },
       settings: {
         api_key: 'test',
+        api_protocol: 'openai_compatible',
         base_url: 'http://localhost',
         id: 'test',
         max_context_length: 8192,
@@ -425,7 +430,7 @@ describe('generateNoteDraftProposal', () => {
         tag_names: []
       },
       settings: {
-        api_key: 'test', base_url: 'http://localhost', id: 'test',
+        api_key: 'test', api_protocol: 'openai_compatible', base_url: 'http://localhost', id: 'test',
         max_context_length: 8192, max_output_tokens: 1024,
         model: 'test-model', name: 'Test', temperature: 0, top_p: 1
       }

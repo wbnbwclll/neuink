@@ -115,7 +115,8 @@ function plan(needsDocumentContext: boolean): AssistantTaskPlan {
 
 function settings() {
   return {
-    api_key: 'test', base_url: 'http://localhost', id: 'test', max_context_length: 8192,
+    api_key: 'test', api_protocol: 'openai_compatible' as const, base_url: 'http://localhost',
+    id: 'test', max_context_length: 8192,
     max_output_tokens: 1024, model: 'test-model', name: 'Test', temperature: 0, top_p: 1
   };
 }

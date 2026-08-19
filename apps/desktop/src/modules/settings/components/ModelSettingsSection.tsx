@@ -42,6 +42,7 @@ export function ModelSettingsSection({ props }: { props: SettingsPanelLayoutProp
     useState<SettingsPanelLayoutProps['editingProfile']>(null);
   const {
     apiKey,
+    apiProtocol,
     baseUrl,
     busy,
     cachedModelCatalog,
@@ -57,6 +58,7 @@ export function ModelSettingsSection({ props }: { props: SettingsPanelLayoutProp
     modelRefreshBusy,
     name,
     onApiKeyChange,
+    onApiProtocolChange,
     onBaseUrlChange,
     onCreateProfile,
     onDeleteProfile,
@@ -110,7 +112,7 @@ export function ModelSettingsSection({ props }: { props: SettingsPanelLayoutProp
                 <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                   {settings.profiles.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-border/80 bg-muted/25 p-3 text-xs text-muted-foreground">
-                      还没有模型配置，先从下方 provider 预设开始即可。
+                      还没有模型配置：点「新增配置」自定义任意接口，或从 provider 预设开始。
                     </div>
                   ) : null}
                   {settings.profiles.map((profile) => {
@@ -130,6 +132,8 @@ export function ModelSettingsSection({ props }: { props: SettingsPanelLayoutProp
                         <span className="flex shrink-0 gap-1">
                           {settings.assistant_profile_id === profile.id ? <Badge variant="outline">对话</Badge> : null}
                           {settings.translation_profile_id === profile.id ? <Badge variant="outline">翻译</Badge> : null}
+                          {profile.api_protocol === 'anthropic' ? <Badge variant="outline">Anthropic</Badge> : null}
+                          {profile.api_protocol === 'google' ? <Badge variant="outline">Gemini</Badge> : null}
                         </span>
                       </span>
                       <span className="mt-2 block truncate text-[11px] text-muted-foreground">
@@ -183,12 +187,22 @@ export function ModelSettingsSection({ props }: { props: SettingsPanelLayoutProp
                     <div>
                       <h3 className="text-sm font-semibold">Provider 预设</h3>
                       <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                        先选 provider，再按需刷新远端模型列表。
+                        选一个 provider 快速填充，或点「自定义」填写任意接口地址并选择协议。
                       </p>
                     </div>
                     <Badge variant="outline">{providerPreset?.label ?? '自定义'}</Badge>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-1.5">
+                    <Button
+                      className="border-dashed"
+                      size="xs"
+                      type="button"
+                      variant="outline"
+                      onClick={() => onProviderPresetSelect('__custom__')}
+                    >
+                      <Pencil />
+                      自定义
+                    </Button>
                     {providerPresets.map((preset) => (
                       <Button
                         key={preset.label}
@@ -274,9 +288,32 @@ export function ModelSettingsSection({ props }: { props: SettingsPanelLayoutProp
                       </div>
                     </div>
     
-                    <div className="grid gap-2">
-                      <Label htmlFor="llm-base-url">Base URL</Label>
-                      <Input id="llm-base-url" value={baseUrl} onChange={(event) => onBaseUrlChange(event.target.value)} />
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="grid gap-2">
+                        <Label htmlFor="llm-base-url">Base URL</Label>
+                        <Input
+                          id="llm-base-url"
+                          placeholder={apiProtocol === 'anthropic' ? 'https://api.anthropic.com/v1' : apiProtocol === 'google' ? 'https://generativelanguage.googleapis.com/v1beta' : 'https://api.deepseek.com'}
+                          value={baseUrl}
+                          onChange={(event) => onBaseUrlChange(event.target.value)}
+                        />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label htmlFor="llm-api-protocol">接口类型</Label>
+                        <Select value={apiProtocol} onValueChange={onApiProtocolChange}>
+                          <SelectTrigger id="llm-api-protocol">
+                            <SelectValue placeholder="选择接口协议" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="openai_compatible">OpenAI 兼容（/chat/completions）</SelectItem>
+                            <SelectItem value="anthropic">Anthropic（/v1/messages）</SelectItem>
+                            <SelectItem value="google">Google Gemini（generateContent）</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p className="text-[11px] leading-5 text-muted-foreground">
+                          决定请求格式与认证头：Bearer、x-api-key 或 x-goog-api-key。自定义服务地址可任选一种协议。
+                        </p>
+                      </div>
                     </div>
     
                     <div className="grid gap-2">
