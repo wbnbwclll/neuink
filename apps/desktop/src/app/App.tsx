@@ -1283,7 +1283,7 @@ export function App() {
             kind: 'llm',
             message,
             progress: { current: status === 'processing' ? 1 : 2, percent: status === 'processing' ? 50 : 100, total: 2 },
-            scope: { root: workspace.root },
+            scope: workspace.root ? { kind: 'workspace', root: workspace.root } : null,
             status,
             updated_at: updatedAt
           };

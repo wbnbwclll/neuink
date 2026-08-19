@@ -721,6 +721,12 @@ export type JobKind =
 
 export type JobStatus = 'queued' | 'processing' | 'succeeded' | 'failed' | 'canceled';
 
+// Rust 侧 JobScope 用内部标签 + 扁平字段序列化：
+// {"kind":"entry","root":...,"entry_id":...} / {"kind":"workspace","root":...}
+export type JobScope =
+  | { kind: 'entry'; root: string; entry_id: string }
+  | { kind: 'workspace'; root: string };
+
 export type JobProgress = {
   current: number;
   total: number;
@@ -734,7 +740,7 @@ export type Job = {
   kind: JobKind;
   message: string | null;
   progress: JobProgress;
-  scope: unknown | null;
+  scope: JobScope | null;
   status: JobStatus;
   updated_at: string;
 };

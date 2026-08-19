@@ -8,7 +8,8 @@ import {
   runEntryTranslation,
   type EntryTranslation,
   type Job,
-  type JobEvent
+  type JobEvent,
+  type JobScope
 } from '@/shared/ipc/workspaceApi';
 
 export type TranslationRunStrategy = 'restart' | 'resume';
@@ -17,21 +18,12 @@ export type TranslationStartOptions = {
   segmentUids?: string[];
 };
 
-type JobScopeEntry = {
-  entry_id?: string;
-  entryId?: string;
-  root?: string;
-};
-
 function isTranslationJobForEntry(job: Job, workspaceRoot: string, entryId: string) {
   if (job.kind !== 'translation') {
     return false;
   }
-  const scope = (job.scope ?? null) as JobScopeEntry | null;
-  if (!scope) {
-    return false;
-  }
-  return scope.root === workspaceRoot && (scope.entry_id === entryId || scope.entryId === entryId);
+  const scope: JobScope | null = job.scope;
+  return scope?.kind === 'entry' && scope.root === workspaceRoot && scope.entry_id === entryId;
 }
 
 function translationFromPayload(payload: unknown) {
