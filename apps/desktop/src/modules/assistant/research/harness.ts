@@ -101,6 +101,7 @@ export async function runResearchHarness(
       maxQuestionsPerRound: 3,
       maxRounds: research.rephraseMaxRounds,
       mode: 'report',
+      noteMaxTokens: research.noteMaxTokens,
       numSubtopics,
       onDelta: (delta) => onDelta?.(delta),
       onProgress: (event) => {
@@ -112,7 +113,11 @@ export async function runResearchHarness(
           toolName: `research.${event.stage}`
         });
       },
+      onToolEvent,
       question,
+      root,
+      runtimeSettings,
+      scope,
       settings
     });
 
@@ -168,7 +173,7 @@ export async function runResearchHarness(
       answer: pipeline.answer,
       plan,
       researchProgress: pipeline.progressEvents,
-      sources: [],
+      sources: pipeline.sources ?? [],
       taskState: completedTaskState
     };
   } catch (error) {

@@ -140,6 +140,13 @@ type EntryMetaProposalHandler = (proposal: AssistantEntryMetaProposal) => void;
 type TagProposalHandler = (proposal: AssistantTagProposal) => void;
 type CreateEntryHandler = (title: string) => Promise<AssistantEntryMetaTarget>;
 
+export type ToolResultSummaryContext = {
+  toolName: string;
+  input: JsonObject;
+  output: unknown;
+  sources: ConversationSourceLink[];
+};
+
 type CreateAssistantToolsOptions = {
   activeExecution?: AgentExecutionSelection | null;
   availableEntries?: AssistantEntryMetaTarget[];
@@ -167,6 +174,17 @@ type CreateAssistantToolsOptions = {
   root: string;
   runtimeSettings?: AgentRuntimeSettings | null;
   scope: ScopeSnapshot;
+  /**
+   * Research-assistant sidecar. When provided, every evidence tool result
+   * (search_segments / read_segment_content / read_entry_assistant_context /
+   * search_sciverse_evidence / read_sciverse_content / mcp.*) is replaced by
+   * the returned string in what the model sees, keeping long retrievals out of
+   * the block loop's context budget. The full output still lands in
+   * `observations` so prerequisites (e.g. read_sciverse_content requires a
+   * prior search) and progress detection keep working. Default undefined →
+   * the main-assistant path returns the raw output unchanged (zero regression).
+   */
+  summarizeToolResult?: (context: ToolResultSummaryContext) => Promise<string>;
 };
 
 type AssistantToolRuntime = {
@@ -213,7 +231,8 @@ export async function createAssistantTools({
   plan,
   root,
   runtimeSettings,
-  scope
+  scope,
+  summarizeToolResult
 }: CreateAssistantToolsOptions): Promise<AssistantToolRuntime> {
   const descriptors = [
     ...(await listTools()),
@@ -386,6 +405,15 @@ export async function createAssistantTools({
           observations.push({ output: output.modelOutput, toolName });
           loopGuard?.recordSuccess(output.modelOutput);
 
+          const modelResult = summarizeToolResult
+            ? await summarizeToolResult({
+                toolName,
+                input: normalizedInput,
+                output: output.modelOutput,
+                sources: output.sources
+              })
+            : output.modelOutput;
+
           emit({
             id: toolCallId,
             input: publicInput(normalizedInput),
@@ -395,7 +423,7 @@ export async function createAssistantTools({
             toolName
           });
 
-          return output.modelOutput;
+          return modelResult;
         } catch (error) {
           if (fingerprint) loopGuard?.recordFailure(fingerprint);
           emit({

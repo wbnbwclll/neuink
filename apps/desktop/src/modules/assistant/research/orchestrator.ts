@@ -1,7 +1,16 @@
 import { generateText, streamText } from 'ai';
 
-import type { LlmProfile } from '@/shared/ipc/assistantApi';
-import type { ResearchDepth, ResearchMode } from '@/shared/types/agentRuntime';
+import type {
+  AssistantToolTraceEvent,
+  ConversationSourceLink,
+  LlmProfile,
+  ScopeSnapshot
+} from '@/shared/ipc/assistantApi';
+import type {
+  AgentRuntimeSettings,
+  ResearchDepth,
+  ResearchMode
+} from '@/shared/types/agentRuntime';
 import type {
   ResearchOutline,
   ResearchOutlineItem,
@@ -9,7 +18,13 @@ import type {
 } from '@/shared/types/research';
 
 import { createNeuinkModel, generationSettings } from '../sdk/provider';
+import { researchBlock } from './blockLoop';
+import { buildResearchExecutionPolicy } from './configParser';
+import { CitationManager } from './citationManager';
 import { loadResearchPrompt, renderResearchPrompt } from './prompts';
+import { writeReport } from './reportWriter';
+import { DynamicTopicQueue } from './topicQueue';
+import type { ResearchedBlock } from './types';
 
 // 深度 → 默认子主题数（对应 DeepTutor request_config.AUTO_SUBTOPICS）。
 export const AUTO_SUBTOPICS: Record<ResearchDepth, number> = {
@@ -27,10 +42,15 @@ export type ResearchPipelineInput = {
   maxQuestionsPerRound: number;
   maxRounds: number;
   mode: ResearchMode;
+  noteMaxTokens?: number | null;
   numSubtopics: number;
   onDelta?: (delta: string) => void;
   onProgress?: (event: ResearchProgressEvent) => void;
+  onToolEvent?: (event: AssistantToolTraceEvent) => void;
   question: string;
+  root: string;
+  runtimeSettings: AgentRuntimeSettings;
+  scope?: ScopeSnapshot | null;
   settings: LlmProfile;
 };
 
@@ -38,6 +58,7 @@ export type ResearchPipelineResult = {
   answer: string;
   outline?: ResearchOutline;
   progressEvents: ResearchProgressEvent[];
+  sources?: ConversationSourceLink[];
 };
 
 export async function runResearchPipeline(
@@ -66,29 +87,90 @@ export async function runResearchPipeline(
     return { answer, outline, progressEvents };
   }
 
-  // 第二轮：逐块研究 + 报告。阶段 B 先给出结构骨架，
-  // 阶段 C 接入 DynamicTopicQueue / 并行研究块 / 引文标注。
+  // 第二轮：动态主题队列 + 研究块（按深度策略串行/并行）+ 引文标注报告。
   const outline = input.confirmedOutline;
+  const scope = input.scope ?? EMPTY_SCOPE;
+  const policy = buildResearchExecutionPolicy({
+    depth: outline.depth,
+    mode: outline.mode,
+    blockMaxIterations: input.blockMaxIterations
+  });
+  const queue = new DynamicTopicQueue(`research-${Date.now()}`, policy.queueLimit);
+  for (const item of outline.items) {
+    queue.addBlock(item.title, item.overview ?? '');
+  }
+  const citations = new CitationManager();
+  const researchedBlocks: ResearchedBlock[] = [];
+  const initialTotal = queue.getStatistics().totalBlocks;
+
   emit({
     stage: 'research',
-    summary: `开始研究 ${outline.items.length} 个子主题（${outline.depth} 深度）`
+    summary: `开始研究 ${initialTotal} 个子主题（${outline.depth} 深度 · ${policy.executionMode}）`,
+    completedBlocks: 0,
+    totalBlocks: initialTotal
   });
-  const sections = outline.items
-    .map((item, index) => {
-      const intro = item.overview ? `${item.overview}\n\n` : '';
-      return `## ${index + 1}. ${item.title}\n\n${intro}（该子主题的逐块检索与证据引用将在阶段 C 落地。）`;
-    })
-    .join('\n\n');
-  const answer = `# ${outline.topic}\n\n## 引言\n\n本报告由研究助手生成，覆盖 ${outline.items.length} 个子主题。\n\n${sections}\n\n## 结论\n\n（结论将在各子主题研究完成后生成。）\n\n## 参考资料\n\n（各子主题的引用来源将在研究阶段收集并在此列出。）`;
+
+  // 逐波处理待研究块；研究过程中 append_topic 可动态增块。
+  while (queue.getAllPendingBlocks().length > 0) {
+    const wave = queue.getAllPendingBlocks().slice(0, policy.maxParallel);
+    const results = await Promise.all(
+      wave.map((block) =>
+        researchBlock({
+          abortSignal: input.abortSignal,
+          block,
+          citations,
+          maxIterations: policy.maxIterations,
+          mode: outline.mode,
+          noteMaxTokens: input.noteMaxTokens,
+          onProgress: emit,
+          onToolEvent: input.onToolEvent,
+          queue,
+          root: input.root,
+          runtimeSettings: input.runtimeSettings,
+          scope,
+          settings: input.settings,
+          topic: outline.topic
+        })
+      )
+    );
+    for (const result of results) {
+      researchedBlocks.push(result);
+    }
+    const stats = queue.getStatistics();
+    emit({
+      stage: 'research',
+      summary: `已完成 ${stats.completed}/${stats.totalBlocks} 个子主题`,
+      completedBlocks: stats.completed,
+      totalBlocks: stats.totalBlocks
+    });
+  }
+
+  const report = await writeReport({
+    abortSignal: input.abortSignal,
+    citations,
+    onDelta: input.onDelta,
+    onProgress: emit,
+    researchedBlocks,
+    scope,
+    settings: input.settings,
+    topic: outline.topic
+  });
+  const finalStats = queue.getStatistics();
   emit({
     stage: 'done',
-    summary: '研究完成（阶段 B 骨架）',
-    completedBlocks: outline.items.length,
-    totalBlocks: outline.items.length
+    summary: '研究完成',
+    completedBlocks: finalStats.completed,
+    totalBlocks: finalStats.totalBlocks
   });
-  input.onDelta?.(answer);
-  return { answer, progressEvents };
+  return { answer: report.markdown, progressEvents, sources: report.sourceLinks };
 }
+
+const EMPTY_SCOPE: ScopeSnapshot = {
+  tag_ids: [],
+  tag_names: [],
+  entry_ids: [],
+  entry_titles: []
+};
 
 async function rephraseTopic(input: ResearchPipelineInput): Promise<string> {
   const system = renderResearchPrompt(

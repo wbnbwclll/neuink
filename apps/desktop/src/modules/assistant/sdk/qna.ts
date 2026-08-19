@@ -998,7 +998,7 @@ function renderQnaUserPrompt(
   );
 }
 
-function buildScopeContext(scope: ScopeSnapshot) {
+export function buildScopeContext(scope: ScopeSnapshot) {
   const entries = scope.entry_ids
     .map((entryId, index) => {
       const title = scope.entry_titles[index] ?? entryId;

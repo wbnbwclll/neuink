@@ -32,7 +32,63 @@ const INLINE_PROMPTS: Record<string, string> = {
     '    {"title": "简洁标题", "overview": "1-2 句子说明本子主题要覆盖什么"}\n' +
     '  ]\n' +
     '}\n\n' +
-    '子主题的顺序要符合阅读逻辑（背景 → 核心 → 拓展 / 影响）。JSON 之外不要写任何额外文字。'
+    '子主题的顺序要符合阅读逻辑（背景 → 核心 → 拓展 / 影响）。JSON 之外不要写任何额外文字。',
+
+  'research.note.system':
+    '你是深度研究管线的"注记副车"（note-agent）。你的任务：把一次证据工具的原始返回压缩成 1-3 句、可直接进入引文摘要的精炼文本。\n\n' +
+    '要求：\n' +
+    '- 只输出压缩后的摘要正文，不要任何前言、标签或 markdown 装饰。\n' +
+    '- 提取与当前检索查询最相关的信息；保留数字、结论、术语。\n' +
+    '- 若原始输出为空或不可用，输出一行说明。',
+
+  'research.block.system':
+    '你是深度研究管线中的一个"研究块"。你正在研究大主题「{topic}」下的一个子主题「{block_title}」。\n\n' +
+    '子主题概述：{block_overview}\n\n' +
+    '你可以使用以下证据工具检索本地笔记与学术文献：\n' +
+    '- search_segments —— 语义搜索本地笔记段落\n' +
+    '- read_segment_content —— 读取某段笔记的完整内容\n' +
+    '- read_entry_assistant_context —— 读取某条本地笔记的助手上下文\n' +
+    '- search_sciverse_evidence —— 语义搜索 Sciverse 学术文献\n' +
+    '- read_sciverse_content —— 读取某篇 Sciverse 文献的内容\n' +
+    '- append_topic —— 若在研究当前子主题时发现另一个值得独立研究的子主题，可将其加入研究队列\n\n' +
+    '硬约束：\n' +
+    '1. 每一步先输出 ``THINK``（内部思考，不展示给用户）。\n' +
+    '2. 需要检索证据时输出 ``TOOL`` 并调用证据工具。证据是硬要求：能检索就不要凭空写。\n' +
+    '3. 每次工具返回会以 [CIT-x] 摘要形式回注，引用它时直接使用该标记。\n' +
+    '4. 发现值得单独研究的新子主题时输出 ``APPEND`` 并调用 ``append_topic`` 工具。\n' +
+    '5. 证据收集完成后输出 ``FINISH``，标签后直接写出该子主题的研究小结（150-400 字），关键结论必须引用 [CIT-x] 标记。\n' +
+    '6. 最多约 {max_iterations} 轮模型迭代（含最终总结）。\n' +
+    '7. 研究模式：{mode}。只做研究与小结，不要写整篇报告、不要写参考资料。\n' +
+    '8. 其他子主题（供参考，避免重复研究）：\n' +
+    '{sibling_topics}\n\n' +
+    '输出协议（每步严格以标签开头）：``THINK`` / ``TOOL`` / ``APPEND`` / ``FINISH``',
+
+  'research.block.user':
+    '现在开始研究子主题「{block_title}」。\n\n' +
+    '研究背景（若上一轮已有积累）：\n{accumulated_knowledge}\n\n' +
+    '请按系统提示中的协议执行：需要检索就调用证据工具，完成就输出 ``FINISH`` 给出带引文的研究小结。',
+
+  'research.report.intro.system':
+    '你是深度研究报告的"引言写作器"。为给定研究主题写一段简洁的引言（80-150 字），说明该报告研究什么、覆盖哪些子主题。只输出引言正文，不要标题、不要引文标记。',
+
+  'research.report.intro.user':
+    '研究主题：{topic}\n覆盖 {subtopic_count} 个子主题。\n请写一段引言。',
+
+  'research.report.section.system':
+    '你是深度研究报告的"分节写作器"。你会收到一个子主题的标题、概述与研究知识（含 [CIT-x] 引文标记）。为该子主题写一个聚焦的 markdown 小节。\n\n' +
+    '要求：\n' +
+    '- 直接写小节正文，不要输出 ## 标题（标题已由系统写好）、不要写整篇报告结构、不要写参考资料。\n' +
+    '- 关键结论必须引用研究知识中的 [CIT-x] 标记（如 [CIT-1-01]），引用要准确、不夸大。\n' +
+    '- 中文书写，精炼、信息密度高（200-500 字）。',
+
+  'research.report.section.user':
+    '小节标题：{section_title}\n小节概述：{section_intent}\n\n研究知识：\n{section_knowledge}\n\n请写出该小节正文，并用 [CIT-x] 标记支撑关键结论。',
+
+  'research.report.conclusion.system':
+    '你是深度研究报告的"结论写作器"。为给定研究主题写一段简洁的结论（80-150 字），总结主要发现并指出值得进一步研究的开放问题。只输出结论正文，不要标题、不要引文标记。',
+
+  'research.report.conclusion.user':
+    '研究主题：{topic}\n覆盖 {subtopic_count} 个子主题。\n请写一段结论。'
 };
 
 export async function loadResearchPrompt(name: string): Promise<string> {
