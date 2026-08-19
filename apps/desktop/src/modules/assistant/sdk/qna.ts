@@ -45,6 +45,8 @@ export type GroundedAnswer = {
   noteProposals?: AssistantNoteProposal[];
   tagProposals?: AssistantTagProposal[];
   plan?: AssistantTaskPlan;
+  researchOutline?: import('@/shared/types/research').ResearchOutline;
+  researchProgress?: import('@/shared/types/research').ResearchProgressEvent[];
   sources: ConversationSourceLink[];
   taskState?: AssistantTaskState;
   toolEvents?: AssistantToolTraceEvent[];

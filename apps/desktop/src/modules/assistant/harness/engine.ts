@@ -32,6 +32,7 @@ import {
 
 import { assistantContextCharBudget, assistantNoteCharBudget } from '../sdk/contextBudget';
 import { answerWithKeywordGrounding, type GroundedAnswer } from '../sdk/qna';
+import { runResearchHarness } from '../research/harness';
 import { registerEvidence } from '../runtime/evidenceLedger';
 import { createCompiledTaskState, transitionTaskState } from '../runtime/taskState';
 import { finalizeVerifiedProposals } from '../runtime/verifiedProposal';
@@ -80,6 +81,7 @@ type RunAssistantHarnessOptions = {
   onDelta?: (delta: string) => void;
   onNoteProposal?: (proposal: AssistantNoteProposal) => void;
   onToolEvent?: (event: AssistantToolTraceEvent) => void;
+  confirmedOutline?: import('@/shared/types/research').ResearchOutline | null;
   preferredAgentId?: string | null;
   profiles?: LlmProfile[];
   question: string;
@@ -109,6 +111,7 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
     onDelta,
     onNoteProposal,
     onToolEvent,
+    confirmedOutline,
     preferredAgentId,
     profiles = [],
     question,
@@ -164,6 +167,24 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
     throwIfAborted(abortSignal);
 
     const runtimeSettings = await loadWorkspaceAgentRuntimeSettings(root);
+    if (preferredAgentId === runtimeSettings.researchAssistant.id) {
+      const researchProfile =
+        profiles.find((profile) => profile.id === runtimeSettings.researchAssistant.llmProfileId) ??
+        settings;
+      return runResearchHarness({
+        abortSignal,
+        confirmedOutline,
+        conversationHistory,
+        conversationId,
+        onDelta,
+        onToolEvent,
+        question,
+        root,
+        runtimeSettings,
+        scope,
+        settings: researchProfile
+      });
+    }
     const contract = compileAssistantExecutionContract({
       activeSegment: observed.activeSegment,
       activeSurface: observed.activeSurface,

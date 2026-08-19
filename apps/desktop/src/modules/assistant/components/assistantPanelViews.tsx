@@ -31,6 +31,8 @@ type ChatMessageCallbacks = Pick<
   | 'onRejectNoteProposal'
   | 'onRejectTagProposal'
   | 'onRetryAgentRun'
+  | 'onStartResearch'
+  | 'onStartResearchDisabled'
 >;
 
 type AssistantConversationHistoryProps = {
@@ -197,6 +199,8 @@ export function AssistantMessageList({
   onRetryAgentRun,
   onReturnToLatest,
   onScroll,
+  onStartResearch,
+  onStartResearchDisabled,
   renderedMessages,
   scrollRef,
   streamingMessageId,
@@ -239,6 +243,8 @@ export function AssistantMessageList({
                   onRejectEntryMetaProposal={onRejectEntryMetaProposal}
                   onRejectTagProposal={onRejectTagProposal}
                   onRetryAgentRun={onRetryAgentRun}
+                  onStartResearch={onStartResearch}
+                  onStartResearchDisabled={onStartResearchDisabled}
                 />
               ))}
             </>

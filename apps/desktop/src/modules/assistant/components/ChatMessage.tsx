@@ -39,8 +39,10 @@ import type {
   AssistantTagProposal,
   AssistantTaskPlan
 } from '@/shared/types/assistant';
+import type { ResearchOutline, ResearchProgressEvent } from '@/shared/types/research';
 import { buildNoteProposalPreview } from './noteProposalPreview';
 import { EntryMetaProposalCard } from './EntryMetaProposalCard';
+import { ResearchOutlineCard } from './ResearchOutlineCard';
 import { TagProposalList } from './TagProposalList';
 
 type ChatMessageProps = {
@@ -60,6 +62,8 @@ type ChatMessageProps = {
   onRejectEntryMetaProposal?: (proposal: AssistantEntryMetaProposal) => void;
   onRejectTagProposal?: (proposal: AssistantTagProposal) => void;
   onRetryAgentRun?: (question: string) => void;
+  onStartResearch?: (outline: ResearchOutline) => void;
+  onStartResearchDisabled?: boolean;
 };
 
 function ChatMessageComponent({
@@ -76,7 +80,9 @@ function ChatMessageComponent({
   onRejectNoteProposal,
   onRejectEntryMetaProposal,
   onRejectTagProposal,
-  onRetryAgentRun
+  onRetryAgentRun,
+  onStartResearch,
+  onStartResearchDisabled = false
 }: ChatMessageProps) {
   const messageParts = message.parts ?? [];
   const content = message.content || textFromParts(messageParts);
@@ -89,6 +95,8 @@ function ChatMessageComponent({
   const entryMetaProposals = entryMetaProposalsFromParts(messageParts);
   const resolvedAgentRun = agentRunFromParts(messageParts);
   const resolvedMemory = memoryFromParts(messageParts);
+  const researchOutline = researchOutlineFromParts(messageParts);
+  const researchProgress = researchProgressFromParts(messageParts);
   const contextItems = contextItemsFromParts(messageParts);
   const contextPlan = contextPlanFromParts(messageParts);
   const sourceLinks =
@@ -120,6 +128,16 @@ function ChatMessageComponent({
         streaming={streaming}
         onOpenSource={onOpenSource}
       />
+      {message.role === 'assistant' && researchProgress.length > 0 ? (
+        <ResearchProgressList events={researchProgress} />
+      ) : null}
+      {message.role === 'assistant' && researchOutline ? (
+        <ResearchOutlineCard
+          disabled={onStartResearchDisabled}
+          outline={researchOutline}
+          onStartResearch={(outline) => onStartResearch?.(outline)}
+        />
+      ) : null}
       {message.role === 'assistant' && resolvedNoteProposals.length > 0 ? (
         <NoteProposalList
           proposals={resolvedNoteProposals}
@@ -509,6 +527,22 @@ function memoryFromParts(parts: AssistantMessagePart[]) {
   )?.memory;
 }
 
+function researchOutlineFromParts(parts: AssistantMessagePart[]): ResearchOutline | null {
+  return parts.find(
+    (part): part is Extract<AssistantMessagePart, { type: 'research-outline' }> =>
+      part.type === 'research-outline'
+  )?.outline ?? null;
+}
+
+function researchProgressFromParts(parts: AssistantMessagePart[]): ResearchProgressEvent[] {
+  return parts
+    .filter(
+      (part): part is Extract<AssistantMessagePart, { type: 'research-progress' }> =>
+        part.type === 'research-progress'
+    )
+    .map((part) => part.progress);
+}
+
 function contextItemsFromParts(parts: AssistantMessagePart[]) {
   const snapshot = parts.find(
     (part): part is Extract<AssistantMessagePart, { type: 'context-snapshot' }> =>
@@ -729,6 +763,42 @@ function MemorySummary({
       ) : null}
     </div>
   );
+}
+
+function ResearchProgressList({ events }: { events: ResearchProgressEvent[] }) {
+  return (
+    <div className="mt-2 grid gap-1">
+      {events.map((event, index) => (
+        <div
+          className="min-w-0 rounded-sm border bg-muted/25 px-2 py-1 text-[11px] leading-4 text-muted-foreground"
+          key={`${event.stage}:${index}`}
+        >
+          <span className="mr-1.5 shrink-0 rounded-sm border bg-background px-1 py-0.5 text-[10px] font-medium">
+            {researchStageLabel(event.stage)}
+          </span>
+          {event.summary}
+          {event.completedBlocks != null && event.totalBlocks != null ? (
+            <span className="ml-1.5 text-primary">
+              {event.completedBlocks}/{event.totalBlocks}
+            </span>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function researchStageLabel(stage: ResearchProgressEvent['stage']) {
+  if (stage === 'plan') {
+    return '规划';
+  }
+  if (stage === 'research') {
+    return '研究';
+  }
+  if (stage === 'report') {
+    return '报告';
+  }
+  return '完成';
 }
 
 function noteProposalsFromParts(parts: AssistantMessagePart[]) {

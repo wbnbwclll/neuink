@@ -190,6 +190,11 @@ export type AssistantMessagePart =
   | { proposal: AssistantNoteProposal; type: 'note-proposal' }
   | { proposal: AssistantEntryMetaProposal; type: 'entry-meta-proposal' }
   | { proposal: AssistantTagProposal; type: 'tag-proposal' }
+  | { outline: import('@/shared/types/research').ResearchOutline; type: 'research-outline' }
+  | {
+      progress: import('@/shared/types/research').ResearchProgressEvent;
+      type: 'research-progress';
+    }
   | { id?: string; message: string; toolName?: string; type: 'error' };
 
 export type ConversationMessage = {

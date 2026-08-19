@@ -72,6 +72,7 @@ import {
   readAgentRuntimeSettings
 } from '@/shared/lib/agentRuntimeSettings';
 import type { ResearchAssistantProfile } from '@/shared/types/agentRuntime';
+import type { ResearchOutline } from '@/shared/types/research';
 import type { TagMeta } from '@/shared/types/domain';
 import { useToast } from '@/shared/hooks/useToast';
 
@@ -488,6 +489,7 @@ export function AssistantPanel({
       noteProposalsByMessageId,
       onAddAssistantContext,
       onCreateAssistantEntry,
+      confirmedOutline: queued?.confirmedOutline,
       preferredAgentId,
       profiles,
       resetComposer: !queued,
@@ -528,6 +530,31 @@ export function AssistantPanel({
     }
     setComposerPrefill(nextQuestion);
     setError(null);
+  };
+
+  const handleStartResearch = (outline: ResearchOutline) => {
+    if (!root || !selectedProfile || busy) {
+      return;
+    }
+    // 研究助手必须接管本轮：即使角色切换器停留在主助手，点击「开始研究」也以研究助手运行。
+    if (preferredAgentId !== researchAssistant?.id) {
+      setPreferredAgentId(researchAssistant?.id ?? 'research-assistant');
+    }
+    const snapshot: AssistantComposerSnapshot = {
+      mentions: [],
+      text: outline.topic
+    };
+    setQueuedDraft({
+      activeEntry: null,
+      activeNote: null,
+      activeSegment: null,
+      activeSurface: { ...activeSurface, capturedAt: new Date().toISOString() },
+      confirmedOutline: outline,
+      contextItems: [],
+      contextPlan: null,
+      question: outline.topic,
+      snapshot
+    });
   };
 
   const regenerateNoteProposal = (proposal: AssistantNoteProposal) => {
@@ -958,6 +985,7 @@ export function AssistantPanel({
   const handleMessageRejectTagProposal = useStableEvent(rejectTagProposal);
   const handleMessageRegenerateNoteProposal = useStableEvent(regenerateNoteProposal);
   const handleMessageRetryAgentRun = useStableEvent(retryAgentRun);
+  const handleMessageStartResearch = useStableEvent(handleStartResearch);
 
   return (
     <aside className="app-sidebar" data-assistant-context-dropzone="true">
@@ -1124,6 +1152,8 @@ export function AssistantPanel({
             onRejectNoteProposal={handleMessageRejectNoteProposal}
             onRejectTagProposal={handleMessageRejectTagProposal}
             onRetryAgentRun={handleMessageRetryAgentRun}
+            onStartResearch={handleMessageStartResearch}
+            onStartResearchDisabled={busy}
             onReturnToLatest={forceNextScroll}
             onScroll={handleMessagesScroll}
           />

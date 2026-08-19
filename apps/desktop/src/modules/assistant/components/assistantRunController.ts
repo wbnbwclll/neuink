@@ -30,6 +30,7 @@ import type {
   AssistantNoteProposal,
 } from "@/shared/types/assistant";
 import type { TagMeta } from "@/shared/types/domain";
+import type { ResearchOutline } from "@/shared/types/research";
 
 import { AssistantHarnessError, runAssistantHarness } from "../harness/engine";
 import {
@@ -46,6 +47,8 @@ import {
   createOptimisticMessage,
   createOptimisticMessageId,
   createSyntheticConversationMessage,
+  latestResearchOutlineFromHistory,
+  latestResearchRunFromHistory,
   mergeToolTraceEvent,
   updateConversationMessageLocally,
 } from "./assistantPanelState";
@@ -57,6 +60,7 @@ export type QueuedAssistantDraft = {
   activeNote: AssistantActiveNote | null;
   activeSegment: AssistantActiveSegment | null;
   activeSurface: AssistantActiveSurfaceSnapshot;
+  confirmedOutline?: ResearchOutline | null;
   contextItems: AssistantContextItem[];
   contextPlan: AssistantContextPlan | null;
   question: string;
@@ -150,6 +154,7 @@ type AssistantRunControllerOptions = {
   noteProposalsByMessageId: Record<string, AssistantNoteProposal[]>;
   onAddAssistantContext: (context: AssistantContextInput) => void;
   onCreateAssistantEntry: (title: string) => Promise<LibraryEntry>;
+  confirmedOutline?: ResearchOutline | null;
   preferredAgentId?: string | null;
   profiles: LlmProfile[];
   resetComposer: boolean;
@@ -190,6 +195,7 @@ export async function runAssistantPanelTask({
   noteProposalsByMessageId,
   onAddAssistantContext,
   onCreateAssistantEntry,
+  confirmedOutline,
   preferredAgentId,
   profiles,
   resetComposer,
@@ -244,6 +250,19 @@ export async function runAssistantPanelTask({
   let streamRenderTimer: number | null = null;
   try {
     const conversationMessages = conversation?.messages ?? [];
+    // 只有「开始研究」按钮显式携带大纲（第二轮）或用户原样重发同一主题时才走第二轮；
+    // 新主题一律走第一轮 rephrase，避免误用上一轮大纲跳过澄清。
+    const restoredOutline = latestResearchOutlineFromHistory(conversationMessages);
+    const resolvedConfirmedOutline =
+      confirmedOutline === undefined
+        ? restoredOutline && restoredOutline.topic === trimmedQuestion.trim()
+          ? restoredOutline
+          : null
+        : confirmedOutline;
+    const resumedResearchRun =
+      resolvedConfirmedOutline && preferredAgentId
+        ? latestResearchRunFromHistory(conversationMessages)
+        : null;
     const baseScope = assistantRunBaseScope({
       conversationScope: conversation?.scope_snapshot,
       currentScope: scope,
@@ -446,6 +465,7 @@ export async function runAssistantPanelTask({
       assistantContext: runContext,
       contextPlan: submittedContextPlan,
       composerSnapshot: submittedComposerSnapshot,
+      confirmedOutline: resolvedConfirmedOutline,
       conversationId: currentConversation.id,
       conversationHistory: currentConversation.messages,
       currentEntry: runEntry,
@@ -526,6 +546,14 @@ export async function runAssistantPanelTask({
       question: trimmedQuestion,
       preferredAgentId,
       profiles,
+      resumeFromNodeId:
+        preferredAgentId && resumedResearchRun
+          ? resumedResearchRun.resumeFromNodeId
+          : undefined,
+      resumedFromRunId:
+        preferredAgentId && resumedResearchRun
+          ? resumedResearchRun.runId
+          : undefined,
       root,
       scope: runScope,
       settings: selectedProfile,
@@ -555,6 +583,8 @@ export async function runAssistantPanelTask({
         ),
       ]),
       noteProposals: finalNoteProposals,
+      researchOutline: grounded.researchOutline,
+      researchProgress: grounded.researchProgress,
       tagProposals: finalTagProposals,
       plan: grounded.plan,
       sourceLinks: grounded.sources,
