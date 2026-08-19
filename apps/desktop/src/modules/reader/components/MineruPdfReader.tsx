@@ -956,6 +956,7 @@ export function MineruPdfReader({
         hasRetryableFailures={hasRetryableFailures}
         translation={translation}
         translationBusy={translationBusy}
+        translationMessage={translationMessage}
         zoom={zoom}
         readerPreferences={readerPreferences}
         onExportTranslation={() => void exportTranslation()}

@@ -2,13 +2,14 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex, OnceLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use chrono::Utc;
+use futures_util::StreamExt;
 use neuink_config::LlmProfile;
 use neuink_domain::{EntryId, SegmentType, SegmentUid, SourceSegment};
 use neuink_job::{Job, JobKind, JobScope};
@@ -27,10 +28,16 @@ use super::{
     settings::read_translation_profile,
 };
 
-const MAX_PAPER_CONTEXT_BUDGET: usize = 28_000;
-const MAX_BATCH_CHAR_BUDGET: usize = 7_500;
-const MAX_BATCH_SEGMENTS: usize = 3;
-const LLM_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+const MAX_PAPER_CONTEXT_BUDGET: usize = 120_000;
+const MAX_BATCH_CHAR_BUDGET: usize = 60_000;
+const MAX_BATCH_SEGMENTS: usize = 12;
+const LLM_REQUEST_BASE_TIMEOUT: Duration = Duration::from_secs(120);
+const LLM_TIMEOUT_RETRY_STEP: Duration = Duration::from_secs(60);
+const LLM_REQUEST_MAX_ATTEMPTS: u32 = 3;
+/// 实时进度事件的最小间隔，避免流式回调打爆事件通道。
+const LIVE_PROGRESS_INTERVAL: Duration = Duration::from_millis(800);
+/// 批次并发数：批与批之间互不依赖，并发执行可把总时间摊薄到 1/N。
+const TRANSLATION_CONCURRENCY: usize = 4;
 
 static TRANSLATION_TASK_CONTROLS: OnceLock<Mutex<HashMap<String, Arc<TranslationTaskControl>>>> =
     OnceLock::new();
@@ -512,6 +519,20 @@ impl TranslationPipeline {
             .iter()
             .map(|segment| (segment.segment_uid.clone(), segment))
             .collect::<HashMap<_, _>>();
+        // 已完成的 segment 数（含复用），实时进度事件据此报告不回退的进度条。
+        let done_counter = Arc::new(AtomicUsize::new(
+            previous_translation
+                .segments
+                .iter()
+                .filter(|segment| {
+                    !matches!(segment.status, TranslatedSegmentStatus::Pending)
+                        && self.task
+                            .selected_segment_uids
+                            .as_ref()
+                            .is_none_or(|uids| uids.contains(&segment.segment_uid))
+                })
+                .count(),
+        ));
         let candidate_count = candidates.len();
         let pending_candidates = candidates
             .into_iter()
@@ -529,6 +550,7 @@ impl TranslationPipeline {
             self.update_translation(|translation| {
                 upsert_segments(translation, skipped.iter().map(skipped_segment));
             })?;
+            done_counter.fetch_add(skipped.len(), Ordering::Relaxed);
             self.emit_translation_progress(app, job_id, "已跳过不适合翻译的区域")?;
         }
 
@@ -584,7 +606,16 @@ impl TranslationPipeline {
                 return Ok(outcome);
             }
             let context = self
-                .build_context(&entry.title, &pending_candidates)
+                .build_context(
+                    &self.client.clone().with_progress(self.live_progress_sink(
+                        app,
+                        job_id,
+                        "正在生成论文背景（这一步较长，请耐心等待）".to_string(),
+                        &done_counter,
+                    )),
+                    &entry.title,
+                    &pending_candidates,
+                )
                 .await?;
             self.update_translation(|translation| {
                 translation.paper_context = Some(context.clone());
@@ -599,7 +630,10 @@ impl TranslationPipeline {
             return Ok(outcome);
         }
 
-        let budgets = translation_budgets(self.task.profile.max_context_length);
+        let budgets = translation_budgets(
+            self.task.profile.max_context_length,
+            self.task.profile.max_output_tokens,
+        );
         let batches = build_translation_batches(pending_candidates, budgets.batch);
         let batch_total = batches
             .iter()
@@ -615,67 +649,143 @@ impl TranslationPipeline {
             })
             .sum::<usize>();
         self.emit_translation_progress(app, job_id, &format!("开始翻译，共 {batch_total} 批"))?;
-        let mut completed_batches = 0usize;
-        for batch in batches {
-            let (list_segments, ordinary_segments): (Vec<_>, Vec<_>) = batch
-                .into_iter()
-                .partition(|segment| segment.segment_type == SegmentType::List);
+        let completed_counter = Arc::new(AtomicUsize::new(0));
+        let failed_counter = Arc::new(AtomicUsize::new(0));
+        let schedule_counter = Arc::new(AtomicUsize::new(0));
+        // 串行化磁盘写与进度事件：并发批次都往同一个译文文件 upsert，
+        // 不加锁会互相覆盖（读-改-写竞态）。
+        let io_lock = Arc::new(Mutex::new(()));
+        // 并发闭包里不能用 `?` 上抛，致命错误（磁盘读写失败）先记在这里。
+        let fatal_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
-            if !ordinary_segments.is_empty() {
-                let translated = self
-                    .client
-                    .translate_batch(&entry.title, &context, &ordinary_segments)
-                    .await
-                    .map_err(|error| format!("翻译模型调用失败，已停止全部任务：{error}"))?;
-                if let Some(missing) = ordinary_segments.iter().find(|segment| {
-                    translated
-                        .get(&segment.uid)
-                        .is_none_or(|text| text.trim().is_empty())
-                }) {
-                    return Err(format!(
-                        "翻译模型未返回 Block {} 的有效译文，已停止全部任务。",
-                        missing.uid
+        futures_util::stream::iter(batches)
+            .for_each_concurrent(TRANSLATION_CONCURRENCY, |batch| async {                // 暂停或致命错误后不再启动新批次；已在跑的批次会自然完成。
+                if self.task.control.pause_requested()
+                    || fatal_error
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .is_some()
+                {
+                    return;
+                }
+                let batch_no = schedule_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                let (list_segments, ordinary_segments): (Vec<_>, Vec<_>) = batch
+                    .into_iter()
+                    .partition(|segment| segment.segment_type == SegmentType::List);
+
+                if !ordinary_segments.is_empty() {
+                    let batch_client = self.client.clone().with_progress(self.live_progress_sink(
+                        app,
+                        job_id,
+                        format!("第 {batch_no}/{batch_total} 批翻译中"),
+                        &done_counter,
                     ));
+                    let outcome = batch_client
+                        .translate_batch(&entry.title, &context, &ordinary_segments)
+                        .await;
+                    let io = io_lock.lock().unwrap_or_else(|error| error.into_inner());
+                    match outcome {
+                        Ok(translated) => {
+                            // 模型漏译的 segment 会被 translated_segment 判定为 failed，
+                            // 与整批失败一样留给「重试失败」处理，不再终止全部任务。
+                            if let Err(error) = self.update_translation(|translation| {
+                                let segments = ordinary_segments
+                                    .iter()
+                                    .map(|segment| {
+                                        translated_segment(segment, translated.get(&segment.uid))
+                                    });
+                                upsert_segments(translation, segments);
+                            }) {
+                                record_fatal(&fatal_error, error);
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            failed_counter.fetch_add(1, Ordering::Relaxed);
+                            let reason = format!("翻译模型调用失败，已跳过该批：{error}");
+                            if let Err(error) = self.update_translation(|translation| {
+                                let segments = ordinary_segments
+                                    .iter()
+                                    .map(|segment| failed_segment(segment, &reason));
+                                upsert_segments(translation, segments);
+                            }) {
+                                record_fatal(&fatal_error, error);
+                                return;
+                            }
+                            let _ = self.emit_translation_progress(app, job_id, &reason);
+                        }
+                    }
+                    done_counter.fetch_add(ordinary_segments.len(), Ordering::Relaxed);
+                    let completed = completed_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    if let Err(error) = self.emit_translation_progress(
+                        app,
+                        job_id,
+                        &format!("翻译批次 {completed}/{batch_total}"),
+                    ) {
+                        record_fatal(&fatal_error, error);
+                        return;
+                    }
+                    drop(io);
                 }
-                self.update_translation(|translation| {
-                    let segments = ordinary_segments
-                        .iter()
-                        .map(|segment| translated_segment(segment, translated.get(&segment.uid)));
-                    upsert_segments(translation, segments);
-                })?;
-                completed_batches += 1;
-                self.emit_translation_progress(
-                    app,
-                    job_id,
-                    &format!("翻译批次 {completed_batches}/{batch_total}"),
-                )?;
-            }
 
-            for segment in list_segments {
-                let translated_text = self
-                    .translate_list_segment(&entry.title, &context, &segment)
-                    .await
-                    .map_err(|error| format!("列表项翻译失败，已停止全部任务：{error}"))?;
-                self.update_translation(|translation| {
-                    upsert_segments(
-                        translation,
-                        [translated_segment(&segment, Some(&translated_text))],
-                    );
-                })?;
-                completed_batches += 1;
-                self.emit_translation_progress(
-                    app,
-                    job_id,
-                    &format!("已逐项翻译列表 {completed_batches}/{batch_total}"),
-                )?;
-                if let Some(outcome) = self.pause_if_requested(app, job_id)? {
-                    return Ok(outcome);
+                for segment in list_segments {
+                    let list_client = self.client.clone().with_progress(self.live_progress_sink(
+                        app,
+                        job_id,
+                        format!("第 {batch_no}/{batch_total} 批列表翻译中"),
+                        &done_counter,
+                    ));
+                    let outcome = self
+                        .translate_list_segment(&list_client, &entry.title, &context, &segment)
+                        .await;
+                    let io = io_lock.lock().unwrap_or_else(|error| error.into_inner());
+                    match outcome {
+                        Ok(translated_text) => {
+                            if let Err(error) = self.update_translation(|translation| {
+                                upsert_segments(
+                                    translation,
+                                    [translated_segment(&segment, Some(&translated_text))],
+                                );
+                            }) {
+                                record_fatal(&fatal_error, error);
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            let reason = format!("列表项翻译失败，已跳过：{error}");
+                            if let Err(error) = self.update_translation(|translation| {
+                                upsert_segments(translation, [failed_segment(&segment, &reason)]);
+                            }) {
+                                record_fatal(&fatal_error, error);
+                                return;
+                            }
+                            let _ = self.emit_translation_progress(app, job_id, &reason);
+                        }
+                    }
+                    done_counter.fetch_add(1, Ordering::Relaxed);
+                    let completed = completed_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    if let Err(error) = self.emit_translation_progress(
+                        app,
+                        job_id,
+                        &format!("已逐项翻译列表 {completed}/{batch_total}"),
+                    ) {
+                        record_fatal(&fatal_error, error);
+                        return;
+                    }
+                    drop(io);
                 }
-            }
+            })
+            .await;
 
-            if let Some(outcome) = self.pause_if_requested(app, job_id)? {
-                return Ok(outcome);
-            }
+        if let Some(error) = fatal_error
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            return Err(error);
+        }
+        if let Some(outcome) = self.pause_if_requested(app, job_id)? {
+            return Ok(outcome);
         }
 
         let final_translation = self.update_translation(|translation| {
@@ -683,10 +793,13 @@ impl TranslationPipeline {
             translation.status = completed_translation_status(translation);
             translation.error = None;
         })?;
-        let message = if matches!(final_translation.status, TranslationStatus::Partial) {
-            "翻译部分完成"
+        let failed_batches = failed_counter.load(Ordering::Relaxed);
+        let message = if failed_batches > 0 {
+            format!("翻译部分完成，{failed_batches} 批失败，可在翻译任务中重试")
+        } else if matches!(final_translation.status, TranslationStatus::Partial) {
+            "翻译部分完成".to_string()
         } else {
-            "翻译完成"
+            "翻译完成".to_string()
         };
         if let Some(event) =
             job_manager().succeed(job_id, message, translation_payload(&final_translation))
@@ -698,14 +811,14 @@ impl TranslationPipeline {
 
     async fn translate_list_segment(
         &self,
+        client: &LlmClient,
         entry_title: &str,
         context: &TranslationPaperContext,
         segment: &SourceSegment,
     ) -> Result<String, String> {
         let units = list_translation_units(segment);
         if units.is_empty() {
-            let translated = self
-                .client
+            let translated = client
                 .translate_batch(entry_title, context, std::slice::from_ref(segment))
                 .await?;
             return translated
@@ -721,8 +834,7 @@ impl TranslationPipeline {
             item.uid = SegmentUid::from_string(format!("{}::list-item-{index}", segment.uid));
             item.text = unit.text.clone();
             item.markdown = None;
-            let translated = self
-                .client
+            let translated = client
                 .translate_batch(entry_title, context, std::slice::from_ref(&item))
                 .await?;
             let translated_text = translated
@@ -736,6 +848,7 @@ impl TranslationPipeline {
 
     async fn build_context(
         &self,
+        client: &LlmClient,
         entry_title: &str,
         segments: &[SourceSegment],
     ) -> Result<TranslationPaperContext, String> {
@@ -746,13 +859,16 @@ impl TranslationPipeline {
                 .map(source_text)
                 .collect::<Vec<_>>()
                 .join("\n\n"),
-            translation_budgets(self.task.profile.max_context_length).context,
+            translation_budgets(
+                self.task.profile.max_context_length,
+                self.task.profile.max_output_tokens,
+            )
+            .context,
         );
         let prompt = format!(
             "Paper title: {entry_title}\n\nRead the parsed Markdown below. Identify the paper background, research problem, method/data terms, abbreviations, and translation conventions. Output Chinese summary and terminology pairs.\n\nParsed Markdown:\n{markdown}"
         );
-        let text = self
-            .client
+        let text = client
             .generate_text(
                 "You prepare context for academic paper translation. Return strict JSON only: {\"summary\":\"...\",\"terminology\":[{\"source\":\"...\",\"target\":\"...\",\"note\":null}]}. Do not translate the full paper.",
                 &prompt,
@@ -763,6 +879,40 @@ impl TranslationPipeline {
             summary: parsed.summary.unwrap_or_default().trim().to_string(),
             terminology: normalize_terms(parsed.terminology),
             generated_at: Utc::now(),
+        })
+    }
+
+    /// 构造流式接收的实时进度回调：LLM 仍在生成时按 ~800ms 节流推送
+    /// 「label · 已接收 N 字」。payload 为空，避免每次实时事件都重读磁盘。
+    fn live_progress_sink<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        job_id: &str,
+        label: String,
+        done_counter: &Arc<AtomicUsize>,
+    ) -> TranslationProgressSink {
+        let app = app.clone();
+        let job_id = job_id.to_string();
+        let done_counter = Arc::clone(done_counter);
+        let job_total = self.task.job_total;
+        let last_emit = Arc::new(Mutex::new(Instant::now() - LIVE_PROGRESS_INTERVAL));
+        Arc::new(move |received: usize| {
+            let mut last = last_emit.lock().unwrap_or_else(|error| error.into_inner());
+            if last.elapsed() < LIVE_PROGRESS_INTERVAL {
+                return;
+            }
+            *last = Instant::now();
+            drop(last);
+            let done = done_counter.load(Ordering::Relaxed).min(job_total);
+            if let Some(event) = job_manager().progress(
+                &job_id,
+                done,
+                job_total,
+                format!("{label} · 已接收 {received} 字"),
+                Value::Null,
+            ) {
+                emit_job_event(&app, event);
+            }
         })
     }
 
@@ -880,10 +1030,15 @@ fn clear_translation_task_control(job_id: &str) {
     }
 }
 
+/// 流式接收进度回调：参数是累计收到的字符数。由 pipeline 注入，
+/// 用于在 LLM 仍在生成时向 job 推送「已接收 N 字」的实时消息。
+type TranslationProgressSink = Arc<dyn Fn(usize) + Send + Sync>;
+
 #[derive(Clone)]
 struct LlmClient {
     client: Client,
     profile: LlmProfile,
+    progress: Option<TranslationProgressSink>,
 }
 
 impl LlmClient {
@@ -891,7 +1046,13 @@ impl LlmClient {
         Self {
             client: Client::new(),
             profile,
+            progress: None,
         }
+    }
+
+    fn with_progress(mut self, progress: TranslationProgressSink) -> Self {
+        self.progress = Some(progress);
+        self
     }
 
     async fn translate_batch(
@@ -989,54 +1150,198 @@ impl LlmClient {
     }
 
     async fn generate_text(&self, system: &str, prompt: &str) -> Result<String, String> {
-        let response = timeout(
-            LLM_REQUEST_TIMEOUT,
-            self.client
-                .post(chat_completions_url(&self.profile.base_url))
-                .headers(auth_headers(&self.profile)?)
-                .json(&json!({
-                    "model": self.profile.model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": self.profile.temperature.unwrap_or(0.2),
-                    "top_p": self.profile.top_p.unwrap_or(1.0),
-                    "max_tokens": self.profile.max_output_tokens.unwrap_or(4096)
-                }))
-                .send(),
-        )
-        .await
-        .map_err(|_| "LLM request timed out after 90 seconds.".to_string())?
-        .map_err(|error| error.to_string())?;
-        let status = response.status();
-        let body = response.text().await.map_err(|error| error.to_string())?;
-        if !status.is_success() {
-            return Err(format!("LLM request failed ({status}): {body}"));
+        // 流式优先：能在生成过程中收到增量，向 job 推送实时进度；
+        // 失败（服务端不支持流式、网络异常等）则回退到带超时递增重试的非流式调用。
+        match self.generate_text_streaming(system, prompt).await {
+            Ok(text) => Ok(text),
+            Err(stream_error) => self
+                .generate_text_once(system, prompt)
+                .await
+                .map_err(|error| format!("{error}（流式回退前错误：{stream_error}）")),
         }
-        let parsed: ChatCompletionResponse =
-            serde_json::from_str(&body).map_err(|error| error.to_string())?;
-        parsed
-            .choices
-            .into_iter()
-            .find_map(|choice| choice.message.content)
-            .ok_or_else(|| "LLM response did not contain text".to_string())
     }
-}
 
-#[derive(Debug, Deserialize)]
-struct ChatCompletionResponse {
-    choices: Vec<ChatChoice>,
-}
+    async fn generate_text_once(&self, system: &str, prompt: &str) -> Result<String, String> {
+        let (url, headers, body) = crate::commands::llm_http::build_chat_request(
+            &self.profile,
+            system,
+            prompt,
+            crate::commands::llm_http::ChatFallbacks {
+                max_tokens: Some(8_192),
+                temperature: Some(0.2),
+                top_p: Some(1.0),
+            },
+        )?;
+        // 超时专属重试：每次超时后放宽 60 秒再试，最多 3 次；其余错误（HTTP/解析）
+        // 不重试，交给批次级的失败处理（标记 failed 并继续后续批次）。
+        let mut last_timeout_error = String::new();
+        for attempt in 0..LLM_REQUEST_MAX_ATTEMPTS {
+            let timeout_duration = request_timeout_for_attempt(attempt);
+            let response = match timeout(
+                timeout_duration,
+                self.client
+                    .post(url.clone())
+                    .headers(headers.clone())
+                    .json(&body)
+                    .send(),
+            )
+            .await
+            {
+                Ok(response) => response,
+                Err(_) => {
+                    last_timeout_error =
+                        format!("LLM request timed out after {} seconds.", timeout_duration.as_secs());
+                    continue;
+                }
+            }
+            .map_err(|error| error.to_string())?;
+            let status = response.status();
+            let body = response.text().await.map_err(|error| error.to_string())?;
+            if !status.is_success() {
+                return Err(format!("LLM request failed ({status}): {body}"));
+            }
+            return crate::commands::llm_http::parse_chat_response(
+                self.profile.api_protocol,
+                &body,
+            );
+        }
+        Err(format!(
+            "LLM request timed out {LLM_REQUEST_MAX_ATTEMPTS} times (last limit {} seconds): {last_timeout_error}",
+            request_timeout_for_attempt(LLM_REQUEST_MAX_ATTEMPTS - 1).as_secs(),
+        ))
+    }
 
-#[derive(Debug, Deserialize)]
-struct ChatChoice {
-    message: ChatMessage,
-}
+    /// SSE 流式接收一次 LLM 调用。空闲超时（连续 {timeout} 秒收不到任何字节）
+    /// 与整体超时同样触发递增重试；已收到部分内容后中断则直接报错，
+    /// 由上层回退到非流式重试。
+    async fn generate_text_streaming(&self, system: &str, prompt: &str) -> Result<String, String> {
+        let (url, headers, body) = crate::commands::llm_http::build_chat_stream_request(
+            &self.profile,
+            system,
+            prompt,
+            crate::commands::llm_http::ChatFallbacks {
+                max_tokens: Some(8_192),
+                temperature: Some(0.2),
+                top_p: Some(1.0),
+            },
+        )?;
 
-#[derive(Debug, Deserialize)]
-struct ChatMessage {
-    content: Option<String>,
+        let mut last_timeout_error = String::new();
+        for attempt in 0..LLM_REQUEST_MAX_ATTEMPTS {
+            let idle_timeout = request_timeout_for_attempt(attempt);
+            let response = match timeout(
+                idle_timeout,
+                self.client
+                    .post(url.clone())
+                    .headers(headers.clone())
+                    .json(&body)
+                    .send(),
+            )
+            .await
+            {
+                Ok(response) => response.map_err(|error| error.to_string())?,
+                Err(_) => {
+                    last_timeout_error = format!(
+                        "LLM request timed out after {} seconds.",
+                        idle_timeout.as_secs()
+                    );
+                    continue;
+                }
+            };
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                return Err(format!("LLM request failed ({status}): {body}"));
+            }
+
+            let mut stream = response.bytes_stream();
+            let mut accumulated = String::new();
+            let mut line_buffer = String::new();
+            let mut raw_body = String::new();
+            let mut saw_sse_data = false;
+            let mut received_chars = 0usize;
+            loop {
+                let chunk = match timeout(
+                    idle_timeout,
+                    tokio_stream::StreamExt::next(&mut stream),
+                )
+                .await
+                {
+                    Ok(chunk) => chunk,
+                    Err(_) => {
+                        // 空闲超时：还没收到任何内容就升级超时重试；已有内容则报错，
+                        // 让上层用非流式路径重新完整请求。
+                        if received_chars == 0 {
+                            last_timeout_error = format!(
+                                "LLM stream idle after {} seconds.",
+                                idle_timeout.as_secs()
+                            );
+                            break;
+                        }
+                        return Err(format!(
+                            "LLM stream stalled after {received_timeout} seconds of silence.",
+                            received_timeout = idle_timeout.as_secs()
+                        ));
+                    }
+                };
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                let chunk = chunk.map_err(|error| error.to_string())?;
+                received_chars += chunk.len();
+                let lossy = String::from_utf8_lossy(&chunk);
+                raw_body.push_str(&lossy);
+                line_buffer.push_str(&lossy);
+                // SSE 事件以空行分隔，逐行解析已完整的 data: 行。
+                while let Some(newline) = line_buffer.find('\n') {
+                    let line = line_buffer[..newline].trim_end_matches('\r').to_string();
+                    line_buffer.drain(..newline + 1);
+                    if let Some(data) = line.strip_prefix("data:") {
+                        saw_sse_data = true;
+                        crate::commands::llm_http::append_chat_stream_delta(
+                            self.profile.api_protocol,
+                            data,
+                            &mut accumulated,
+                        )?;
+                    }
+                }
+                if let Some(progress) = &self.progress {
+                    progress(received_chars);
+                }
+                // 流自然结束：部分服务端最后一行 data: 不带换行符，冲刷残余缓冲。
+                if let Some(data) = line_buffer.trim().strip_prefix("data:") {
+                    saw_sse_data = true;
+                    crate::commands::llm_http::append_chat_stream_delta(
+                        self.profile.api_protocol,
+                        data,
+                        &mut accumulated,
+                    )?;
+                }
+            }
+            if !last_timeout_error.is_empty() && received_chars == 0 && accumulated.is_empty() {
+                continue;
+            }
+            let trimmed = accumulated.trim().to_string();
+            if !trimmed.is_empty() {
+                return Ok(trimmed);
+            }
+            // 服务端忽略了 stream 参数、直接返回了完整的普通 JSON 响应：
+            // 就地解析，避免非流式路径再完整请求一遍（否则每次调用耗时翻倍）。
+            if !saw_sse_data && !raw_body.trim().is_empty() {
+                return crate::commands::llm_http::parse_chat_response(
+                    self.profile.api_protocol,
+                    raw_body.trim(),
+                );
+            }
+            if !last_timeout_error.is_empty() {
+                continue;
+            }
+            return Err("LLM stream ended without content.".to_string());
+        }
+        Err(format!(
+            "LLM streaming timed out {LLM_REQUEST_MAX_ATTEMPTS} times: {last_timeout_error}"
+        ))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1195,6 +1500,22 @@ fn translated_segment(
         },
         error: (!has_text).then(|| "LLM did not return this segment translation".to_string()),
         updated_at: Utc::now(),
+    }
+}
+
+/// 批次级失败（HTTP 错误、JSON 解析失败等）落到的 segment 记录：保留原始错误，
+/// 状态标记 failed，任务继续跑后续批次，由「重试失败」恢复。
+fn failed_segment(segment: &SourceSegment, reason: &str) -> TranslatedSegment {
+    let mut failed = translated_segment(segment, None);
+    failed.error = Some(reason.to_string());
+    failed
+}
+
+/// 并发批次的闭包里不能用 `?` 上抛，致命错误先记到共享槽位（保留首个错误）。
+fn record_fatal(slot: &Arc<Mutex<Option<String>>>, error: String) {
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.is_none() {
+        *guard = Some(error);
     }
 }
 
@@ -1366,14 +1687,27 @@ struct TranslationBudgets {
     context: usize,
 }
 
-fn translation_budgets(max_context_length: Option<u32>) -> TranslationBudgets {
-    let estimated_context_chars = (max_context_length.unwrap_or(8_192) as usize)
+fn translation_budgets(
+    max_context_length: Option<u32>,
+    max_output_tokens: Option<u32>,
+) -> TranslationBudgets {
+    // 输入侧：token→字符按 ~3 字符/token 估算；输出侧才是批大小的真正约束
+    // （译文 + JSON 包裹约占 max_output_tokens 的六成），留四成安全余量防截断。
+    let estimated_context_chars = (max_context_length.unwrap_or(128_000) as usize)
         .saturating_mul(3)
         .max(12_000);
+    let output_tokens = (max_output_tokens.unwrap_or(8_192)).min(65_536) as usize;
+    let output_safe_chars = output_tokens * 6 / 10 * 19 / 10;
     TranslationBudgets {
-        batch: (estimated_context_chars / 4).clamp(2_000, MAX_BATCH_CHAR_BUDGET),
+        batch: (estimated_context_chars / 4)
+            .min(output_safe_chars)
+            .clamp(2_000, MAX_BATCH_CHAR_BUDGET),
         context: ((estimated_context_chars * 35) / 100).clamp(4_000, MAX_PAPER_CONTEXT_BUDGET),
     }
+}
+
+fn request_timeout_for_attempt(attempt: u32) -> Duration {
+    LLM_REQUEST_BASE_TIMEOUT + LLM_TIMEOUT_RETRY_STEP * attempt
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -1588,29 +1922,6 @@ fn repair_invalid_json_escapes(value: &str) -> String {
     output
 }
 
-fn chat_completions_url(base_url: &str) -> String {
-    let base = base_url.trim().trim_end_matches('/');
-    if base.ends_with("/chat/completions") {
-        base.to_string()
-    } else {
-        format!("{base}/chat/completions")
-    }
-}
-
-fn auth_headers(profile: &LlmProfile) -> Result<reqwest::header::HeaderMap, String> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(api_key) = profile.api_key.as_deref().filter(|value| !value.is_empty()) {
-        let value = format!("Bearer {api_key}");
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            value
-                .parse::<reqwest::header::HeaderValue>()
-                .map_err(|error| error.to_string())?,
-        );
-    }
-    Ok(headers)
-}
-
 fn translation_payload(translation: &EntryTranslation) -> Value {
     json!({ "translation": translation })
 }
@@ -1618,21 +1929,46 @@ fn translation_payload(translation: &EntryTranslation) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        list_translation_units, parse_json_object, protect_formula_spans, restore_formula_spans,
-        should_translate_segment, split_list_translation_units, translation_budgets,
+        list_translation_units, parse_json_object, protect_formula_spans, request_timeout_for_attempt,
+        restore_formula_spans, should_translate_segment, split_list_translation_units,
+        translation_budgets, MAX_PAPER_CONTEXT_BUDGET,
     };
+    use std::time::Duration;
+
     use neuink_domain::{SegmentType, SourceSegment};
     use serde_json::Value;
 
     #[test]
     fn translation_budgets_follow_the_configured_context_window() {
-        let small = translation_budgets(Some(8_192));
-        let large = translation_budgets(Some(128_000));
+        let small = translation_budgets(Some(8_192), None);
+        let large = translation_budgets(Some(128_000), Some(32_768));
 
         assert!(small.batch < large.batch);
         assert!(small.context < large.context);
-        assert_eq!(large.batch, 7_500);
-        assert_eq!(large.context, 28_000);
+        assert_eq!(large.batch, 37_354);
+        assert_eq!(large.context, MAX_PAPER_CONTEXT_BUDGET);
+    }
+
+    #[test]
+    fn translation_budgets_default_to_a_modern_context_window() {
+        let budgets = translation_budgets(None, None);
+        // 未配置时按 128k 上下文 / 8k 输出推导，而不是旧版按 8k 上下文的极小批次。
+        assert_eq!(budgets.batch, 8_192 * 6 / 10 * 19 / 10);
+        assert_eq!(budgets.context, MAX_PAPER_CONTEXT_BUDGET);
+    }
+
+    #[test]
+    fn translation_budgets_cap_batch_by_output_tokens() {
+        // 输出上限才是批大小的真正约束：即使上下文巨大，小输出仍限制批次。
+        let budgets = translation_budgets(Some(1_000_000), Some(4_096));
+        assert_eq!(budgets.batch, 4_096 * 6 / 10 * 19 / 10);
+    }
+
+    #[test]
+    fn request_timeout_escalates_by_sixty_seconds_per_retry() {
+        assert_eq!(request_timeout_for_attempt(0), Duration::from_secs(120));
+        assert_eq!(request_timeout_for_attempt(1), Duration::from_secs(180));
+        assert_eq!(request_timeout_for_attempt(2), Duration::from_secs(240));
     }
 
     #[test]

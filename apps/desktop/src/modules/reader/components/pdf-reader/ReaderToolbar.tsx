@@ -35,6 +35,7 @@ export function ReaderToolbar({
   hasRetryableFailures,
   translation,
   translationBusy,
+  translationMessage,
   zoom,
   readerPreferences,
   onApplyRecommendedTags,
@@ -59,6 +60,7 @@ export function ReaderToolbar({
   hasRetryableFailures: boolean;
   translation: EntryTranslation | null;
   translationBusy: boolean;
+  translationMessage?: string | null;
   zoom: number;
   readerPreferences: ReaderPreferences;
   onApplyRecommendedTags: () => void;
@@ -102,6 +104,16 @@ export function ReaderToolbar({
             <Download size={14} aria-hidden="true" />
             导出
           </Button>
+        ) : null}
+
+        {translationBusy ? (
+          <span
+            aria-live="polite"
+            className="hidden min-w-0 items-center gap-1.5 text-xs text-muted-foreground md:inline-flex"
+          >
+            <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
+            <span className="truncate">{translationMessage || '正在翻译'}</span>
+          </span>
         ) : null}
 
         {entry.status === 'Parsed' ? (
