@@ -10,12 +10,13 @@ import {
   ZoomIn,
   ZoomOut
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Switch } from '@/components/ui/switch';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { EntryTranslation } from '@/shared/ipc/workspaceApi';
 import type { ReaderPreferences } from '@/shared/lib/readerPreferences';
 import type { TagRecommendation } from '@/shared/ipc/assistantApi';
@@ -32,7 +33,6 @@ export function ReaderToolbar({
   selectedRecommendedTagPaths,
   tagSuggestionBusy,
   tagSuggestionsOpen,
-  hasRetryableFailures,
   translation,
   translationBusy,
   translationMessage,
@@ -44,7 +44,6 @@ export function ReaderToolbar({
   onTagSuggestionsOpenChange,
   onExportTranslation,
   onPauseTranslation,
-  onRetryFailedTranslation,
   onOpenTranslationTask,
   onReaderPreferencesChange,
   onReparsePdf,
@@ -59,7 +58,6 @@ export function ReaderToolbar({
   selectedRecommendedTagPaths: string[];
   tagSuggestionBusy: boolean;
   tagSuggestionsOpen: boolean;
-  hasRetryableFailures: boolean;
   translation: EntryTranslation | null;
   translationBusy: boolean;
   translationMessage?: string | null;
@@ -71,7 +69,6 @@ export function ReaderToolbar({
   onTagSuggestionsOpenChange: (open: boolean) => void;
   onExportTranslation: () => void;
   onPauseTranslation: () => void;
-  onRetryFailedTranslation: () => void;
   onOpenTranslationTask: () => void;
   onReaderPreferencesChange: (preferences: ReaderPreferences) => void;
   onReparsePdf?: () => void;
@@ -90,24 +87,21 @@ export function ReaderToolbar({
         entryTitle={entry.title}
       >
         {translationBusy ? (
+          <ToolbarTooltip content="暂停当前翻译任务">
           <Button className="shrink-0" size="sm" type="button" variant="outline" onClick={onPauseTranslation}>
             <Pause size={14} aria-hidden="true" />
             暂停
           </Button>
-        ) : null}
-
-        {!translationBusy && hasRetryableFailures ? (
-          <Button className="shrink-0" size="sm" type="button" variant="outline" onClick={onRetryFailedTranslation}>
-            <RotateCcw size={14} aria-hidden="true" />
-            重试失败
-          </Button>
+          </ToolbarTooltip>
         ) : null}
 
         {!translationBusy && hasTranslation ? (
+          <ToolbarTooltip content="导出当前条目的译文笔记">
           <Button className="shrink-0" size="sm" type="button" variant="outline" onClick={onExportTranslation}>
             <Download size={14} aria-hidden="true" />
             导出
           </Button>
+          </ToolbarTooltip>
         ) : null}
 
         {translationBusy ? (
@@ -121,6 +115,7 @@ export function ReaderToolbar({
         ) : null}
 
         {entry.status === 'Parsed' ? (
+          <ToolbarTooltip content="打开翻译任务，选择片段并开始或继续翻译">
           <Button
             className="shrink-0"
             size="sm"
@@ -131,14 +126,15 @@ export function ReaderToolbar({
             <ListChecks size={14} aria-hidden="true" />
             {translationBusy ? '翻译任务进行中' : '翻译任务'}
           </Button>
+          </ToolbarTooltip>
         ) : null}
 
         {entry.status === 'Parsed' && onReparsePdf ? (
+          <ToolbarTooltip content="重新调用解析服务，生成并覆盖当前 PDF 的解析结果">
           <Button
             className="shrink-0"
             disabled={reparseBusy}
             size="sm"
-            title="重新调用解析服务解析当前 PDF，会覆盖现有解析结果（用当前应用的解析逻辑重新生成）"
             type="button"
             variant="outline"
             onClick={onReparsePdf}
@@ -150,6 +146,7 @@ export function ReaderToolbar({
             )}
             重新解析
           </Button>
+          </ToolbarTooltip>
         ) : null}
 
         {entry.status === 'Parsed' && recommendedTags.length > 0 ? (
@@ -216,6 +213,15 @@ export function ReaderToolbar({
   );
 }
 
+function ToolbarTooltip({ content, children }: { content: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>{content}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function RecommendedTagControls({
   busy,
   open,
@@ -244,6 +250,7 @@ function RecommendedTagControls({
         <Button
           className="shrink-0"
           size="sm"
+          title="查看并保存解析生成的推荐标签"
           type="button"
           variant={open ? 'secondary' : 'outline'}
         >
@@ -340,7 +347,7 @@ export function HoverPreviewControls({
           className="shrink-0"
           aria-pressed={enabled}
           size="sm"
-          title="悬停配置"
+          title="配置鼠标悬停片段时显示的原文、译文、笔记和批注"
           type="button"
           variant={enabled ? 'secondary' : 'outline'}
         >

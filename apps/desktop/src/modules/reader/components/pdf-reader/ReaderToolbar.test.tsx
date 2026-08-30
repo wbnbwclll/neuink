@@ -53,7 +53,6 @@ describe('ReaderToolbar', () => {
     render(
       <ReaderToolbar
         entry={buildEntry()}
-        hasRetryableFailures={false}
         pageCount={12}
         readerPreferences={buildPreferences()}
         recommendedTags={[]}
@@ -71,7 +70,6 @@ describe('ReaderToolbar', () => {
         onPauseTranslation={() => {}}
         onReaderPreferencesChange={() => {}}
         onRecommendedTagToggle={() => {}}
-        onRetryFailedTranslation={() => {}}
         onTagSuggestionsOpenChange={() => {}}
         onZoomIn={onZoomIn}
         onZoomOut={onZoomOut}
@@ -98,7 +96,6 @@ describe('ReaderToolbar', () => {
     render(
       <ReaderToolbar
         entry={buildEntry()}
-        hasRetryableFailures={false}
         pageCount={12}
         readerPreferences={buildPreferences({ pageDisplayMode: 'single' })}
         recommendedTags={[]}
@@ -116,7 +113,6 @@ describe('ReaderToolbar', () => {
         onPauseTranslation={() => {}}
         onReaderPreferencesChange={onChange}
         onRecommendedTagToggle={() => {}}
-        onRetryFailedTranslation={() => {}}
         onTagSuggestionsOpenChange={() => {}}
         onZoomIn={() => {}}
         onZoomOut={() => {}}
@@ -135,7 +131,6 @@ describe('ReaderToolbar', () => {
     render(
       <ReaderToolbar
         entry={buildEntry()}
-        hasRetryableFailures={false}
         pageCount={12}
         readerPreferences={buildPreferences({ pageDisplayMode: 'dual' })}
         recommendedTags={[]}
@@ -153,7 +148,6 @@ describe('ReaderToolbar', () => {
         onPauseTranslation={() => {}}
         onReaderPreferencesChange={() => {}}
         onRecommendedTagToggle={() => {}}
-        onRetryFailedTranslation={() => {}}
         onTagSuggestionsOpenChange={() => {}}
         onZoomIn={() => {}}
         onZoomOut={() => {}}

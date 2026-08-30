@@ -13,6 +13,14 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog';
 import { Switch } from '@/components/ui/switch';
 import { TabsContent } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
@@ -57,7 +65,7 @@ import {
   readerSelectableItemClass
 } from './ReaderSurfacePrimitives';
 import { SegmentNoteEditor } from './pdf-reader/SegmentNoteEditor';
-import { logicalSegmentUid } from './pdf-reader/readerUtils';
+import { hasNoteText, logicalSegmentUid } from './pdf-reader/readerUtils';
 import { segmentNoteErrorMessage } from './pdf-reader/segmentNoteError';
 import {
   getSegmentNoteValidation,
@@ -399,6 +407,9 @@ export function EntryWorkspaceView({
                 entry={entry}
                 sourceBacklinksBySegmentUid={sourceBacklinksBySegmentUid}
                 tags={tags}
+                workspaceRoot={workspaceRoot}
+                onReadPdfReader={onReadPdfReader}
+                onApplyEntryTagPaths={onApplyEntryTagPaths}
                 onUpdateEntry={onUpdateEntry}
               />
             ) : null}
@@ -533,6 +544,7 @@ function SegmentNotesOverview({
   const [draft, setDraft] = useState('');
   const [baseline, setBaseline] = useState('');
   const [busy, setBusy] = useState(false);
+  const [clearNoteConfirmOpen, setClearNoteConfirmOpen] = useState(false);
   const lastSharedDraftRef = useRef<{ segmentUid: string; text: string | undefined } | null>(null);
 
   const segmentByUid = useMemo(() => {
@@ -545,9 +557,13 @@ function SegmentNotesOverview({
     }
     return next;
   }, [sourceSegments]);
-  const noteBySegmentUid = useMemo(
-    () => new Map(notes.map((note) => [note.segment_uid, note])),
+  const visibleNotes = useMemo(
+    () => notes.filter((note) => hasNoteText(note.text)),
     [notes]
+  );
+  const noteBySegmentUid = useMemo(
+    () => new Map(visibleNotes.map((note) => [note.segment_uid, note])),
+    [visibleNotes]
   );
   const recordItems = useMemo(() => {
     const records = new Map<string, {
@@ -569,7 +585,7 @@ function SegmentNotesOverview({
       records.set(logicalUid, current);
       return current;
     };
-    for (const note of notes) ensureRecord(note.segment_uid).note = note;
+    for (const note of visibleNotes) ensureRecord(note.segment_uid).note = note;
     for (const annotation of annotations) ensureRecord(annotation.segment_uid).annotations.push(annotation);
     return Array.from(records.values())
       .filter((record) => {
@@ -584,7 +600,7 @@ function SegmentNotesOverview({
         (left.segment?.page_idx ?? Number.MAX_SAFE_INTEGER) -
         (right.segment?.page_idx ?? Number.MAX_SAFE_INTEGER)
       );
-  }, [annotations, notes, recordFilter, segmentByUid, sourceSegments]);
+  }, [annotations, recordFilter, segmentByUid, sourceSegments, visibleNotes]);
   const selectedSegment = selectedSegmentUid ? segmentByUid.get(selectedSegmentUid) ?? null : null;
   const selectedLogicalUid = selectedSegment
     ? logicalSegmentUid(selectedSegment)
@@ -711,6 +727,10 @@ function SegmentNotesOverview({
   const save = async () => {
     if (!selectedLogicalUid || busy) return false;
     if (!dirty) return true;
+    if (!hasNoteText(draft)) {
+      setClearNoteConfirmOpen(true);
+      return false;
+    }
     if (
       getSegmentNoteValidation(getSegmentNoteVisibleText(draft)).overLimit
     ) {
@@ -744,7 +764,7 @@ function SegmentNotesOverview({
   };
 
   const deleteNote = async () => {
-    if (!selectedLogicalUid || busy || !noteBySegmentUid.has(selectedLogicalUid)) {
+    if (!selectedLogicalUid || busy) {
       return false;
     }
     setBusy(true);
@@ -754,6 +774,8 @@ function SegmentNotesOverview({
       setDraft('');
       setBaseline('');
       onSharedDraftChange(selectedLogicalUid, null);
+      setSelectedSegmentUid(null);
+      setPendingSegmentUid(null);
       notify({ tone: 'success', title: '已删除', description: '片段笔记已删除' });
       return true;
     } catch (caught) {
@@ -818,7 +840,12 @@ function SegmentNotesOverview({
   const deleteAnnotation = async (annotationId: AnnotationId) => {
     setAnnotationBusy(true);
     try {
-      setAnnotations(await onDeleteAnnotation(entry.id, annotationId));
+      const nextAnnotations = await onDeleteAnnotation(entry.id, annotationId);
+      setAnnotations(nextAnnotations);
+      if (selectedLogicalUid && !noteBySegmentUid.has(selectedLogicalUid) &&
+          !nextAnnotations.some((annotation) => selectedRelatedSegmentUids.includes(annotation.segment_uid))) {
+        setSelectedSegmentUid(null);
+      }
       notify({ tone: 'success', title: '已删除', description: '批注已删除' });
     } catch (caught) {
       notify({
@@ -842,7 +869,7 @@ function SegmentNotesOverview({
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden">
       <EntryContentHeader contentTitle="片段记录" entryTitle={entry.title}>
-        <Badge variant="outline">笔记 {notes.length}</Badge>
+        <Badge variant="outline">笔记 {visibleNotes.length}</Badge>
         <Badge variant="outline">批注 {annotations.length}</Badge>
         <Badge className="gap-1" variant={linkedToPdf ? 'secondary' : 'outline'}>
           <Link2 size={12} aria-hidden="true" />
@@ -867,6 +894,33 @@ function SegmentNotesOverview({
           {linkedToPdf ? '定位原文' : '在 PDF 中打开'}
         </Button>
       </EntryContentHeader>
+
+      <Dialog open={clearNoteConfirmOpen} onOpenChange={setClearNoteConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>确认移除片段笔记？</DialogTitle>
+            <DialogDescription>
+              本次修改会直接移除当前片段的笔记，该片段将从记录列表中消失。确认后右侧编辑面板也会关闭。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setClearNoteConfirmOpen(false)}>
+              继续编辑
+            </Button>
+            <Button
+              disabled={busy}
+              type="button"
+              variant="destructive"
+              onClick={() => {
+                setClearNoteConfirmOpen(false);
+                void deleteNote();
+              }}
+            >
+              确认移除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-b bg-muted/15 px-3 py-2">
         <Button
@@ -907,7 +961,7 @@ function SegmentNotesOverview({
         <ReaderSurfaceBody>
           <div className="text-sm text-muted-foreground">正在读取片段记录…</div>
         </ReaderSurfaceBody>
-      ) : notes.length === 0 && annotations.length === 0 && !selectedSegment ? (
+      ) : visibleNotes.length === 0 && annotations.length === 0 && !selectedSegment ? (
         <ReaderSurfaceBody>
           <ReaderEmptyState
             description="请在 PDF 或重排视图中选择原文片段后创建笔记、批注或高亮。"

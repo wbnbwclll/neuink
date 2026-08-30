@@ -273,6 +273,8 @@ export function SettingsPanel({
       const target = nextSettings.profiles[0] ?? null;
       if (target) {
         fillForm(target);
+        // 仅用于初始化编辑表单，不应让第一条模型卡片呈现为已选中状态。
+        setEditingId(null);
       }
       setDraftAssistantProfileId(nextSettings.assistant_profile_id);
       setDraftTranslationProfileId(nextSettings.translation_profile_id);

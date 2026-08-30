@@ -38,6 +38,30 @@ function isTerminalJobStatus(status: Job['status']) {
   return status === 'succeeded' || status === 'failed' || status === 'canceled';
 }
 
+const RECEIVED_CHARS_PATTERN = /已接收\s*(\d+)\s*字/;
+
+/** Keep the running action stable while retaining the latest stream receipt count. */
+export function normalizeTranslationJobMessage(
+  status: Job['status'],
+  message: string | null | undefined,
+  previous: string | null = null
+) {
+  if (status !== 'processing' && status !== 'queued') {
+    return message ?? null;
+  }
+
+  const received = message?.match(RECEIVED_CHARS_PATTERN)?.[1];
+  if (received) {
+    const previousReceived = previous?.match(RECEIVED_CHARS_PATTERN)?.[1];
+    if (previousReceived && Number(previousReceived) > Number(received)) {
+      return previous;
+    }
+    return `正在翻译 · 已接收 ${received} 字`;
+  }
+
+  return previous?.match(RECEIVED_CHARS_PATTERN) ? previous : '正在翻译';
+}
+
 export function useEntryTranslationTask({
   entryId,
   workspaceRoot
@@ -84,7 +108,7 @@ export function useEntryTranslationTask({
             if (runningJob) {
               activeJobIdRef.current = runningJob.id;
               setActiveJob(runningJob);
-              setTranslationMessage(runningJob.message ?? null);
+              setTranslationMessage(normalizeTranslationJobMessage(runningJob.status, runningJob.message));
             }
             setTranslationBusy(Boolean(runningJob));
           })
@@ -122,7 +146,9 @@ export function useEntryTranslationTask({
 
       activeJobIdRef.current = nextEvent.job.id;
       setActiveJob(nextEvent.job);
-      setTranslationMessage(nextEvent.job.message ?? null);
+      setTranslationMessage((previous) =>
+        normalizeTranslationJobMessage(nextEvent.job.status, nextEvent.job.message, previous)
+      );
 
       const payloadTranslation = translationFromPayload(nextEvent.payload);
       if (payloadTranslation) {
@@ -167,13 +193,7 @@ export function useEntryTranslationTask({
 
       setTranslationBusy(true);
       setTranslationDetail(null);
-      setTranslationMessage(
-        options.segmentUids
-          ? `正在翻译选中的 ${options.segmentUids.length} 个 Block`
-          : strategy === 'resume'
-            ? '继续翻译全文'
-            : '开始翻译全文',
-      );
+      setTranslationMessage('正在翻译');
       try {
         const response = await runEntryTranslation(workspaceRoot, entryId, {
           force: options.force,

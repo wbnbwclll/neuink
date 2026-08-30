@@ -6,6 +6,8 @@ import { Card, CardContent } from '@/components/ui/card';
 import { EntryEditDialog } from '@/modules/library/components/EntryEditDialog';
 import { buildTagPathById } from '@/modules/library/utils/tagTree';
 import type { TagMeta } from '@/shared/types/domain';
+import type { PdfReaderResponse } from '@/shared/ipc/workspaceApi';
+import { useEntryTagSuggestions } from './pdf-reader/useEntryTagSuggestions';
 
 import type { LibraryEntry } from '../../library/components/LibrarySidebar';
 import type { SourceBacklinksBySegmentUid } from '../types';
@@ -17,6 +19,9 @@ export function EntryOverview({
   onUpdateEntry,
   sourceBacklinksBySegmentUid,
   tags
+  , workspaceRoot
+  , onReadPdfReader
+  , onApplyEntryTagPaths
 }: {
   entry: LibraryEntry;
   onUpdateEntry: (
@@ -25,8 +30,31 @@ export function EntryOverview({
   ) => Promise<unknown> | unknown;
   sourceBacklinksBySegmentUid: SourceBacklinksBySegmentUid;
   tags: TagMeta[];
+  workspaceRoot?: string | null;
+  onReadPdfReader?: (entryId: string) => Promise<PdfReaderResponse>;
+  onApplyEntryTagPaths?: (entryId: string, tagPaths: string[]) => Promise<unknown> | unknown;
 }) {
   const [editOpen, setEditOpen] = useState(false);
+  const [segments, setSegments] = useState<PdfReaderResponse['segments']>([]);
+  const [tagsExpanded, setTagsExpanded] = useState(false);
+  const tagSuggestions = useEntryTagSuggestions({
+    autoRun: false,
+    entry,
+    onApplyEntryTagPaths: onApplyEntryTagPaths ?? (async () => undefined),
+    segments,
+    workspaceRoot: workspaceRoot ?? null
+  });
+  const loadAndGenerateTags = async () => {
+    if (tagSuggestions.busy) return;
+    if (segments.length === 0) {
+      if (!onReadPdfReader) return;
+      const data = await onReadPdfReader(entry.id);
+      setSegments(data.segments);
+      await tagSuggestions.generate(data.segments);
+      return;
+    }
+    await tagSuggestions.generate();
+  };
   const tagPaths = useMemo(() => {
     const pathById = buildTagPathById(tags);
     const resolved = entry.tagIds
@@ -95,6 +123,38 @@ export function EntryOverview({
           ) : (
             <span className="text-sm text-muted-foreground">尚未添加标签。</span>
           )}
+        </ReaderSection>
+
+        <ReaderSection title="推荐标签" description="按需分析当前论文并选择要添加的标签">
+          <div className="flex flex-wrap gap-1.5">
+            {tagSuggestions.recommendations.slice(0, tagsExpanded ? undefined : 10).map((tag) => (
+              <span className="rounded-md border border-primary/20 bg-primary/5 px-2 py-1 text-sm" key={tag.path}>
+                {tag.path}
+              </span>
+            ))}
+            {tagSuggestions.recommendations.length > 10 ? (
+              <Button size="xs" type="button" variant="ghost" onClick={() => setTagsExpanded((value) => !value)}>
+                {tagsExpanded ? '收起' : `… 还有 ${tagSuggestions.recommendations.length - 10} 个`}
+              </Button>
+            ) : null}
+            {tagSuggestions.recommendations.length === 0 ? (
+              <Button disabled={tagSuggestions.busy} size="sm" type="button" variant="outline" onClick={() => void loadAndGenerateTags()}>
+                {tagSuggestions.busy ? '正在分析…' : '生成推荐标签'}
+              </Button>
+            ) : null}
+            {tagSuggestions.recommendations.length > 0 ? (
+              <Button disabled={tagSuggestions.busy} size="sm" type="button" variant="outline" onClick={() => void loadAndGenerateTags()}>
+                重新生成
+              </Button>
+            ) : null}
+          </div>
+          {tagSuggestions.recommendations.length > 0 ? (
+            <div className="mt-3 flex justify-end">
+              <Button disabled={tagSuggestions.busy} size="sm" type="button" onClick={() => void tagSuggestions.apply()}>
+                保存推荐标签
+              </Button>
+            </div>
+          ) : null}
         </ReaderSection>
 
         {customFields.length > 0 ? (

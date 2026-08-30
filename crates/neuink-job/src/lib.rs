@@ -160,8 +160,25 @@ impl LocalJobManager {
         payload: Value,
     ) -> Option<JobEvent> {
         self.update(job_id, JobEventKind::Succeeded, payload, |job| {
+            let total = job.progress.total;
             job.status = JobStatus::Succeeded;
-            job.progress = JobProgress::new(job.progress.total, job.progress.total);
+            job.progress = JobProgress::new(total, total);
+            job.message = Some(message.into());
+            job.error = None;
+        })
+    }
+
+    pub fn succeed_with_progress(
+        &self,
+        job_id: &str,
+        current: usize,
+        total: usize,
+        message: impl Into<String>,
+        payload: Value,
+    ) -> Option<JobEvent> {
+        self.update(job_id, JobEventKind::Succeeded, payload, |job| {
+            job.status = JobStatus::Succeeded;
+            job.progress = JobProgress::new(current, total);
             job.message = Some(message.into());
             job.error = None;
         })
@@ -302,6 +319,21 @@ mod tests {
         }
 
         assert_eq!(manager.list().len(), 256);
+    }
+
+    #[test]
+    fn succeeded_job_can_preserve_partial_progress() {
+        let manager = LocalJobManager::new();
+        let event = manager.create(JobKind::Translation, None, 5);
+
+        let completed = manager
+            .succeed_with_progress(&event.job.id, 2, 5, "partial", Value::Null)
+            .expect("succeeded event");
+
+        assert_eq!(completed.job.status, super::JobStatus::Succeeded);
+        assert_eq!(completed.job.progress.current, 2);
+        assert_eq!(completed.job.progress.total, 5);
+        assert_eq!(completed.job.progress.percent, 40);
     }
 
     /// 前端按 `scope.root` / `scope.entry_id` 扁平字段匹配任务事件，

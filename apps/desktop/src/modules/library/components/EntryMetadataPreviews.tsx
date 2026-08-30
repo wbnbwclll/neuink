@@ -1,8 +1,9 @@
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
 import { Badge } from '@/components/ui/badge';
+import { useState } from 'react';
 
 const DESCRIPTION_PREVIEW_LENGTH = 240;
-const VISIBLE_TAG_LIMIT = 2;
+const VISIBLE_TAG_LIMIT = 10;
 const VISIBLE_FIELD_LIMIT = 2;
 
 export function CompactEntryDescription({ description }: { description: string }) {
@@ -30,35 +31,28 @@ export function CompactEntryDescription({ description }: { description: string }
 }
 
 export function CompactEntryTags({ tags }: { tags: string[] }) {
-  const visible = tags.slice(0, VISIBLE_TAG_LIMIT);
-  const hidden = tags.slice(VISIBLE_TAG_LIMIT);
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? tags : tags.slice(0, VISIBLE_TAG_LIMIT);
+  const hiddenCount = Math.max(0, tags.length - VISIBLE_TAG_LIMIT);
 
   return (
-    <div className="grid h-12 min-w-0 grid-rows-[minmax(0,1fr)_auto]">
-      <div className="flex min-w-0 items-center gap-1 overflow-hidden">
+    <div className="grid min-h-12 min-w-0 grid-rows-[minmax(0,1fr)_auto]">
+      <div className="flex min-w-0 flex-wrap content-start items-center gap-1 overflow-hidden">
         {visible.map((tag) => (
           <Badge className="min-w-0 max-w-full shrink truncate" key={tag} title={tag} variant="secondary">
             {tagLeaf(tag)}
           </Badge>
         ))}
       </div>
-      {hidden.length > 0 ? (
-        <HoverCard openDelay={120} closeDelay={100}>
-          <HoverCardTrigger asChild>
-            <button className="rounded-md border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted" type="button">
-              还有 {hidden.length} 个未显示
-            </button>
-          </HoverCardTrigger>
-          <HoverCardContent align="start" className="max-h-[min(20rem,55vh)] w-[min(30rem,calc(100vw-2rem))] overflow-y-auto">
-            <div className="flex flex-wrap gap-1.5">
-              {tags.map((tag) => (
-                <Badge className="h-auto max-w-full whitespace-normal break-all" key={tag} variant="secondary">
-                  {tag}
-                </Badge>
-              ))}
-            </div>
-          </HoverCardContent>
-        </HoverCard>
+      {hiddenCount > 0 ? (
+        <button
+          aria-label={expanded ? '收起标签' : `展开全部 ${tags.length} 个标签`}
+          className="justify-self-end rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? '收起' : '…'}
+        </button>
       ) : <span />}
     </div>
   );

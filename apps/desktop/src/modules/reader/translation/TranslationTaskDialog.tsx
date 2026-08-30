@@ -38,7 +38,6 @@ export function TranslationTaskDialog({
   segments,
   translation,
   busy = false,
-  detail,
   message,
   progress,
   onOpenChange,
@@ -67,7 +66,7 @@ export function TranslationTaskDialog({
       const translated = statuses.get(segment.uid);
       return {
         segment,
-        status: translated?.status === 'skipped' ? 'pending' : translated?.status ?? 'pending',
+        status: translated?.status ?? 'pending',
         error: translated?.status === 'skipped' ? null : translated?.error ?? null
       };
     }),
@@ -76,7 +75,7 @@ export function TranslationTaskDialog({
   const visible = rows.filter(
     (row) =>
       selectedTypes.has(row.segment.segment_type) &&
-      (filter === 'all' || row.status === filter)
+      (filter === 'all' || (filter === 'pending' ? row.status === 'pending' || row.status === 'skipped' : row.status === filter))
   );
   const counts = rows.reduce<Record<Filter, number>>((current, row) => {
     current.all += 1;
@@ -85,14 +84,21 @@ export function TranslationTaskDialog({
     else current.pending += 1;
     return current;
   }, { all: 0, pending: 0, translated: 0, failed: 0 });
-  const completedCount = counts.translated + counts.failed;
+  const completedCount = counts.translated;
   const displayedCompleted = busy && progress ? progress.current : completedCount;
   const displayedTotal = busy && progress ? progress.total : rows.length;
+  const runningMessage = busy
+    ? message?.match(/已接收\s*(\d+)\s*字/)
+      ? `正在翻译 · 已接收 ${message.match(/已接收\s*(\d+)\s*字/)?.[1]} 字`
+      : '正在翻译'
+    : message;
   const progressValue = busy && progress
     ? progress.percent
     : rows.length > 0
       ? (completedCount / rows.length) * 100
       : 0;
+  const actionableVisible = visible.filter((row) => isActionable(row.status));
+  const allVisibleSelected = actionableVisible.length > 0 && actionableVisible.every((row) => selected.has(row.segment.uid));
 
   useEffect(() => {
     if (!open) {
@@ -125,7 +131,7 @@ export function TranslationTaskDialog({
 
   const run = (mode: RunMode) => {
     const candidates = rows.filter((row) => {
-      if (!selected.has(row.segment.uid)) return false;
+      if (!selected.has(row.segment.uid) || row.status === 'skipped') return false;
       if (mode === 'force') return true;
       if (mode === 'retry') return row.status === 'failed';
       return isActionable(row.status);
@@ -153,104 +159,117 @@ export function TranslationTaskDialog({
             <Clock3 aria-hidden="true" className="shrink-0 text-primary" size={15} />
             <span>
               {busy
-                ? `${message || '正在翻译'} · ${displayedCompleted}/${displayedTotal}`
+                ? `${runningMessage || '正在翻译'} · ${displayedCompleted}/${displayedTotal}`
                 : `翻译进度：已完成 ${completedCount}/${rows.length}`}
             </span>
           </div>
           <Progress value={progressValue} />
-          {busy && detail ? (
-            <div className="text-xs text-muted-foreground">{detail}</div>
-          ) : null}
         </div>
 
         <div className="grid gap-2 rounded-md border p-2">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-semibold text-muted-foreground">翻译内容类型</span>
-            <div className="flex gap-1">
-              <Button
-                size="xs"
-                type="button"
-                variant="ghost"
-                onClick={() => {
-                  setSelectedTypes(new Set(ALL_SEGMENT_TYPES));
-                  setSelected(new Set(actionableRows(rows).map((row) => row.segment.uid)));
-                }}
-              >
-                全选类型
+          <div className="flex flex-wrap items-center gap-1.5 border-b pb-2">
+            <span className="mr-1 text-xs font-semibold text-muted-foreground">翻译状态</span>
+            {(['all', 'pending', 'translated', 'failed'] as Filter[]).map((value) => (
+              <Button key={value} size="xs" type="button" variant={filter === value ? 'secondary' : 'outline'} onClick={() => setFilter(value)}>
+                {filterLabel(value)} {counts[value]}
               </Button>
-              <Button
-                size="xs"
-                type="button"
-                variant="ghost"
-                onClick={() => {
-                  setSelected(new Set());
-                }}
-              >
-                清空选择
-              </Button>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="mr-1 text-xs font-semibold text-muted-foreground">翻译内容类型</span>
+            <div className="flex flex-wrap gap-1.5">
+              {ALL_SEGMENT_TYPES.map((segmentType) => {
+                const enabled = selectedTypes.has(segmentType);
+                const typeCount = rows.filter((row) => row.segment.segment_type === segmentType).length;
+                return (
+                  <Button
+                    aria-pressed={enabled}
+                    disabled={busy || typeCount === 0}
+                    key={segmentType}
+                    size="xs"
+                    type="button"
+                    variant={enabled ? 'secondary' : 'outline'}
+                    onClick={() => toggleType(segmentType)}
+                  >
+                    {segmentTypeLabel(segmentType)} {typeCount}
+                  </Button>
+                );
+              })}
             </div>
           </div>
-          <div className="flex flex-wrap gap-1.5">
-            {ALL_SEGMENT_TYPES.map((segmentType) => {
-              const enabled = selectedTypes.has(segmentType);
-              const typeCount = rows.filter((row) => row.segment.segment_type === segmentType).length;
-              return (
-                <Button
-                  aria-pressed={enabled}
-                  disabled={typeCount === 0}
-                  key={segmentType}
-                  size="xs"
-                  type="button"
-                  variant={enabled ? 'secondary' : 'outline'}
-                  onClick={() => toggleType(segmentType)}
-                >
-                  {segmentTypeLabel(segmentType)} {typeCount}
-                </Button>
-              );
-            })}
-          </div>
         </div>
 
-        <div className="flex flex-wrap gap-1.5">
-          {(['all', 'pending', 'translated', 'failed'] as Filter[]).map((value) => (
-            <Button
-              key={value}
-              size="xs"
-              type="button"
-              variant={filter === value ? 'secondary' : 'outline'}
-              onClick={() => setFilter(value)}
-            >
-              {filterLabel(value)} {counts[value]}
-            </Button>
-          ))}
-        </div>
-
-        <div className="max-h-[min(48vh,28rem)] overflow-y-auto rounded-md border">
+        <div className="max-h-[min(48vh,28rem)] overflow-auto rounded-md border">
           {visible.length === 0 ? (
             <div className="px-3 py-8 text-center text-sm text-muted-foreground">
               当前筛选条件下没有 Block。可切换状态或重新选择内容类型。
             </div>
-          ) : visible.map(({ segment, status, error }) => (
-            <label className="flex items-center gap-3 border-b px-3 py-2 last:border-b-0 hover:bg-muted/50" key={segment.uid}>
-              <input checked={selected.has(segment.uid)} type="checkbox" onChange={() => setSelected((current) => {
-                const next = new Set(current);
-                if (next.has(segment.uid)) next.delete(segment.uid); else next.add(segment.uid);
-                return next;
-              })} />
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm">第 {segment.page_idx + 1} 页 · {segmentTypeLabel(segment.segment_type)}</span>
-                {error ? <span className="block text-xs text-destructive">翻译失败，可重试</span> : null}
-              </span>
-              <SourcePreview segment={segment} />
-              <Status status={status} />
-            </label>
-          ))}
+          ) : (
+            <div className="min-w-[44rem] text-sm" role="table">
+              <div className="grid grid-cols-[2.5rem_5rem_7rem_minmax(0,1fr)_12rem] items-center gap-2 border-b bg-muted/30 px-3 py-2 text-xs font-semibold text-muted-foreground" role="row">
+                <input
+                  aria-label="全选当前列表"
+                  checked={allVisibleSelected}
+                  disabled={busy || actionableVisible.length === 0}
+                  type="checkbox"
+                  onChange={() => setSelected((current) => {
+                    const next = new Set(current);
+                    if (allVisibleSelected) actionableVisible.forEach((row) => next.delete(row.segment.uid));
+                    else actionableVisible.forEach((row) => next.add(row.segment.uid));
+                    return next;
+                  })}
+                />
+                <span role="columnheader">页码</span>
+                <span role="columnheader">类型</span>
+                <span role="columnheader">内容</span>
+                <span className="text-right" role="columnheader">状态 / 操作</span>
+              </div>
+              {visible.map(({ segment, status, error }) => {
+                const text = (segment.markdown ?? segment.text).trim();
+                return (
+                  <div className="grid grid-cols-[2.5rem_5rem_7rem_minmax(0,1fr)_12rem] items-center gap-2 border-b px-3 py-2 last:border-b-0 hover:bg-muted/50" key={segment.uid} role="row">
+                    <input
+                      aria-label={`选择第 ${segment.page_idx + 1} 页 ${segmentTypeLabel(segment.segment_type)}`}
+                      checked={selected.has(segment.uid)}
+                      disabled={busy || status === 'skipped'}
+                      type="checkbox"
+                      onChange={() => setSelected((current) => {
+                        const next = new Set(current);
+                        if (next.has(segment.uid)) next.delete(segment.uid); else next.add(segment.uid);
+                        return next;
+                      })}
+                    />
+                    <span role="cell">第 {segment.page_idx + 1} 页</span>
+                    <span className="truncate text-muted-foreground" role="cell" title={segmentTypeLabel(segment.segment_type)}>{segmentTypeLabel(segment.segment_type)}</span>
+                    <span className="flex min-w-0 items-center gap-1" role="cell">
+                      <span className="min-w-0 flex-1 truncate" title={text || undefined}>{text || '无文本'}</span>
+                      <SourcePreview segment={segment} />
+                    </span>
+                    <span className="flex items-center justify-end gap-1.5" role="cell">
+                      <Status status={status} />
+                      {status === 'failed' ? (
+                        <Button
+                          aria-label={`重试第 ${segment.page_idx + 1} 页`}
+                          disabled={busy}
+                          size="icon-xs"
+                          title="重试此 Block"
+                          type="button"
+                          variant="ghost"
+                          onClick={() => void onTranslate([segment], 'retry')}
+                        >
+                          <RotateCcw aria-hidden="true" size={13} />
+                        </Button>
+                      ) : null}
+                      {error ? <span className="sr-only">翻译失败，可重试</span> : null}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <DialogFooter>
-          <Button disabled={busy || selected.size === 0} size="sm" type="button" variant="outline" onClick={() => run('retry')}>
-            <RotateCcw size={14} aria-hidden="true" />重试失败
-          </Button>
           <Button disabled={busy || selected.size === 0} size="sm" type="button" variant="outline" onClick={() => run('force')}>
             重新翻译选中
           </Button>
@@ -299,6 +318,7 @@ function SourcePreview({ segment }: { segment: SourceSegment }) {
 function Status({ status }: { status: TranslatedSegmentStatus }) {
   if (status === 'translated') return <span className="flex items-center gap-1 text-xs text-success"><CheckCircle2 size={13} />已翻译</span>;
   if (status === 'failed') return <span className="flex items-center gap-1 text-xs text-destructive"><CircleAlert size={13} />失败</span>;
+  if (status === 'skipped') return <span className="flex items-center gap-1 text-xs text-muted-foreground"><Clock3 size={13} />已跳过</span>;
   return <span className="flex items-center gap-1 text-xs text-muted-foreground"><Clock3 size={13} />待翻译</span>;
 }
 

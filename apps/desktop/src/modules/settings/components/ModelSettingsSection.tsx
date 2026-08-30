@@ -47,7 +47,6 @@ export function ModelSettingsSection({ props }: { props: SettingsPanelLayoutProp
     busy,
     cachedModelCatalog,
     collapsedProviderCount,
-    editingId,
     editingProfile,
     formatCacheTime,
     formatContextLength,
@@ -119,11 +118,7 @@ export function ModelSettingsSection({ props }: { props: SettingsPanelLayoutProp
                     const testState = profileTestStates[profile.id];
                     return (
                     <div
-                      className={`rounded-xl border px-3 py-3 text-left text-xs transition hover:border-primary/25 hover:bg-muted/30 ${
-                        editingId === profile.id
-                          ? 'border-primary/35 bg-primary/5'
-                          : 'border-border bg-card'
-                      }`}
+                      className="rounded-xl border border-border bg-card px-3 py-3 text-left text-xs transition hover:border-primary/25 hover:bg-muted/30"
                       key={profile.id}
                     >
                       <div className="w-full text-left">

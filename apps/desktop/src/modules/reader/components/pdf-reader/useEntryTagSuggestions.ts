@@ -24,6 +24,7 @@ type UseEntryTagSuggestionsOptions = {
   ) => Promise<unknown> | unknown;
   segments: SourceSegment[];
   workspaceRoot: string | null;
+  autoRun?: boolean;
 };
 
 export function useEntryTagSuggestions({
@@ -31,6 +32,7 @@ export function useEntryTagSuggestions({
   onApplyEntryTagPaths,
   segments,
   workspaceRoot,
+  autoRun = true,
 }: UseEntryTagSuggestionsOptions) {
   const { notify } = useToast();
   const [open, setOpen] = useState(false);
@@ -82,14 +84,15 @@ export function useEntryTagSuggestions({
 
   useEffect(() => {
     setRecommendations([]);
-    if (
+    if (!autoRun ||
+      (
       entry.status !== "Parsed" ||
       !workspaceRoot ||
       segments.length === 0 ||
       !assistantProfileId ||
       accepted ||
       dismissedKey === suggestionKey
-    ) {
+      )) {
       return;
     }
 
@@ -132,7 +135,22 @@ export function useEntryTagSuggestions({
     segments.length,
     suggestionKey,
     workspaceRoot,
+    autoRun,
   ]);
+
+  const generate = async (segmentOverride?: SourceSegment[]) => {
+    const availableSegments = segmentOverride ?? segments;
+    if (busy || !workspaceRoot || !assistantProfileId || availableSegments.length === 0) return;
+    setBusy(true);
+    try {
+      const response = await analyzeEntryTags({ entryId: entry.id, instruction: 'Suggest useful tags for this paper.', root: workspaceRoot });
+      setRecommendations(response.recommendations);
+    } catch (caught) {
+      notify({ tone: 'danger', title: '标签分析失败', description: caught instanceof Error ? caught.message : String(caught) });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const toggleRecommendation = (tag: TagRecommendation) => {
     setSelectedPaths((current) => {
@@ -190,6 +208,7 @@ export function useEntryTagSuggestions({
   return {
     apply,
     busy,
+    generate,
     dismiss,
     open,
     recommendations: accepted || dismissedKey === suggestionKey ? [] : recommendations,

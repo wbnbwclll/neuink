@@ -7,6 +7,7 @@ import type {
   AssistantTaskPlan
 } from '@/shared/types/assistant';
 import type { AgentRuntimeSettings, AgentToolId } from '@/shared/types/agentRuntime';
+import type { ModelTaskPlan } from './taskPlanner';
 
 type CompileExecutionContractOptions = {
   activeSegment?: AssistantActiveSegment | null;
@@ -14,6 +15,7 @@ type CompileExecutionContractOptions = {
   contextPlan?: AssistantContextPlan | null;
   question: string;
   snapshot: AssistantContextSnapshot;
+  modelPlan?: ModelTaskPlan | null;
 };
 
 export type AssistantExecutionContract = {
@@ -43,11 +45,38 @@ export function compileAssistantExecutionContract({
   activeSurface = null,
   contextPlan,
   question,
-  snapshot
+  snapshot,
+  modelPlan = null
 }: CompileExecutionContractOptions): AssistantExecutionContract {
   const activeEntryId = snapshot.active_entry?.entry_id;
   const activeNote = snapshot.active_note;
   const base = basePlan(question, contextPlan, activeEntryId);
+
+  if (modelPlan?.intent === 'entry_meta_edit') {
+    const fields: Array<'title' | 'description'> = modelPlan.fields?.length ? modelPlan.fields : ['title'];
+    const requiredToolIds: AgentToolId[] = ['entry.propose_meta_patch'];
+    if (modelPlan.sourcePolicy === 'active_context_only' || modelPlan.requiredToolIds.includes('read_entry_assistant_context')) {
+      requiredToolIds.unshift('read_entry_assistant_context');
+    }
+    return { failurePolicy: 'stop', requiredToolIds, sourcePolicy: modelPlan.sourcePolicy ?? 'active_context_only', plan: {
+      ...base, capabilities: ['read_document', 'propose_entry_meta_change'], confidence: 0.9,
+      citationPolicy: requiredToolIds.includes('read_entry_assistant_context') ? 'required' : 'none', deliverables: ['entry_meta_change_proposal'],
+      entryMetaChange: { entryId: activeEntryId, fields }, intent: 'entry_meta_update', needsDocumentContext: requiredToolIds.includes('read_entry_assistant_context'),
+      rationale: 'The task planner classified this as an Entry metadata change.', steps: [{ dependsOn: [], id: 'entry-meta', kind: 'propose_entry_meta_change' }]
+    }};
+  }
+
+  if (modelPlan?.intent === 'note_edit' && !NOTE_EDIT_RE.test(question)) {
+    // The model can recognize natural-language variants such as “增加本地笔记”.
+    const requiredToolIds: AgentToolId[] = ['read_current_note', 'note.propose_patch'];
+    return { failurePolicy: 'stop', requiredToolIds, sourcePolicy: 'active_context_only', plan: {
+      ...base, capabilities: ['read_note', 'propose_note'], confidence: 0.9, deliverables: ['note_patch_proposal'],
+      intent: 'note_update', missing: snapshot.active_note ? [] : ['active_note'], needsCurrentNote: true, needsNoteProposal: true,
+      noteAction: modelPlan.noteAction ?? 'append', target: { entryId: snapshot.active_note?.entry_id ?? activeEntryId, kind: 'markdown_note', noteId: snapshot.active_note?.note_id },
+      clarificationQuestion: snapshot.active_note ? undefined : '请先聚焦或用 @ 指定要修改的 Markdown 笔记。', rationale: 'The task planner classified this as a Markdown note change.',
+      steps: [{ dependsOn: [], id: 'read-target', kind: 'read_context' }, { dependsOn: ['read-target'], id: 'draft-patch', kind: 'draft_note' }]
+    }};
+  }
 
   if (NOTE_EDIT_RE.test(question)) {
     const segmentEdit = SEGMENT_NOTE_RE.test(question);

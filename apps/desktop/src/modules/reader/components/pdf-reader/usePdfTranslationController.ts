@@ -72,9 +72,6 @@ export function usePdfTranslationController({
     translation?.status === "failed" ||
     translation?.status === "partial" ||
     translation?.status === "running";
-  const hasRetryableFailures =
-    !translationBusy && (translation?.progress.failed ?? 0) > 0;
-
   useEffect(() => {
     handledJobKeyRef.current = null;
   }, [entryId]);
@@ -238,9 +235,7 @@ export function usePdfTranslationController({
     bySegmentUid,
     canResume,
     exportTranslation,
-    hasRetryableFailures,
     pause,
-    retryFailed: () => start("resume"),
     setTaskOpen,
     setVisible,
     start,

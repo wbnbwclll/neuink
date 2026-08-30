@@ -525,8 +525,11 @@ impl TranslationPipeline {
                 .segments
                 .iter()
                 .filter(|segment| {
-                    !matches!(segment.status, TranslatedSegmentStatus::Pending)
-                        && self.task
+                    (matches!(segment.status, TranslatedSegmentStatus::Skipped)
+                        || (!self.task.force
+                            && matches!(segment.status, TranslatedSegmentStatus::Translated)))
+                        && self
+                            .task
                             .selected_segment_uids
                             .as_ref()
                             .is_none_or(|uids| uids.contains(&segment.segment_uid))
@@ -585,9 +588,13 @@ impl TranslationPipeline {
             } else {
                 "翻译已是最新"
             };
-            if let Some(event) =
-                job_manager().succeed(job_id, message, translation_payload(&final_translation))
-            {
+            if let Some(event) = job_manager().succeed_with_progress(
+                job_id,
+                self.completed_count(&final_translation),
+                self.task.job_total,
+                message,
+                translation_payload(&final_translation),
+            ) {
                 emit_job_event(app, event);
             }
             return Ok(TranslationRunOutcome::Completed);
@@ -635,23 +642,8 @@ impl TranslationPipeline {
             self.task.profile.max_output_tokens,
         );
         let batches = build_translation_batches(pending_candidates, budgets.batch);
-        let batch_total = batches
-            .iter()
-            .map(|batch| {
-                batch
-                    .iter()
-                    .filter(|segment| segment.segment_type != SegmentType::List)
-                    .count()
-                    + batch
-                        .iter()
-                        .filter(|segment| segment.segment_type == SegmentType::List)
-                        .count()
-            })
-            .sum::<usize>();
-        self.emit_translation_progress(app, job_id, &format!("开始翻译，共 {batch_total} 批"))?;
-        let completed_counter = Arc::new(AtomicUsize::new(0));
+        self.emit_translation_progress(app, job_id, "正在翻译")?;
         let failed_counter = Arc::new(AtomicUsize::new(0));
-        let schedule_counter = Arc::new(AtomicUsize::new(0));
         // 串行化磁盘写与进度事件：并发批次都往同一个译文文件 upsert，
         // 不加锁会互相覆盖（读-改-写竞态）。
         let io_lock = Arc::new(Mutex::new(()));
@@ -659,7 +651,8 @@ impl TranslationPipeline {
         let fatal_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
         futures_util::stream::iter(batches)
-            .for_each_concurrent(TRANSLATION_CONCURRENCY, |batch| async {                // 暂停或致命错误后不再启动新批次；已在跑的批次会自然完成。
+            .for_each_concurrent(TRANSLATION_CONCURRENCY, |batch| async {
+                // 暂停或致命错误后不再启动新批次；已在跑的批次会自然完成。
                 if self.task.control.pause_requested()
                     || fatal_error
                         .lock()
@@ -668,7 +661,6 @@ impl TranslationPipeline {
                 {
                     return;
                 }
-                let batch_no = schedule_counter.fetch_add(1, Ordering::Relaxed) + 1;
                 let (list_segments, ordinary_segments): (Vec<_>, Vec<_>) = batch
                     .into_iter()
                     .partition(|segment| segment.segment_type == SegmentType::List);
@@ -677,12 +669,26 @@ impl TranslationPipeline {
                     let batch_client = self.client.clone().with_progress(self.live_progress_sink(
                         app,
                         job_id,
-                        format!("第 {batch_no}/{batch_total} 批翻译中"),
+                        "正在翻译".to_string(),
                         &done_counter,
                     ));
                     let outcome = batch_client
                         .translate_batch(&entry.title, &context, &ordinary_segments)
                         .await;
+                    let translated_count = outcome
+                        .as_ref()
+                        .ok()
+                        .map(|translated| {
+                            ordinary_segments
+                                .iter()
+                                .filter(|segment| {
+                                    translated
+                                        .get(&segment.uid)
+                                        .is_some_and(|text| !text.trim().is_empty())
+                                })
+                                .count()
+                        })
+                        .unwrap_or(0);
                     let io = io_lock.lock().unwrap_or_else(|error| error.into_inner());
                     match outcome {
                         Ok(translated) => {
@@ -715,13 +721,8 @@ impl TranslationPipeline {
                             let _ = self.emit_translation_progress(app, job_id, &reason);
                         }
                     }
-                    done_counter.fetch_add(ordinary_segments.len(), Ordering::Relaxed);
-                    let completed = completed_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    if let Err(error) = self.emit_translation_progress(
-                        app,
-                        job_id,
-                        &format!("翻译批次 {completed}/{batch_total}"),
-                    ) {
+                    done_counter.fetch_add(translated_count, Ordering::Relaxed);
+                    if let Err(error) = self.emit_translation_progress(app, job_id, "正在翻译") {
                         record_fatal(&fatal_error, error);
                         return;
                     }
@@ -732,12 +733,13 @@ impl TranslationPipeline {
                     let list_client = self.client.clone().with_progress(self.live_progress_sink(
                         app,
                         job_id,
-                        format!("第 {batch_no}/{batch_total} 批列表翻译中"),
+                        "正在翻译".to_string(),
                         &done_counter,
                     ));
                     let outcome = self
                         .translate_list_segment(&list_client, &entry.title, &context, &segment)
                         .await;
+                    let translated_successfully = outcome.is_ok();
                     let io = io_lock.lock().unwrap_or_else(|error| error.into_inner());
                     match outcome {
                         Ok(translated_text) => {
@@ -762,13 +764,10 @@ impl TranslationPipeline {
                             let _ = self.emit_translation_progress(app, job_id, &reason);
                         }
                     }
-                    done_counter.fetch_add(1, Ordering::Relaxed);
-                    let completed = completed_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    if let Err(error) = self.emit_translation_progress(
-                        app,
-                        job_id,
-                        &format!("已逐项翻译列表 {completed}/{batch_total}"),
-                    ) {
+                    if translated_successfully {
+                        done_counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if let Err(error) = self.emit_translation_progress(app, job_id, "正在翻译") {
                         record_fatal(&fatal_error, error);
                         return;
                     }
@@ -801,9 +800,13 @@ impl TranslationPipeline {
         } else {
             "翻译完成".to_string()
         };
-        if let Some(event) =
-            job_manager().succeed(job_id, message, translation_payload(&final_translation))
-        {
+        if let Some(event) = job_manager().succeed_with_progress(
+            job_id,
+            self.completed_count(&final_translation),
+            self.task.job_total,
+            message,
+            translation_payload(&final_translation),
+        ) {
             emit_job_event(app, event);
         }
         Ok(TranslationRunOutcome::Completed)
@@ -935,26 +938,7 @@ impl TranslationPipeline {
             .read_entry_translation(&self.task.entry_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "translation has not been started".to_string())?;
-        let done = self
-            .task
-            .selected_segment_uids
-            .as_ref()
-            .map(|selected| {
-                translation
-                    .segments
-                    .iter()
-                    .filter(|segment| {
-                        selected.contains(&segment.segment_uid)
-                            && !matches!(segment.status, TranslatedSegmentStatus::Pending)
-                    })
-                    .count()
-            })
-            .unwrap_or_else(|| {
-                translation.progress.translated
-                    + translation.progress.skipped
-                    + translation.progress.failed
-            })
-            .min(self.task.job_total);
+        let done = self.completed_count(&translation);
         if let Some(event) = job_manager().progress(
             job_id,
             done,
@@ -965,6 +949,29 @@ impl TranslationPipeline {
             emit_job_event(app, event);
         }
         Ok(())
+    }
+
+    fn completed_count(&self, translation: &EntryTranslation) -> usize {
+        let completed = self
+            .task
+            .selected_segment_uids
+            .as_ref()
+            .map(|selected| {
+                translation
+                    .segments
+                    .iter()
+                    .filter(|segment| {
+                        selected.contains(&segment.segment_uid)
+                            && matches!(
+                                segment.status,
+                                TranslatedSegmentStatus::Translated
+                                    | TranslatedSegmentStatus::Skipped
+                            )
+                    })
+                    .count()
+            })
+            .unwrap_or(translation.progress.translated + translation.progress.skipped);
+        completed.min(self.task.job_total)
     }
 
     fn mark_failed(&self, error: String) -> Result<(), String> {
@@ -1634,7 +1641,7 @@ fn completed_translation_status(translation: &EntryTranslation) -> TranslationSt
 }
 
 fn should_translate_segment(segment: &SourceSegment) -> bool {
-    !source_text(segment).trim().is_empty()
+    !source_text(segment).trim().is_empty() && !matches!(segment.segment_type, SegmentType::Figure)
 }
 
 fn segment_type_key(segment_type: SegmentType) -> &'static str {
@@ -2009,7 +2016,7 @@ mod tests {
     }
 
     #[test]
-    fn allows_every_non_empty_segment_type_for_translation() {
+    fn skips_figure_segments_from_translation() {
         let segment_types = [
             SegmentType::Paragraph,
             SegmentType::Heading,
@@ -2027,7 +2034,11 @@ mod tests {
 
         for segment_type in segment_types {
             let segment = SourceSegment::new(segment_type, 0, None, "English source".to_string());
-            assert!(should_translate_segment(&segment), "{segment_type:?}");
+            assert_eq!(
+                should_translate_segment(&segment),
+                segment_type != SegmentType::Figure,
+                "{segment_type:?}"
+            );
         }
     }
 

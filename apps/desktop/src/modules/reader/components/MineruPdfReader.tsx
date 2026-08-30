@@ -1,9 +1,17 @@
-import { Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { saveNoteAssetBytes, type PdfReaderResponse } from "@/shared/ipc/workspaceApi";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/shared/hooks/useToast";
 import type { ReaderPreferences } from "@/shared/lib/readerPreferences";
 import type {
@@ -274,6 +282,7 @@ export function MineruPdfReader({
     "segment",
   );
   const [parseRetryBusy, setParseRetryBusy] = useState(false);
+  const [reparseConfirmOpen, setReparseConfirmOpen] = useState(false);
   const parseStatusToastRef = useRef<{ key: string; id: string } | null>(null);
 
   const {
@@ -307,6 +316,7 @@ export function MineruPdfReader({
     setOpen: setTagSuggestionsOpen,
     toggleRecommendation: toggleRecommendedTag,
   } = useEntryTagSuggestions({
+    autoRun: false,
     entry,
     onApplyEntryTagPaths,
     segments,
@@ -319,9 +329,13 @@ export function MineruPdfReader({
         continue;
       }
       next.set(note.segment_uid, note);
+      const segment = segments.find((candidate) => candidate.uid === note.segment_uid);
+      if (segment) {
+        next.set(logicalSegmentUid(segment), note);
+      }
     }
     return next;
-  }, [segmentNotes]);
+  }, [segmentNotes, segments]);
   const annotationsBySegmentUid = useMemo(() => {
     const next = new Map<string, Annotation[]>();
     for (const annotation of annotations) {
@@ -416,9 +430,7 @@ export function MineruPdfReader({
   const {
     bySegmentUid: translationBySegmentUid,
     exportTranslation,
-    hasRetryableFailures,
     pause: pauseTranslation,
-    retryFailed: retryFailedTranslation,
     setTaskOpen: setTranslationTaskOpen,
     start: startTranslation,
     taskOpen: translationTaskOpen,
@@ -897,6 +909,11 @@ export function MineruPdfReader({
     }
   };
 
+  const confirmReparsePdf = async () => {
+    setReparseConfirmOpen(false);
+    await retryPdfParse();
+  };
+
   if (!entry.pdfFileName) {
     return (
       <ReaderMessage title="无 PDF" description="这个条目还没有导入 PDF。" />
@@ -953,7 +970,6 @@ export function MineruPdfReader({
         selectedRecommendedTagPaths={[...selectedSuggestedTagPaths]}
         tagSuggestionBusy={tagSuggestionBusy}
         tagSuggestionsOpen={tagSuggestionsOpen}
-        hasRetryableFailures={hasRetryableFailures}
         translation={translation}
         translationBusy={translationBusy}
         translationMessage={translationMessage}
@@ -964,10 +980,9 @@ export function MineruPdfReader({
         onDismissRecommendedTags={dismissTagSuggestions}
         onRecommendedTagToggle={toggleRecommendedTag}
         onPauseTranslation={() => void pauseTranslation()}
-        onRetryFailedTranslation={() => void retryFailedTranslation()}
         onOpenTranslationTask={() => setTranslationTaskOpen(true)}
         onReaderPreferencesChange={onReaderPreferencesChange}
-        onReparsePdf={() => void retryPdfParse()}
+        onReparsePdf={() => setReparseConfirmOpen(true)}
         reparseBusy={parseRetryBusy}
         onTagSuggestionsOpenChange={setTagSuggestionsOpen}
         onZoomIn={() =>
@@ -994,6 +1009,39 @@ export function MineruPdfReader({
           });
         }}
       />
+
+      <Dialog open={reparseConfirmOpen} onOpenChange={setReparseConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle size={16} aria-hidden="true" />
+              确认重新解析
+            </DialogTitle>
+            <DialogDescription>
+              将重新调用解析服务处理当前 PDF，并覆盖现有解析结果。已有的解析正文、片段和相关内容可能发生变化。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              disabled={parseRetryBusy}
+              type="button"
+              variant="outline"
+              onClick={() => setReparseConfirmOpen(false)}
+            >
+              取消
+            </Button>
+            <Button
+              disabled={parseRetryBusy}
+              type="button"
+              variant="destructive"
+              onClick={() => void confirmReparsePdf()}
+            >
+              {parseRetryBusy ? <Loader2 className="animate-spin" size={14} aria-hidden="true" /> : null}
+              确认重新解析
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <UnsavedSegmentChangesDialog
         busy={segmentCloseBusy}

@@ -43,6 +43,7 @@ import {
   compileAssistantExecutionContract,
   referencesCurrentDocument
 } from './executionContract';
+import { planAssistantTask } from './taskPlanner';
 import {
   AssistantHarnessError,
   createAgentRun,
@@ -164,12 +165,14 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
     throwIfAborted(abortSignal);
 
     const runtimeSettings = await loadWorkspaceAgentRuntimeSettings(root);
+    const modelPlan = await planAssistantTask(question, settings);
     const contract = compileAssistantExecutionContract({
       activeSegment: observed.activeSegment,
       activeSurface: observed.activeSurface,
       contextPlan,
       question,
-      snapshot
+      snapshot,
+      modelPlan
     });
     const plan = contract.plan;
     const invocationPlan = buildInvocationPlanForContract(
@@ -185,7 +188,7 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
     recordNode(agentRun, onToolEvent, {
       id: `${runId}-plan`,
       kind: 'planner',
-      summary: `intent=${plan.intent}, requiredTools=${contract.requiredToolIds.join(',') || 'none'}, sourcePolicy=${contract.sourcePolicy}`,
+      summary: `planner=${modelPlan?.intent ?? 'fallback'}, intent=${plan.intent}, requiredTools=${contract.requiredToolIds.join(',') || 'none'}, sourcePolicy=${contract.sourcePolicy}`,
       title: 'Compile execution contract'
     });
     if (plan.missing.length > 0) {

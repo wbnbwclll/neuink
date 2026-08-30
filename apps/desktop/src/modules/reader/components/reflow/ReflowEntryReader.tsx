@@ -34,7 +34,7 @@ import {
 } from '../../translation/translationExport';
 import { ReaderMessage } from '../pdf-reader/ReaderMessage';
 import { SegmentAnnotationEditor } from '../../../annotations/components/SegmentAnnotationEditor';
-import { hasNoteText } from '../pdf-reader/readerUtils';
+import { hasNoteText, logicalSegmentUid } from '../pdf-reader/readerUtils';
 import { SegmentNoteEditor } from '../pdf-reader/SegmentNoteEditor';
 import { FloatingSegmentPanel } from '../pdf-reader/FloatingSegmentPanel';
 import { HoverPreviewControls } from '../pdf-reader/ReaderToolbar';
@@ -149,15 +149,20 @@ export function ReflowEntryReader({
   const pdfPath = loadState.status === 'ready' ? loadState.data.pdf_path : null;
   const pdfBytesState = usePdfBytes(pdfDocumentRequested ? pdfPath : null);
   const pdfState = usePdfDocument(pdfBytesState.status === 'ready' ? pdfBytesState.bytes : null);
-  const notesBySegmentUid = useMemo(
-    () =>
-      new Map(
-        segmentNotes
-          .filter((note) => hasNoteText(note.text))
-          .map((note) => [note.segment_uid, note])
-      ),
-    [segmentNotes]
-  );
+  const notesBySegmentUid = useMemo(() => {
+    const next = new Map<string, SegmentBlockNote>();
+    for (const note of segmentNotes) {
+      if (!hasNoteText(note.text)) {
+        continue;
+      }
+      next.set(note.segment_uid, note);
+      const segment = segments.find((candidate) => candidate.uid === note.segment_uid);
+      if (segment) {
+        next.set(logicalSegmentUid(segment), note);
+      }
+    }
+    return next;
+  }, [segmentNotes, segments]);
   const annotationCountBySegmentUid = useMemo(() => {
     const counts = new Map<string, number>();
     for (const annotation of annotations) {
@@ -201,7 +206,6 @@ export function ReflowEntryReader({
     () => segments.filter((segment) => hiddenSegmentUids.has(segment.uid)),
     [hiddenSegmentUids, segments]
   );
-  const hasRetryableFailures = !translationBusy && (translation?.progress.failed ?? 0) > 0;
   const hasExportableTranslation = Boolean(
     translation?.segments.some((segment) => segment.status === 'translated' && segment.translated_text)
   );
@@ -393,10 +397,6 @@ export function ReflowEntryReader({
     }
   };
 
-  const retryFailedTranslation = async () => {
-    await startTranslation('resume');
-  };
-
   const updateReflowTranslationMode = (mode: ReaderPreferences['reflowTranslationMode']) => {
     onReaderPreferencesChange({ ...readerPreferences, reflowTranslationMode: mode });
   };
@@ -555,12 +555,6 @@ export function ReflowEntryReader({
         {translationBusy ? (
           <Button size="sm" type="button" variant="outline" onClick={() => void pauseTranslation()}>
             暂停
-          </Button>
-        ) : null}
-
-        {!translationBusy && hasRetryableFailures ? (
-          <Button size="sm" type="button" variant="outline" onClick={() => void retryFailedTranslation()}>
-            重试失败
           </Button>
         ) : null}
 
