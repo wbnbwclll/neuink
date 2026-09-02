@@ -1,3 +1,8 @@
+//! 片段笔记模块：定义可附着在单个 `SourceSegment` 上的笔记及其校验逻辑。
+//!
+//! `SegmentBlockNote` 保存用户对某个源片段的批注；配套自由函数负责
+//! 把 markdown/HTML 剥成"可见文本"用于计数，并限制笔记长度。
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

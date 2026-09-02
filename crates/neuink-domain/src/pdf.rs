@@ -1,3 +1,8 @@
+//! PDF 资产与解析状态模块：描述一份 PDF 的元数据及其解析进度。
+//!
+//! `PdfAsset` 只记录"这份 PDF 是什么、现在解析到什么状态"，不装解析后的正文；
+//! `PdfParseState` / `PdfParseStatus` 构成解析过程的状态机。
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

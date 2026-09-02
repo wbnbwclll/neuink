@@ -1,3 +1,8 @@
+//! 标注模块：定义对单个源片段的结构化标注（评论、高亮等）。
+//!
+//! `Annotation` 携带类别、内容、重要度并快照所依赖的片段信息，使原片段
+//! 变更或删除后标注仍能展示；配合文本选区类型实现页面高亮。
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

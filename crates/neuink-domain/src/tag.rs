@@ -1,3 +1,7 @@
+//! 标签模块：定义一个可组成层级树结构的标签节点。
+//!
+//! `TagMeta` 通过 `parent_id` 链接父标签，从而构成标签树；标签名不能为空。
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

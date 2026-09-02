@@ -1,3 +1,8 @@
+//! 引用链接模块：定义"锚点 → 若干来源片段"的引用关系。
+//!
+//! `SourceLink` 与 `SegmentRef` 让笔记可以精确引用 PDF 源片段，并通过
+//! 文本快照/引用哈希保证目标片段被改动后依然可定位与校验。
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

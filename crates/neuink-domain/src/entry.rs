@@ -1,3 +1,8 @@
+//! 文献条目模块：定义一条"文献条目"（Entry）的结构及其内容项。
+//!
+//! `EntryMeta` 是整个文献库的一级对象，承载标题、标签、结构化字段、
+//! PDF 资产与内部内容项，是所有阅读/标注操作的顶层归属。
+
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};

@@ -1,3 +1,8 @@
+//! 源片段模块：定义解析后 PDF 中可被引用的最小单元 `SourceSegment`。
+//!
+//! 源片段是 RAG 检索、标注与内容引用的载体，携带在原文中的页码、几何框、
+//! 纯文本与 markdown，以及来自解析器的分类与分组元数据。
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

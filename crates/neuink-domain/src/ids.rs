@@ -1,3 +1,8 @@
+//! 强类型 ID 模块：通过同一宏生成一系列字符串 ID 类型。
+//!
+//! 本模块是整个领域层的"基石"——几乎所有模型都通过 `EntryId`、`SegmentUid` 等
+//! 类型来引用彼此，从而把散落的裸字符串 ID 变成强类型，避免类型误用。
+
 use std::fmt::{self, Display};
 
 use serde::{Deserialize, Serialize};
