@@ -11,13 +11,15 @@ use neuink_workspace::Workspace;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use ddgs::{Ddgs, TextOptions};
+
 use super::sciverse::{
     assistant_tools_enabled, sciverse_agentic_search, sciverse_meta_catalog, sciverse_meta_search,
     sciverse_paper_schema, sciverse_paper_schema_search, sciverse_read_content,
     SciverseJsonRequest,
 };
 use super::search::{search_segments, SearchSegmentsRequest};
-use super::settings::{read_assistant_profile, read_settings};
+use super::settings::read_assistant_profile;
 
 mod agent_run_registry;
 mod agent_runtime;
@@ -671,7 +673,7 @@ pub async fn invoke_tool<R: tauri::Runtime>(
         "websousuo" => {
             let args: WebsousuoRequest =
                 serde_json::from_value(request.args).map_err(|error| error.to_string())?;
-            let result = websousuo_search(app, args).await?;
+            let result = websousuo_search(args).await?;
             serde_json::to_value(result).map_err(|error| error.to_string())
         }
         name if name.starts_with("mcp.") => {
@@ -681,86 +683,31 @@ pub async fn invoke_tool<R: tauri::Runtime>(
     }
 }
 
-async fn websousuo_search<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    request: WebsousuoRequest,
-) -> Result<WebsousuoResponse, String> {
+async fn websousuo_search(request: WebsousuoRequest) -> Result<WebsousuoResponse, String> {
     let query = request.query.trim().to_string();
     if query.is_empty() {
         return Err("websousuo requires a non-empty query".to_string());
     }
 
-    let settings = read_settings(&app)?;
-    let base_url = settings
-        .search
-        .base_url
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    if base_url.is_empty() {
-        return Err(
-            "websousuo requires a SearXNG base_url in app settings (settings.json > search.base_url)"
-                .to_string(),
-        );
-    }
-    let endpoint = format!("{base_url}/search");
-
-    let mut request_builder = reqwest::Client::new()
-        .get(endpoint)
-        .query(&[("q", query.as_str()), ("format", "json")]);
-    if let Some(api_key) = settings.search.api_key.as_deref().filter(|key| !key.trim().is_empty()) {
-        request_builder = request_builder.header("X-Remote-API-Key", api_key);
-    }
-
-    let response = request_builder
-        .timeout(std::time::Duration::from_secs(20))
-        .send()
+    let top_k = request.top_k.unwrap_or(8).clamp(1, 20) as usize;
+    let ddgs = Ddgs::new().map_err(|error| format!("websousuo init failed: {error}"))?;
+    let hits = ddgs
+        .text_with_options(&query, TextOptions::default().max_results(top_k))
         .await
         .map_err(|error| format!("websousuo request failed: {error}"))?;
 
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("websousuo request failed with status {status}"));
-    }
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|error| format!("websousuo response parse failed: {error}"))?;
-
-    let mut results = Vec::new();
-    if let Some(items) = body.get("results").and_then(|value| value.as_array()) {
-        for item in items {
-            let url = item
-                .get("url")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if url.is_empty() {
-                continue;
-            }
-            let title = item
-                .get("title")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let snippet = item
-                .get("content")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .to_string();
-            results.push(WebsousuoResult {
-                title: if title.is_empty() { url.clone() } else { title },
-                url,
-                snippet,
-            });
-        }
-    }
-
-    if let Some(top_k) = request.top_k {
-        results.truncate(top_k as usize);
-    }
+    let results = hits
+        .into_iter()
+        .map(|hit| WebsousuoResult {
+            title: if hit.title.trim().is_empty() {
+                hit.href.clone()
+            } else {
+                hit.title
+            },
+            url: hit.href,
+            snippet: hit.body,
+        })
+        .collect();
 
     Ok(WebsousuoResponse { query, results })
 }

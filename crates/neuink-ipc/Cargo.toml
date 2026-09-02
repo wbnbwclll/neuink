@@ -9,6 +9,7 @@ license.workspace = true
 blake3.workspace = true
 base64.workspace = true
 chrono.workspace = true
+ddgs.workspace = true
 neuink-config = { path = "../neuink-config" }
 neuink-domain = { path = "../neuink-domain" }
 neuink-job = { path = "../neuink-job" }
