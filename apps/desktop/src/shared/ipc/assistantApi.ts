@@ -79,6 +79,13 @@ export type LocalConversationSourceLink = {
   quote: string;
 };
 
+export type WebConversationSourceLink = {
+  provider: 'web';
+  title: string;
+  url: string;
+  quote: string;
+};
+
 export type SciverseConversationSourceLink = {
   provider: 'sciverse';
   doc_id: string;
@@ -117,6 +124,7 @@ export type SciverseLibraryImportResult = {
 
 export type ConversationSourceLink =
   | LocalConversationSourceLink
+  | WebConversationSourceLink
   | SciverseConversationSourceLink;
 
 export function isSciverseConversationSource(
@@ -125,16 +133,26 @@ export function isSciverseConversationSource(
   return source.provider === 'sciverse';
 }
 
+export function isWebConversationSource(
+  source: ConversationSourceLink
+): source is WebConversationSourceLink {
+  return source.provider === 'web';
+}
+
 export function isLocalConversationSource(
   source: ConversationSourceLink
 ): source is LocalConversationSourceLink {
-  return !isSciverseConversationSource(source);
+  return source.provider === undefined || source.provider === 'local';
 }
 
 export function conversationSourceKey(source: ConversationSourceLink) {
-  return isSciverseConversationSource(source)
-    ? `sciverse:${source.doc_id}:${source.chunk_id ?? ''}:${source.offset ?? ''}`
-    : `local:${source.entry_id}:${source.segment_uid}`;
+  if (isSciverseConversationSource(source)) {
+    return `sciverse:${source.doc_id}:${source.chunk_id ?? ''}:${source.offset ?? ''}`;
+  }
+  if (isWebConversationSource(source)) {
+    return `web:${source.url}`;
+  }
+  return `local:${source.entry_id}:${source.segment_uid}`;
 }
 
 export type ConversationRole = 'user' | 'assistant';

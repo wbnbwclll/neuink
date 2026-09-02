@@ -11,6 +11,7 @@ import type {
 import {
   conversationSourceKey,
   isSciverseConversationSource,
+  isWebConversationSource,
   loadPrompt,
   readEntryAssistantContext,
   searchSegmentsTool
@@ -1104,6 +1105,9 @@ function evidenceSourceLabel(source: ConversationSourceLink) {
         ? `offset ${source.offset}`
         : `doc ${source.doc_id}`;
     return `${source.title}, Sciverse, ${location}`;
+  }
+  if (isWebConversationSource(source)) {
+    return source.title ? `${source.title}, Web` : source.url;
   }
   return `${source.entry_title}, p.${source.page_idx + 1}`;
 }

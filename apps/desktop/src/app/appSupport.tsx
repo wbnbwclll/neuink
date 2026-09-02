@@ -66,6 +66,7 @@ import {
 import {
   applyNoteProposal,
   isSciverseConversationSource,
+  isWebConversationSource,
   type Conversation,
   type ConversationSourceLink
 } from '../shared/ipc/assistantApi';
@@ -434,6 +435,9 @@ export function sourceFootnoteText(source: ConversationSourceLink) {
         ? `offset ${source.offset}`
         : `doc ${source.doc_id}`;
     return `${source.title}, Sciverse, ${location}.${quote}`;
+  }
+  if (isWebConversationSource(source)) {
+    return source.title + ' (' + source.url + ').' + quote;
   }
   return source.entry_title + ', p.' + (source.page_idx + 1) + ', segment ' + source.segment_uid + '.' + quote;
 }

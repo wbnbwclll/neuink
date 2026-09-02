@@ -29,7 +29,8 @@ import type {
 } from '@/shared/ipc/assistantApi';
 import {
   conversationSourceKey,
-  isSciverseConversationSource
+  isSciverseConversationSource,
+  isWebConversationSource
 } from '@/shared/ipc/assistantApi';
 import type {
   AssistantContextItem,
@@ -181,13 +182,17 @@ function SourceLinkList({
 }) {
   const [localExpanded, setLocalExpanded] = useState(false);
   const [paperExpanded, setPaperExpanded] = useState(false);
+  const [webExpanded, setWebExpanded] = useState(false);
   const numbered = sources.map((source, index) => ({ marker: index + 1, source }));
-  const localSources = numbered.filter(({ source }) => !isSciverseConversationSource(source));
+  const localSources = numbered.filter(({ source }) => !isSciverseConversationSource(source) && !isWebConversationSource(source));
+  const webSources = numbered.filter(({ source }) => isWebConversationSource(source));
   const paperGroups = groupSciverseSources(numbered, discoveredSciverseSources);
   const localCollapsible = localSources.length > COLLAPSED_SOURCE_LIMIT;
   const visibleLocalSources = localExpanded
     ? localSources
     : localSources.slice(0, COLLAPSED_SOURCE_LIMIT);
+  const webCollapsible = webSources.length > 3;
+  const visibleWebSources = webExpanded ? webSources : webSources.slice(0, 3);
   const visiblePaperGroups = paperExpanded ? paperGroups : paperGroups.slice(0, 5);
 
   return (
@@ -196,6 +201,7 @@ function SourceLinkList({
         <Library size={12} aria-hidden="true" />
         引用来源 {sources.length}
         {paperGroups.length > 0 ? ` · 检索论文 ${paperGroups.length}` : ''}
+        {webSources.length > 0 ? ` · 网页 ${webSources.length}` : ''}
         {localSources.length > 0 ? ` · 本地片段 ${localSources.length}` : ''}
       </div>
       {visiblePaperGroups.length > 0 ? (
@@ -236,6 +242,35 @@ function SourceLinkList({
           </button>
           ))}
         </div>
+      ) : null}
+      {visibleWebSources.length > 0 ? (
+        <div className="flex flex-wrap gap-1">
+          {visibleWebSources.map(({ marker, source }) => (
+            <button
+              className="rounded-md border px-1.5 py-0.5 text-[11px] text-primary hover:bg-muted"
+              key={`${conversationSourceKey(source)}:${marker}`}
+              title={isWebConversationSource(source) ? source.url : source.quote}
+              type="button"
+              onClick={() => onOpenSource(source)}
+            >
+              {sourceButtonLabel(source, marker)}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {webCollapsible ? (
+        <Button
+          aria-expanded={webExpanded}
+          className="h-6 w-fit px-1.5 text-[11px]"
+          size="xs"
+          type="button"
+          variant="ghost"
+          onClick={() => setWebExpanded((current) => !current)}
+        >
+          {webExpanded
+            ? '收起网页来源'
+            : `展开网页来源（+${webSources.length - 3}）`}
+        </Button>
       ) : null}
       {localCollapsible ? (
         <Button
@@ -775,6 +810,9 @@ function sciverseSourcesFromToolParts(parts: AssistantMessagePart[]) {
 }
 
 function sourceButtonLabel(source: ConversationSourceLink, marker: number) {
+  if (isWebConversationSource(source)) {
+    return `S${marker} · Web`;
+  }
   if (isSciverseConversationSource(source)) {
     return `S${marker} · ${sourceLocationLabel(source)}`;
   }
@@ -782,6 +820,9 @@ function sourceButtonLabel(source: ConversationSourceLink, marker: number) {
 }
 
 function sourceLocationLabel(source: ConversationSourceLink) {
+  if (isWebConversationSource(source)) {
+    return source.title || source.url;
+  }
   if (!isSciverseConversationSource(source)) {
     return `p.${source.page_idx + 1}`;
   }
@@ -1176,7 +1217,11 @@ function InlineSourceCitation({
   onOpenSource: (source: ConversationSourceLink) => void;
   source: ConversationSourceLink;
 }) {
-  const title = isSciverseConversationSource(source) ? source.title : source.entry_title;
+  const title = isSciverseConversationSource(source)
+    ? source.title
+    : isWebConversationSource(source)
+      ? source.title
+      : source.entry_title;
   return (
     <InlineCitationButton
       marker={marker}

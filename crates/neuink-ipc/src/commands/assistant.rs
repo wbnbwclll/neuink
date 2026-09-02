@@ -17,7 +17,7 @@ use super::sciverse::{
     SciverseJsonRequest,
 };
 use super::search::{search_segments, SearchSegmentsRequest};
-use super::settings::read_assistant_profile;
+use super::settings::{read_assistant_profile, read_settings};
 
 mod agent_run_registry;
 mod agent_runtime;
@@ -98,6 +98,26 @@ pub struct ReadEntryAssistantContextResponse {
     pub entry_title: String,
     pub markdown: String,
     pub sources: Vec<EntryAssistantSource>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct WebsousuoRequest {
+    pub query: String,
+    #[serde(default)]
+    pub top_k: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WebsousuoResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WebsousuoResponse {
+    pub query: String,
+    pub results: Vec<WebsousuoResult>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -243,6 +263,21 @@ pub fn list_tools<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Vec<ToolDescri
                     "entry_id": {"type": "string"}
                 },
                 "required": ["root", "entry_id"]
+            }),
+        },
+        ToolDescriptor {
+            name: "websousuo".to_string(),
+            description: "Search the web for up-to-date information outside the local Neuink workspace. Use this for current events, general knowledge, or external sources not present in the library."
+                .to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "root": {"type": "string"},
+                    "query": {"type": "string", "minLength": 1, "maxLength": 4096},
+                    "top_k": {"type": "integer", "minimum": 1, "maximum": 20}
+                },
+                "required": ["root", "query"]
             }),
         },
     ];
@@ -633,11 +668,101 @@ pub async fn invoke_tool<R: tauri::Runtime>(
                 serde_json::from_value(request.args).map_err(|error| error.to_string())?;
             read_entry_assistant_context(args).map(|response| json!(response))
         }
+        "websousuo" => {
+            let args: WebsousuoRequest =
+                serde_json::from_value(request.args).map_err(|error| error.to_string())?;
+            let result = websousuo_search(app, args).await?;
+            serde_json::to_value(result).map_err(|error| error.to_string())
+        }
         name if name.starts_with("mcp.") => {
             agent_runtime::invoke_mcp_tool(name.to_string(), request.args)
         }
         _ => Err(format!("unknown tool: {}", request.name)),
     }
+}
+
+async fn websousuo_search<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    request: WebsousuoRequest,
+) -> Result<WebsousuoResponse, String> {
+    let query = request.query.trim().to_string();
+    if query.is_empty() {
+        return Err("websousuo requires a non-empty query".to_string());
+    }
+
+    let settings = read_settings(&app)?;
+    let base_url = settings
+        .search
+        .base_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    if base_url.is_empty() {
+        return Err(
+            "websousuo requires a SearXNG base_url in app settings (settings.json > search.base_url)"
+                .to_string(),
+        );
+    }
+    let endpoint = format!("{base_url}/search");
+
+    let mut request_builder = reqwest::Client::new()
+        .get(endpoint)
+        .query(&[("q", query.as_str()), ("format", "json")]);
+    if let Some(api_key) = settings.search.api_key.as_deref().filter(|key| !key.trim().is_empty()) {
+        request_builder = request_builder.header("X-Remote-API-Key", api_key);
+    }
+
+    let response = request_builder
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|error| format!("websousuo request failed: {error}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("websousuo request failed with status {status}"));
+    }
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("websousuo response parse failed: {error}"))?;
+
+    let mut results = Vec::new();
+    if let Some(items) = body.get("results").and_then(|value| value.as_array()) {
+        for item in items {
+            let url = item
+                .get("url")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if url.is_empty() {
+                continue;
+            }
+            let title = item
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let snippet = item
+                .get("content")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            results.push(WebsousuoResult {
+                title: if title.is_empty() { url.clone() } else { title },
+                url,
+                snippet,
+            });
+        }
+    }
+
+    if let Some(top_k) = request.top_k {
+        results.truncate(top_k as usize);
+    }
+
+    Ok(WebsousuoResponse { query, results })
 }
 
 #[tauri::command]

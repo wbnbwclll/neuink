@@ -74,8 +74,9 @@ pub enum ConversationRole {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum ConversationSourceLink {
-    Sciverse(SciverseConversationSourceLink),
     Local(LocalConversationSourceLink),
+    Web(WebConversationSourceLink),
+    Sciverse(SciverseConversationSourceLink),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -133,6 +134,20 @@ pub struct SciverseConversationSourceLink {
     pub source_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_file_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WebConversationSourceLink {
+    pub provider: WebSourceProvider,
+    pub title: String,
+    pub url: String,
+    pub quote: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSourceProvider {
+    Web,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

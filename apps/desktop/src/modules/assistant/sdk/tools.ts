@@ -95,7 +95,8 @@ const SUPPORTED_TOOL_NAMES = new Set([
   'search_sciverse_metadata',
   'get_sciverse_metadata_catalog',
   'search_sciverse_paper_schema',
-  'get_sciverse_paper_schema'
+  'get_sciverse_paper_schema',
+  'websousuo'
 ]);
 
 export function scopedEnabledToolIds(

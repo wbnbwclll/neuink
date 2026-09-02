@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   formatSciverseSearchOutput,
+  formatWebsousuoOutput,
   applyMarkdownPatchPreview,
   markdownPatchOperations,
   noteProposalAction,
@@ -167,5 +168,53 @@ describe('Sciverse assistant tools', () => {
       page: 999, page_size: 0, query: 'benchmark'
     }, { root: 'workspace', scope })).toEqual({ page: 100, page_size: 1, query: 'benchmark' });
     expect(normalizeToolInput('get_sciverse_metadata_catalog', {}, { root: 'workspace', scope })).toEqual({});
+  });
+});
+
+describe('formatWebsousuoOutput', () => {
+  it('dedupes by URL, deduplicates markers, and caps to the configured budget', () => {
+    const sources: Array<Partial<{ provider: string; title: string; url: string; quote: string }>> = [];
+    const output = formatWebsousuoOutput({
+      query: 'neuink',
+      results: [
+        { title: 'A', url: 'https://a.example', snippet: 'Alpha snippet' },
+        { title: 'Dupe', url: 'https://a.example', snippet: 'duplicate of A' },
+        { title: '', url: 'https://b.example', snippet: 'Beta snippet without title' },
+        { title: 'No Url', url: '', snippet: 'should be dropped' }
+      ]
+    }, (source) => {
+      sources.push(source);
+      return sources.length;
+    }, 10_000);
+
+    expect(output.evidence).toHaveLength(2);
+    expect(output.evidence.map((item) => item.marker)).toEqual(['[S1]', '[S2]']);
+    expect(output.evidence[1]).toMatchObject({
+      title: 'https://b.example',
+      url: 'https://b.example'
+    });
+    expect(output.sources).toHaveLength(2);
+    expect(output.sources[1]).toMatchObject({
+      provider: 'web',
+      title: 'https://b.example',
+      url: 'https://b.example'
+    });
+    expect(output.summary).toContain('Found 2 web sources');
+  });
+
+  it('stops adding results once the snippet budget is exhausted', () => {
+    // Each snippet is compact-quoted to <= 240 chars. A 250-char first result
+    // leaves less than one more snippet worth of a 280-char budget, so the
+    // second result is cut off the evidence list.
+    const output = formatWebsousuoOutput({
+      query: 'budget',
+      results: [
+        { title: 'One', url: 'https://1.example', snippet: new Array(250).fill('a').join('') },
+        { title: 'Two', url: 'https://2.example', snippet: 'second result that must be cut' }
+      ]
+    }, () => 1, 260);
+
+    expect(output.evidence).toHaveLength(1);
+    expect(output.evidence[0].url).toBe('https://1.example');
   });
 });

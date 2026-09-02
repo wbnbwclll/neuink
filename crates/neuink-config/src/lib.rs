@@ -19,6 +19,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub sciverse: SciverseSettings,
     #[serde(default)]
+    pub search: SearchSettings,
+    #[serde(default)]
     pub recent_workspaces: Vec<RecentWorkspace>,
     pub autosave_interval_ms: Option<u64>,
     pub theme: Option<String>,
@@ -46,6 +48,27 @@ impl Default for SciverseSettings {
 
 fn default_sciverse_base_url() -> String {
     "https://api.sciverse.space".to_string()
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SearchSettings {
+    #[serde(default = "default_searxng_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl Default for SearchSettings {
+    fn default() -> Self {
+        Self {
+            base_url: default_searxng_base_url(),
+            api_key: None,
+        }
+    }
+}
+
+fn default_searxng_base_url() -> String {
+    "http://localhost:8080".to_string()
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

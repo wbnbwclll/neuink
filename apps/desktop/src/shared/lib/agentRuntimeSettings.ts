@@ -32,7 +32,8 @@ const DEFAULT_MAIN_TOOL_IDS: AgentToolId[] = [
   'tag.propose_change',
   'skill.search',
   'skill.load',
-  'task.run_subagent'
+  'task.run_subagent',
+  'websousuo'
 ];
 
 const EVIDENCE_TOOL_IDS: AgentToolId[] = [
@@ -42,7 +43,8 @@ const EVIDENCE_TOOL_IDS: AgentToolId[] = [
   'search_sciverse_evidence',
   'read_sciverse_content',
   'skill.search',
-  'skill.load'
+  'skill.load',
+  'websousuo'
 ];
 
 const PATCH_TOOL_IDS: AgentToolId[] = [

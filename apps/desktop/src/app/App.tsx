@@ -96,6 +96,7 @@ import { getEffectiveParserEndpoint } from '../shared/lib/parserSettings';
 import {
   applyNoteProposal,
   isSciverseConversationSource,
+  isWebConversationSource,
   type Conversation,
   type ConversationSourceLink,
   type SciverseLibraryImportResult
@@ -1238,6 +1239,14 @@ export function App() {
   };
 
   const openAssistantSource = (source: ConversationSourceLink) => {
+    if (isWebConversationSource(source)) {
+      notify({
+        tone: 'default',
+        title: source.title,
+        description: source.url
+      });
+      return;
+    }
     if (isSciverseConversationSource(source)) {
       notify({
         tone: 'default',

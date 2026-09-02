@@ -9,7 +9,8 @@ import type {
   LlmProfile,
   ReadEntryAssistantContextResponse,
   ReadSegmentContentResponse,
-  ScopeSnapshot
+  ScopeSnapshot,
+  WebConversationSourceLink
 } from '@/shared/ipc/assistantApi';
 import type {
   SciverseAgenticSearchResponse,
@@ -20,6 +21,7 @@ import {
   conversationSourceKey,
   invokeAssistantTool,
   isLocalConversationSource,
+  isWebConversationSource,
   listTools
 } from '@/shared/ipc/assistantApi';
 import type {
@@ -65,7 +67,8 @@ const SUPPORTED_TOOL_NAMES = new Set([
   'search_sciverse_metadata',
   'get_sciverse_metadata_catalog',
   'search_sciverse_paper_schema',
-  'get_sciverse_paper_schema'
+  'get_sciverse_paper_schema',
+  'websousuo'
 ]);
 
 export function scopedEnabledToolIds(
@@ -247,6 +250,14 @@ export function normalizeToolInput(
     return {};
   }
 
+  if (toolName === 'websousuo') {
+    return {
+      root,
+      query: requiredString(object.query, 'query'),
+      top_k: clampNumber(object.top_k, 1, 20, 8)
+    };
+  }
+
   throw new Error(`Unsupported assistant tool: ${toolName}`);
 }
 
@@ -349,6 +360,20 @@ export async function executeTool(
           : toolName === 'get_sciverse_metadata_catalog'
             ? 'Read the Sciverse metadata field catalog.'
             : 'Read the Sciverse Paper Schema.'
+    };
+  }
+
+  if (toolName === 'websousuo') {
+    const result = await invokeAssistantTool<WebsousuoResponse>('websousuo', input);
+    const formatted = formatWebsousuoOutput(result, addSource, contextBudget);
+    return {
+      modelOutput: {
+        evidence: formatted.evidence,
+        kind: 'websousuo',
+        query: result.query
+      },
+      sources: formatted.sources,
+      summary: formatted.summary
     };
   }
 
@@ -591,6 +616,72 @@ export function formatSciverseSearchOutput(
     summary: evidence.length
       ? `Found ${evidence.length} Sciverse evidence chunk${evidence.length === 1 ? '' : 's'} for "${query}".`
       : `No Sciverse evidence matched "${query}".`
+  };
+}
+
+export type WebsousuoHit = {
+  title: string;
+  url: string;
+  snippet: string;
+};
+
+export type WebsousuoResponse = {
+  query: string;
+  results: WebsousuoHit[];
+};
+
+const MAX_WEBSOUSUO_SNIPPET = 240;
+const MAX_WEBSOUSUO_RESULTS = 12;
+
+export function formatWebsousuoOutput(
+  result: WebsousuoResponse,
+  addSource: (source: ConversationSourceLink) => number,
+  contextBudget: number
+) {
+  const budget = Math.max(1, contextBudget);
+  const seen = new Set<string>();
+  const evidence: Array<{
+    marker: string;
+    snippet: string;
+    title: string;
+    url: string;
+  }> = [];
+  const sources: WebConversationSourceLink[] = [];
+  let usedBudget = 0;
+
+  for (const hit of result.results) {
+    if (!hit.url || seen.has(hit.url)) continue;
+    seen.add(hit.url);
+
+    const snippet = compactQuote(hit.snippet).slice(0, MAX_WEBSOUSUO_SNIPPET);
+    if (evidence.length + 1 > MAX_WEBSOUSUO_RESULTS || usedBudget + snippet.length > budget) {
+      break;
+    }
+    usedBudget += snippet.length;
+
+    const source: WebConversationSourceLink = {
+      provider: 'web',
+      title: hit.title.trim() || hit.url,
+      url: hit.url,
+      quote: snippet
+    };
+    const marker = addSource(source);
+    sources.push(source);
+    evidence.push({
+      marker: `[S${marker}]`,
+      snippet,
+      title: source.title,
+      url: source.url
+    });
+  }
+
+  return {
+    evidence,
+    sources,
+    summary:
+      evidence.length > 0
+        ? `Found ${evidence.length} web source${evidence.length === 1 ? '' : 's'} for "${result.query}".`
+        : `No web results for "${result.query}".`
   };
 }
 
@@ -1700,6 +1791,9 @@ export function toolDescription(descriptor: AssistantToolDescriptor) {
   if (descriptor.name === 'read_sciverse_content') {
     return `${descriptor.description} Use bounded reads and continue with next_offset only when more context is necessary.`;
   }
+  if (descriptor.name === 'websousuo') {
+    return `${descriptor.description} Preserve every returned source URL in the answer.`;
+  }
   return descriptor.description;
 }
 
@@ -1766,6 +1860,9 @@ export function runningSummary(toolName: string, input: JsonObject) {
   }
   if (toolName === 'read_entry_assistant_context') {
     return `Reading parsed markdown for Entry ${String(input.entry_id)}.`;
+  }
+  if (toolName === 'websousuo') {
+    return `Searching the web for "${String(input.query)}".`;
   }
   return 'Running assistant tool.';
 }
