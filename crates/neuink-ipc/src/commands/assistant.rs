@@ -2,6 +2,8 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     process::Command,
+    sync::{Mutex, OnceLock},
+    time::Instant,
 };
 
 use neuink_config::LlmProfile;
@@ -683,14 +685,68 @@ pub async fn invoke_tool<R: tauri::Runtime>(
     }
 }
 
+const WEBSOUSUO_CACHE_CAPACITY: usize = 512;
+
+struct CachedWebsousuo {
+    stored_at: Instant,
+    response: WebsousuoResponse,
+}
+
+static WEBSOUSUO_CLIENT: OnceLock<Result<Ddgs, String>> = OnceLock::new();
+static WEBSOUSUO_CACHE: OnceLock<Mutex<HashMap<String, CachedWebsousuo>>> = OnceLock::new();
+
+fn websousuo_client() -> Result<&'static Ddgs, String> {
+    WEBSOUSUO_CLIENT
+        .get_or_init(|| Ddgs::new().map_err(|error| format!("websousuo init failed: {error}")))
+        .as_ref()
+        .map_err(String::clone)
+}
+
+fn cached_websousuo(key: &str) -> Option<WebsousuoResponse> {
+    WEBSOUSUO_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .get(key)
+        .map(|entry| entry.response.clone())
+}
+
+fn store_websousuo(key: String, response: WebsousuoResponse) {
+    let mut cache = WEBSOUSUO_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    if cache.len() >= WEBSOUSUO_CACHE_CAPACITY && !cache.contains_key(&key) {
+        if let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.stored_at)
+            .map(|(oldest_key, _)| oldest_key.clone())
+        {
+            cache.remove(&oldest);
+        }
+    }
+    cache.insert(
+        key,
+        CachedWebsousuo {
+            stored_at: Instant::now(),
+            response,
+        },
+    );
+}
+
 async fn websousuo_search(request: WebsousuoRequest) -> Result<WebsousuoResponse, String> {
     let query = request.query.trim().to_string();
     if query.is_empty() {
         return Err("websousuo requires a non-empty query".to_string());
     }
-
     let top_k = request.top_k.unwrap_or(8).clamp(1, 20) as usize;
-    let ddgs = Ddgs::new().map_err(|error| format!("websousuo init failed: {error}"))?;
+    let key = format!("{query}:{top_k}");
+
+    if let Some(cached) = cached_websousuo(&key) {
+        return Ok(cached);
+    }
+
+    let ddgs = websousuo_client()?;
     let hits = ddgs
         .text_with_options(&query, TextOptions::default().max_results(top_k))
         .await
@@ -708,8 +764,9 @@ async fn websousuo_search(request: WebsousuoRequest) -> Result<WebsousuoResponse
             snippet: hit.body,
         })
         .collect();
-
-    Ok(WebsousuoResponse { query, results })
+    let response = WebsousuoResponse { query, results };
+    store_websousuo(key, response.clone());
+    Ok(response)
 }
 
 #[tauri::command]
