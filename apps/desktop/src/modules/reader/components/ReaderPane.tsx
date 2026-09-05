@@ -49,6 +49,7 @@ import { MineruClientImportGuide } from './MineruClientImportGuide';
 import { EntryLibraryView } from './EntryLibraryView';
 import { EntryContentHeader } from './EntryContentHeader';
 import { EntryWorkspaceView } from './EntryWorkspaceView';
+import { WebSurfaceView } from './WebSurfaceView';
 import {
   ReaderEmptyState,
   ReaderSurfaceBody,
@@ -139,6 +140,7 @@ type ReaderPaneProps = {
     context: AssistantContextInput,
     options?: AssistantContextAddOptions
   ) => void;
+  onOpenExternal?: (url: string) => void;
   onActiveSegmentChange?: (segment: AssistantActiveSegment | null) => void;
   onApplyEntryTagPaths: (entryId: string, tagPaths: string[]) => Promise<unknown> | unknown;
   onUpdateEntry: (
@@ -238,6 +240,7 @@ export function ReaderPane({
   onRestoreEntry,
   onRestoreTrashItem,
   onAddAssistantContext,
+  onOpenExternal,
   onActiveSegmentChange,
   onApplyEntryTagPaths,
   onUpdateEntry,
@@ -909,6 +912,12 @@ export function ReaderPane({
         return <div className="h-full min-h-0 overflow-y-auto"><MineruClientImportGuide /></div>;
       case 'tag-editor':
         return <TagEditorPage standalone activeTag={activeTag} entries={entries} tags={tags} onCreateTagPath={onCreateTagPath} onDeleteTag={onDeleteTag} onRenameTag={onRenameTag} onSelectTag={onSelectTag} />;
+      case 'web':
+        return onOpenExternal ? (
+          <WebSurfaceView surface={surface} onOpenExternal={onOpenExternal} />
+        ) : (
+          <EmptyPane />
+        );
       default:
         return <EmptyPane />;
     }

@@ -295,6 +295,7 @@ export function surfaceLabel(surface: WorkspaceSurface, entries: LibraryEntry[])
     case 'segment-notes': case 'annotations': return (entryTitle ?? '条目') + ' · 片段记录';
     case 'source-links': return (entryTitle ?? '条目') + ' · 来源链接';
     case 'entry-trash': return (entryTitle ?? '条目') + ' · 回收站';
+    case 'web': return (surface.title || surface.url) + ' · 网页';
   }
 }
 

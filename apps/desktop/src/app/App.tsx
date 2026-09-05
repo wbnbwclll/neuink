@@ -1,5 +1,6 @@
 import { MessageSquare, PanelRight, Search, Settings } from 'lucide-react';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -1238,12 +1239,22 @@ export function App() {
     openEntryContentTab(entryId, nextContentId);
   };
 
+  const handleOpenExternal = (url: string) => {
+    void openUrl(url).catch((error) => {
+      console.error('无法在系统浏览器中打开', url, error);
+      notify({
+        tone: 'danger',
+        title: '无法在浏览器中打开',
+        description: url
+      });
+    });
+  };
+
   const openAssistantSource = (source: ConversationSourceLink) => {
     if (isWebConversationSource(source)) {
-      notify({
-        tone: 'default',
-        title: source.title,
-        description: source.url
+      dispatchSurface({
+        type: 'open',
+        surface: { kind: 'web', url: source.url, title: source.title }
       });
       return;
     }
@@ -2160,6 +2171,7 @@ export function App() {
             dispatchSurface({ type: 'open', pane, surface })
           }
           onFocusSurface={(pane) => dispatchSurface({ type: 'focus', pane })}
+          onOpenExternal={handleOpenExternal}
           activeTag={activeTag}
           annotationRecords={workspace.annotationRecords}
           markdownNoteRefreshById={markdownNoteRefreshById}

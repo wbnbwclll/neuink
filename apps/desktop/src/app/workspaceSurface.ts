@@ -13,7 +13,8 @@ export type WorkspaceSurface =
   | { kind: 'segment-notes'; entryId: string; segmentUid?: string; mode?: 'note' | 'annotation' }
   | { kind: 'annotations'; entryId: string; segmentUid?: string }
   | { kind: 'source-links'; entryId: string }
-  | { kind: 'entry-trash'; entryId: string };
+  | { kind: 'entry-trash'; entryId: string }
+  | { kind: 'web'; url: string; title: string };
 
 export type WorkspaceSurfaceLayout = {
   focusedPane: WorkspacePaneId;
@@ -236,6 +237,7 @@ export function surfaceKey(surface: WorkspaceSurface) {
     case 'note': return `note:${surface.entryId}:${surface.noteId}`;
     case 'segment-notes': case 'annotations': return `segment-records:${surface.entryId}`;
     case 'library': case 'settings': case 'create-entry': case 'mineru-client-guide': case 'tag-editor': return surface.kind;
+    case 'web': return 'web:' + surface.url;
     default: return `${surface.kind}:${surface.entryId}`;
   }
 }

@@ -398,7 +398,8 @@ export type AssistantActiveSurfaceSnapshot = {
     | 'segment-notes'
     | 'settings'
     | 'source-links'
-    | 'tag-editor';
+    | 'tag-editor'
+    | 'web';
   noteId: NoteId | null;
   pane: 'left' | 'right';
   segmentUid: string | null;
