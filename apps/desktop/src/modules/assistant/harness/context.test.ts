@@ -13,7 +13,25 @@ describe('observeAssistantContext', () => {
     expect(observed.activeEntryId).toBe('paper-entry');
   });
 
-  it('does not hydrate a selected Markdown reference as the edit target', () => {
+  it('keeps an explicit selected Entry while exposing the focused surface separately', () => {
+    const observed = observeAssistantContext({
+      activeSurface: {
+        capturedAt: '2026-07-20T00:00:00Z', entryId: 'focused-entry', kind: 'pdf',
+        noteId: null, pane: 'right', segmentUid: null, surfaceKey: 'pdf:focused-entry'
+      },
+      assistantContext: {
+        items: [{
+          addedAt: '', contentKind: 'entry', entryId: 'selected-entry', entryTitle: 'Selected',
+          id: 'entry:selected-entry', kind: 'entry'
+        }]
+      }
+    });
+
+    expect(observed.activeEntryId).toBe('selected-entry');
+    expect(observed.activeSurface?.entryId).toBe('focused-entry');
+  });
+
+  it('hydrates a single selected Markdown reference as a resolvable note target', () => {
     const assistantContext: AssistantContext = {
       items: [
         {
@@ -36,7 +54,7 @@ describe('observeAssistantContext', () => {
     });
 
     expect(observed.activeEntryId).toBe('paper-entry');
-    expect(observed.activeNote).toBeNull();
+    expect(observed.activeNote).toEqual({ entryId: 'paper-entry', noteId: 'note-2' });
   });
 
   it('hydrates a Markdown only when the context plan marks it as the edit target', () => {

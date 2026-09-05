@@ -24,6 +24,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       action,
       description,
       durationMs = TOAST_DURATION_MS,
+      onDismiss,
       onExpire,
       showProgress = false,
       title,
@@ -114,6 +115,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           id,
           className: 'overflow-hidden border-0 bg-transparent p-0 shadow-none',
           onAutoClose: onExpire,
+          onDismiss,
           unstyled: false
         }
       );

@@ -28,4 +28,28 @@ describe('SearchIndexStatusLine', () => {
 
     expect(screen.getByText(/40\/100/).textContent).toContain('40%');
   });
+
+  it('hints at the manual build action when vectors need building', () => {
+    render(
+      <SearchIndexStatusLine
+        mode="hybrid"
+        status={{
+          document_count: 574,
+          keyword_memory_cache_ready: false,
+          message: '待构建向量 · 574',
+          records_fingerprint: 'abc',
+          semantic_disk_cache_modified_at_ms: null,
+          semantic_disk_cache_path: 'D:\\workspace\\.neuink-cache\\search\\semantic-x.vectors.json',
+          semantic_disk_cache_record_count: null,
+          semantic_disk_cache_ready: false,
+          semantic_document_count: 574,
+          semantic_memory_cache_ready: false,
+          semantic_status: 'needs_build',
+          scope: 'global'
+        }}
+      />
+    );
+
+    expect(screen.getByText(/待构建向量 · 574/).textContent).toContain('点击右侧「构建」开始');
+  });
 });

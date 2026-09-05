@@ -81,10 +81,50 @@
   background-clip: padding-box;
 }
 
+.pdf-document-scroll {
+  overscroll-behavior: contain;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 58%, transparent)
+    color-mix(in srgb, var(--muted) 58%, transparent);
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+}
+
+.pdf-document-scroll::-webkit-scrollbar {
+  display: block;
+  width: 10px;
+  height: 10px;
+}
+
+.pdf-document-scroll::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--muted) 58%, transparent);
+}
+
+.pdf-document-scroll::-webkit-scrollbar-thumb {
+  min-width: 36px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted-foreground) 58%, transparent);
+  background-clip: padding-box;
+}
+
+.pdf-document-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--foreground) 64%, transparent);
+  background-clip: padding-box;
+}
+
 .entry-tag-badges {
   container-name: entry-tag-badges;
   container-type: inline-size;
   width: 100%;
+}
+
+/* 徽章宽度跟随内容；Badge 基类的 shrink-0 + 原 max-w-28 会让两个长标签
+   同时截断到同一上限，看起来像等宽胶囊。这里允许按比例收缩并出省略号。 */
+.entry-tag-primary,
+.entry-tag-secondary {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 @container entry-tag-badges (max-width: 240px) {
@@ -378,6 +418,87 @@
   box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--primary) 72%, transparent);
 }
 
+.markdown-note-editor {
+  container-name: markdown-note-editor;
+  container-type: inline-size;
+}
+
+.markdown-note-editor :is(.tiptap, .tableWrapper, pre, img) {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.markdown-note-editor .tiptap {
+  overflow-wrap: anywhere;
+}
+
+.markdown-note-compact-actions,
+.markdown-formatting-overflow {
+  display: none;
+}
+
+@container markdown-note-editor (max-width: 480px) {
+  .markdown-note-entry-title,
+  .markdown-note-header-divider,
+  .markdown-note-autosave-hint,
+  .markdown-note-source-count {
+    display: none;
+  }
+
+  .markdown-note-header-main,
+  .markdown-note-header-actions {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .markdown-note-header-actions {
+    display: none;
+  }
+
+  .markdown-note-header-spacer {
+    display: none;
+  }
+
+  .markdown-note-compact-actions {
+    display: block;
+    flex: 0 0 auto;
+  }
+
+  .markdown-formatting-wide-only {
+    display: none;
+  }
+
+  .markdown-formatting-overflow {
+    display: inline-flex;
+  }
+
+  .markdown-note-toolbar {
+    padding: 4px;
+  }
+
+  .markdown-note-insert-button {
+    width: 28px;
+    padding-right: 0;
+    padding-left: 0;
+  }
+
+  .markdown-note-insert-label {
+    display: none;
+  }
+
+  .markdown-note-title {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+}
+
+@container markdown-note-editor (max-width: 280px) {
+  .markdown-note-header-main,
+  .markdown-note-toolbar {
+    gap: 4px;
+  }
+}
+
 .source-snapshot-preview .katex {
   max-width: 100%;
   min-width: 0;
@@ -452,7 +573,7 @@
 
 .workspace-tabsbar-panes.is-split {
   display: grid;
-  grid-template-columns: minmax(320px, var(--app-workspace-left-width, 1fr)) var(--app-workspace-split-divider-width) minmax(320px, 1fr);
+  grid-template-columns: minmax(0, var(--app-workspace-left-width, 1fr)) var(--app-workspace-split-divider-width) minmax(0, 1fr);
 }
 
 .workspace-tab-pane {
@@ -470,6 +591,10 @@
   padding-right: 32px;
 }
 
+.workspace-tabsbar.has-pair-status .workspace-tab-pane:last-child {
+  padding-right: 86px;
+}
+
 .workspace-tabsbar:not(.is-split) .workspace-tab-pane {
   padding-right: 92px;
 }
@@ -481,6 +606,31 @@
   display: flex;
   align-items: center;
   gap: 2px;
+}
+
+.workspace-tabsbar-split-drop-target {
+  position: absolute;
+  top: 4px;
+  right: var(--app-editor-padding);
+  z-index: 3;
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  border: 1px dashed color-mix(in srgb, var(--primary) 45%, var(--border));
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--muted-foreground);
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.workspace-tabsbar-split-drop-target.is-drop-target {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, var(--card));
+  color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent);
 }
 
 .workspace-tabsbar-side-drop-target {
@@ -499,8 +649,9 @@
 
 .workspace-surface-tab {
   display: flex;
-  flex: 0 0 11rem;
+  flex: 0 1 11rem;
   width: 11rem;
+  max-width: 100%;
   min-width: 0;
   height: 28px;
   overflow: hidden;
@@ -648,14 +799,180 @@
 }
 
 .workspace-split.is-split {
-  grid-template-columns: minmax(320px, var(--app-workspace-left-width, 1fr)) var(--app-workspace-split-divider-width) minmax(320px, 1fr);
+  grid-template-columns: minmax(0, var(--app-workspace-left-width, 1fr)) var(--app-workspace-split-divider-width) minmax(0, 1fr);
+}
+
+.workspace-tabsbar-pair-status {
+  display: inline-flex;
+  height: 24px;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--background);
+  color: var(--muted-foreground);
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .workspace-pane {
   position: relative;
+  container-type: inline-size;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.pdf-reader-toolbar {
+  container-name: pdf-reader-toolbar;
+  container-type: inline-size;
+}
+
+.pdf-reader-toolbar-overflow {
+  display: none;
+}
+
+.pdf-reader-translation-status {
+  display: inline-flex;
+}
+
+.entry-overview {
+  container-name: entry-overview;
+  container-type: inline-size;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.entry-overview-body {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.entry-overview-body > div {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.entry-overview-summary,
+.entry-overview-section,
+.entry-overview-stats,
+.entry-overview-fields {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.entry-overview-breakable {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.entry-overview-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.entry-overview-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@container entry-overview (max-width: 760px) {
+  .entry-overview-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .entry-overview-body {
+    padding: 16px;
+  }
+
+  .entry-overview-summary {
+    padding: 16px;
+  }
+}
+
+@container entry-overview (max-width: 480px) {
+  .entry-overview .entry-content-header {
+    flex-wrap: nowrap;
+    gap: 8px;
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .entry-overview .entry-content-header-title {
+    min-width: 0;
+  }
+
+  .entry-overview .entry-content-header-entry-title {
+    display: none;
+  }
+
+  .entry-overview .entry-content-header-actions {
+    flex: 0 0 auto;
+  }
+
+  .entry-overview-body,
+  .entry-overview-summary {
+    padding: 12px;
+  }
+
+  .entry-overview-stats,
+  .entry-overview-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container pdf-reader-toolbar (max-width: 680px) {
+  .pdf-reader-toolbar .entry-content-header {
+    align-items: stretch;
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .pdf-reader-toolbar .entry-content-header-title,
+  .pdf-reader-toolbar .entry-content-header-actions {
+    flex: 0 0 100%;
+    min-width: 0;
+  }
+
+  .pdf-reader-toolbar .entry-content-header-title {
+    min-height: 20px;
+  }
+
+  .pdf-reader-toolbar .entry-content-header-entry-title,
+  .pdf-reader-toolbar .pdf-reader-translation-status,
+  .pdf-reader-toolbar .pdf-reader-toolbar-label {
+    display: none;
+  }
+
+  .pdf-reader-toolbar .entry-content-header-actions {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow: hidden;
+  }
+}
+
+@container pdf-reader-toolbar (max-width: 420px) {
+  .pdf-reader-toolbar .pdf-reader-toolbar-overflow-action {
+    display: none;
+  }
+
+  .pdf-reader-toolbar .pdf-reader-toolbar-overflow {
+    display: inline-flex;
+  }
+}
+
+@container pdf-reader-toolbar (max-width: 320px) {
+  .pdf-reader-toolbar .entry-content-header-actions {
+    gap: 4px;
+  }
+
+  .pdf-reader-toolbar .pdf-reader-zoom-value {
+    display: none;
+  }
 }
 
 .workspace-pane-surface {

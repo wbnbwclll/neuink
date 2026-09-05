@@ -250,7 +250,7 @@ const ReflowSourcePreviewContent = memo(function ReflowSourcePreviewContent({
   if (snapshotState.status === "loading") {
     return (
       <div className="flex min-h-24 items-center justify-center rounded-sm border bg-white px-3 py-4 text-xs text-muted-foreground">
-        婵繐绲藉﹢顏堝箣椤忓嫬绲?PDF 闁告鍠庨～鎰板锤?..
+        正在生成 PDF 快照...
       </div>
     );
   }

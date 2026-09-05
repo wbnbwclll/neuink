@@ -32,12 +32,16 @@ export function buildTagTree(tags: TagMeta[], entries: TagCountEntry[] = []) {
   }
 
   for (const entry of entries) {
+    const countedTagIds = new Set<string>();
     for (const tagId of entry.tagIds) {
       let current = nodeById.get(tagId);
       const visited = new Set<string>();
       while (current && !visited.has(current.id)) {
         visited.add(current.id);
-        current.count += 1;
+        if (!countedTagIds.has(current.id)) {
+          current.count += 1;
+          countedTagIds.add(current.id);
+        }
         current = current.parentId ? nodeById.get(current.parentId) : undefined;
       }
     }

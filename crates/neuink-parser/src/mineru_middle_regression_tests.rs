@@ -295,3 +295,122 @@ fn removes_stale_list_regions_before_rebuilding_from_middle() {
         .mineru_metadata
         .contains_key("list_item_regions"));
 }
+
+#[test]
+fn enriches_caption_bbox_from_middle_caption_blocks() {
+    let figure = SourceSegment::new(
+        SegmentType::Figure,
+        0,
+        Some([125.0, 226.0, 874.0, 381.0]),
+        "```mermaid\ngraph TD\n```".to_string(),
+    )
+    .with_mineru_metadata(Some("image".to_string()), None, Some("body".to_string()))
+    .with_relation_groups(None, Some("visual-image-p0".to_string()));
+    let caption = SourceSegment::new(
+        SegmentType::Paragraph,
+        0,
+        None,
+        "Figure 1: An example caption spanning multiple lines".to_string(),
+    )
+    .with_mineru_metadata(Some("image".to_string()), None, Some("caption".to_string()))
+    .with_relation_groups(None, Some("visual-image-p0".to_string()));
+    let mut document = NeuinkDocument::new(vec![figure, caption]);
+    let middle = json!({
+        "pdf_info": [{
+            "page_idx": 0,
+            "page_size": [612, 792],
+            "para_blocks": [
+                {
+                    "bbox": [50, 312, 560, 346],
+                    "type": "image_caption",
+                    "index": 6,
+                    "lines": [
+                        {"bbox": [53, 313, 558, 323], "spans": [{"content": "Figure 1: An example caption", "type": "text"}]},
+                        {"bbox": [53, 324, 420, 336], "spans": [{"content": "spanning multiple lines", "type": "text"}]}
+                    ]
+                }
+            ]
+        }]
+    });
+
+    enrich_document_with_middle(&mut document, &middle);
+
+    let bbox = document.segments[1].bbox.expect("caption bbox");
+    // PDF 页面坐标按 page_size 换算回 0-1000，宽度和图片解耦。
+    for (actual, expected) in bbox.into_iter().zip([
+        50.0 / 612.0 * 1000.0,
+        312.0 / 792.0 * 1000.0,
+        560.0 / 612.0 * 1000.0,
+        346.0 / 792.0 * 1000.0,
+    ]) {
+        assert!((actual - expected).abs() < 0.01);
+    }
+}
+
+#[test]
+fn prefers_the_caption_block_closest_to_the_visual_anchor() {
+    let figure = SourceSegment::new(
+        SegmentType::Figure,
+        0,
+        Some([125.0, 226.0, 874.0, 381.0]),
+        "figure body".to_string(),
+    )
+    .with_relation_groups(None, Some("visual-image-p0".to_string()));
+    let caption = SourceSegment::new(
+        SegmentType::Paragraph,
+        0,
+        None,
+        "Figure 1: repeated caption text across columns".to_string(),
+    )
+    .with_mineru_metadata(Some("image".to_string()), None, Some("caption".to_string()))
+    .with_relation_groups(None, Some("visual-image-p0".to_string()));
+    let mut document = NeuinkDocument::new(vec![figure, caption]);
+    let middle = json!({
+        "pdf_info": [{
+            "page_idx": 0,
+            "page_size": [612, 792],
+            "preproc_blocks": [
+                {
+                    "bbox": [30, 300, 500, 340],
+                    "type": "image_caption",
+                    "lines": [{"spans": [{"content": "Figure 1: repeated caption text across columns"}]}]
+                },
+                {
+                    "bbox": [30, 700, 500, 740],
+                    "type": "image_caption",
+                    "lines": [{"spans": [{"content": "Figure 1: repeated caption text across columns"}]}]
+                }
+            ]
+        }]
+    });
+
+    enrich_document_with_middle(&mut document, &middle);
+
+    let bbox = document.segments[1].bbox.expect("caption bbox");
+    assert!((bbox[1] - 300.0 / 792.0 * 1000.0).abs() < 0.01);
+}
+
+#[test]
+fn leaves_caption_bbox_untouched_without_a_text_match() {
+    let caption = SourceSegment::new(
+        SegmentType::Paragraph,
+        0,
+        None,
+        "Figure 9: unmatched caption".to_string(),
+    )
+    .with_mineru_metadata(Some("image".to_string()), None, Some("caption".to_string()));
+    let mut document = NeuinkDocument::new(vec![caption]);
+    let middle = json!({
+        "pdf_info": [{
+            "page_idx": 0,
+            "page_size": [612, 792],
+            "para_blocks": [
+                {"bbox": [50, 312, 560, 346], "type": "image_caption", "lines": [{"spans": [{"content": "A completely different caption"}]}]}
+            ]
+        }]
+    });
+
+    enrich_document_with_middle(&mut document, &middle);
+
+    assert!(document.segments[0].bbox.is_none());
+}

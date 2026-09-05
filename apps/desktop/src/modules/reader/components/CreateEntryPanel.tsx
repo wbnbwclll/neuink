@@ -1,6 +1,15 @@
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
-import { Loader2, Upload, X } from 'lucide-react';
+import {
+  Archive,
+  ChevronDown,
+  FileText,
+  Loader2,
+  Plus,
+  Tags,
+  Upload,
+  X
+} from 'lucide-react';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Badge } from '@/components/ui/badge';
@@ -9,6 +18,8 @@ import {
   Card,
   CardAction,
   CardContent,
+  CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle
 } from '@/components/ui/card';
@@ -37,33 +48,42 @@ type CreateEntryPanelProps = {
   tags: TagMeta[];
   onCreateEntry: (request: CreateEntryRequest) => Promise<CreateEntryResult | undefined>;
   onCreateEntryFinished: (result: CreateEntryResult) => void;
+  onOpenMineruClientGuide: () => void;
 };
 
 export function CreateEntryPanel({
   parserEndpoint,
   tags,
   onCreateEntry,
-  onCreateEntryFinished
+  onCreateEntryFinished,
+  onOpenMineruClientGuide
 }: CreateEntryPanelProps) {
   const [pdfPath, setPdfPath] = useState('');
+  const [mineruZipPath, setMineruZipPath] = useState('');
+  const [creationMode, setCreationMode] = useState<'pdf' | 'mineru'>('pdf');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [fields, setFields] = useState<EntryFieldDraft[]>([]);
-  const [tagInput, setTagInput] = useState('');
+  const [tagDraft, setTagDraft] = useState('');
+  const [selectedTagPaths, setSelectedTagPaths] = useState<string[]>([]);
+  const [tagPickerOpen, setTagPickerOpen] = useState(true);
   const [createState, setCreateState] = useState<'idle' | 'ready' | 'creating' | 'failed'>(
     'idle'
   );
   const [pdfDragActive, setPdfDragActive] = useState(false);
-  const pdfDropZoneRef = useRef<HTMLButtonElement | null>(null);
+  const pdfDropZoneRef = useRef<HTMLElement | null>(null);
   const { dismiss, notify } = useToast();
-  const selectedTagPaths = useMemo(
-    () => normalizeSelectedTagPaths(parseTagInput(tagInput)),
-    [tagInput]
+  const effectiveSelectedTagPaths = useMemo(
+    () => normalizeSelectedTagPaths([...selectedTagPaths, ...parseTagInput(tagDraft)]),
+    [selectedTagPaths, tagDraft]
   );
 
   const titleRequired = title.trim().length === 0;
   const pdfName = fileNameFromPath(pdfPath);
+  const mineruZipName = fileNameFromPath(mineruZipPath);
   const effectiveParserEndpoint = getEffectiveParserEndpoint(parserEndpoint);
+  const activePdfPath = creationMode === 'pdf' ? pdfPath : '';
+  const activeMineruZipPath = creationMode === 'mineru' ? mineruZipPath : '';
 
   const usePdfPath = (nextPdfPath: string) => {
     setPdfPath(nextPdfPath);
@@ -72,6 +92,18 @@ export function CreateEntryPanel({
   };
 
   const handleDroppedPaths = (paths: string[]) => {
+    if (creationMode === 'mineru') {
+      const zip = paths.find((path) => /\.zip$/i.test(path));
+      if (zip) {
+        setMineruZipPath(zip);
+        setPdfPath('');
+        setTitle((current) => current || titleFromFileName(fileNameFromPath(zip)));
+        setCreateState('ready');
+        return;
+      }
+      notify({ title: '无法导入文件', description: '请拖入 MinerU 客户端导出的 ZIP 压缩包。', tone: 'danger' });
+      return;
+    }
     const pdf = paths.find((path) => /\.pdf$/i.test(path));
     if (!pdf) {
       notify({
@@ -116,7 +148,7 @@ export function CreateEntryPanel({
       setPdfDragActive(false);
       void unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [createState, notify]);
+  }, [createState, creationMode, notify]);
 
   const choosePdf = async () => {
     const selected = await open({
@@ -129,27 +161,49 @@ export function CreateEntryPanel({
     }
   };
 
+  const chooseMineruZip = async () => {
+    const selected = await open({ multiple: false, filters: [{ name: 'MinerU 客户端结果', extensions: ['zip'] }] });
+    if (typeof selected === 'string') {
+      setMineruZipPath(selected);
+      setPdfPath('');
+      setTitle((current) => current || titleFromFileName(fileNameFromPath(selected)));
+      setCreateState('ready');
+    }
+  };
+
   const toggleTagPath = (path: string) => {
-    const selected = normalizeSelectedTagPaths(parseTagInput(tagInput));
+    setSelectedTagPaths((selected) => {
+      if (selected.includes(path)) {
+        return selected.filter((tagPath) => tagPath !== path);
+      }
 
-    if (selected.includes(path)) {
-      setTagInput(selected.filter((tagPath) => tagPath !== path).join(', '));
+      if (isSiblingTagBlocked(path, selected)) {
+        return selected;
+      }
+
+      return normalizeSelectedTagPaths([...selected, path]);
+    });
+  };
+
+  const addTagDraft = () => {
+    const nextPaths = parseTagInput(tagDraft);
+    if (nextPaths.length === 0) {
       return;
     }
-
-    if (isSiblingTagBlocked(path, selected)) {
-      return;
-    }
-
-    setTagInput(normalizeSelectedTagPaths([...selected, path]).join(', '));
+    setSelectedTagPaths((selected) => normalizeSelectedTagPaths([...selected, ...nextPaths]));
+    setTagDraft('');
   };
 
   const resetForm = () => {
     setPdfPath('');
+    setMineruZipPath('');
     setTitle('');
     setDescription('');
     setFields([]);
-    setTagInput('');
+    setTagDraft('');
+    setSelectedTagPaths([]);
+    setTagPickerOpen(true);
+    setCreationMode('pdf');
     setCreateState('idle');
   };
 
@@ -168,33 +222,23 @@ export function CreateEntryPanel({
       });
       return;
     }
-    if (pdfPath && !effectiveParserEndpoint) {
-      setCreateState('failed');
-      notify({
-        title: '解析服务未配置',
-        description: '请先到全局设置填写 URL 和 API Key。',
-        tone: 'danger',
-        durationMs: Infinity
-      });
-      return;
-    }
-
     let pendingToastId: string | null = null;
     try {
       setCreateState('creating');
       pendingToastId = notify({
-        title: pdfPath ? '正在提交解析任务' : '正在创建条目',
-        description: pdfPath ? '条目创建后会提交到解析服务。' : undefined,
-        durationMs: pdfPath ? Infinity : undefined
+        title: activeMineruZipPath ? '正在导入 MinerU 客户端结果' : '正在创建条目',
+        description: activeMineruZipPath ? '将从压缩包读取 PDF、解析结果和图片资源。' : activePdfPath ? '将根据自动解析设置处理 PDF。' : undefined,
+        durationMs: (activePdfPath || activeMineruZipPath) ? Infinity : undefined
       });
       const result = await onCreateEntry({
-        pdfPath: pdfPath || undefined,
+        pdfPath: activePdfPath || undefined,
+        mineruZipPath: activeMineruZipPath || undefined,
         title,
         fields: {
           ...fieldsToRecord(fields),
           ...(description.trim() ? { description: description.trim() } : {})
         },
-        tagPaths: selectedTagPaths
+        tagPaths: effectiveSelectedTagPaths
       });
       if (result) {
         if (pendingToastId) {
@@ -212,8 +256,14 @@ export function CreateEntryPanel({
         } else {
           setCreateState('ready');
           notify({
-            title: result.createdWithPdf ? '条目已创建' : '空条目已创建',
-            description: result.createdWithPdf ? '解析任务已提交。' : '已添加到全部条目。',
+            title: activeMineruZipPath ? '已从 MinerU 客户端创建条目' : result.createdWithPdf ? '条目已创建' : '空条目已创建',
+            description: activeMineruZipPath
+              ? 'PDF、解析结果和图片资源已保存到本地。'
+              : result.createdWithPdf
+                ? effectiveParserEndpoint
+                  ? '原 PDF 已保存，可直接阅读；解析将按当前设置处理。'
+                  : '原 PDF 已保存，可直接阅读；配置解析服务后可再生成结构化内容。'
+                : '已添加到全部条目。',
             tone: 'success'
           });
         }
@@ -233,120 +283,252 @@ export function CreateEntryPanel({
     }
   };
 
+  const sourceSummary = activeMineruZipPath
+    ? `MinerU · ${mineruZipName}`
+    : activePdfPath
+      ? `PDF · ${pdfName}`
+      : '无附件';
+  const submitLabel = activeMineruZipPath
+    ? '导入并创建'
+    : activePdfPath
+      ? '创建并添加 PDF'
+      : '创建条目';
+
   return (
-    <div className="mx-auto grid max-w-4xl gap-3 px-3 py-3 pb-6">
-      <Card>
-        <CardHeader className="border-b">
+    <div className="mx-auto h-full w-full max-w-4xl p-3">
+      <Card className="h-full min-h-0 gap-0 overflow-hidden py-0">
+        <CardHeader className="shrink-0 border-b py-4">
           <CardTitle>创建条目</CardTitle>
+          <CardDescription>添加来源、整理标签，然后创建到当前工作区。</CardDescription>
           <CardAction>
             <CreationStateBadge state={createState} />
           </CardAction>
         </CardHeader>
-        <CardContent>
-          <form className="grid gap-5" onSubmit={(event) => void submitEntry(event)}>
-            <div className="grid gap-2">
-              <Label htmlFor="entry-title">标题</Label>
-              <Input
-                id="entry-title"
-                disabled={createState === 'creating'}
-                placeholder="条目标题"
-                value={title}
-                onChange={(event) => {
-                  setTitle(event.target.value);
-                  setCreateState(event.target.value.trim() ? 'ready' : 'idle');
-                }}
-              />
-            </div>
-
-            <div className="grid gap-2">
-              <Label>PDF 文件</Label>
-              <button
-                ref={pdfDropZoneRef}
-                className={cn(
-                  'flex min-h-20 items-center gap-3 rounded-lg border border-dashed px-4 text-left transition-colors',
-                  pdfDragActive
-                    ? 'border-primary bg-primary/10 text-foreground ring-2 ring-primary/20'
-                    : pdfPath
-                    ? 'border-primary/35 bg-accent text-accent-foreground'
-                    : 'bg-muted/40 hover:bg-accent'
-                )}
-                disabled={createState === 'creating'}
-                type="button"
-                onClick={() => void choosePdf()}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={(event) => event.preventDefault()}
-              >
-                <div className="grid size-10 place-items-center rounded-lg bg-white text-primary ring-1 ring-border">
-                  <Upload size={18} aria-hidden="true" />
+        <form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => void submitEntry(event)}>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <CardContent className="grid gap-6 py-5">
+              <section className="grid content-start gap-5" aria-labelledby="entry-basic-heading">
+                <div>
+                  <h2 id="entry-basic-heading" className="font-medium">基本信息</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">标题为必填，其余内容可以稍后补充。</p>
                 </div>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">
-                    {pdfPath ? pdfName : '选择 PDF 文件'}
-                  </span>
-                  <span className="block text-sm text-muted-foreground">
-                    {pdfDragActive
-                      ? '松开后添加这个 PDF。'
-                      : pdfPath
-                      ? '创建后会自动开始解析。'
-                      : '可选；点击选择，或从外部拖入 PDF。'}
-                  </span>
-                </span>
-              </button>
-              {pdfPath ? (
-                <Button
-                  className="w-fit"
-                  disabled={createState === 'creating'}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                  onClick={() => setPdfPath('')}
-                >
-                  <X size={14} aria-hidden="true" />
-                  移除 PDF
-                </Button>
-              ) : null}
+
+                <div className="grid gap-2">
+                  <Label htmlFor="entry-title">标题 <span className="text-destructive">*</span></Label>
+                  <Input
+                    id="entry-title"
+                    autoFocus
+                    disabled={createState === 'creating'}
+                    placeholder="输入条目标题"
+                    value={title}
+                    onChange={(event) => {
+                      setTitle(event.target.value);
+                      setCreateState(event.target.value.trim() ? 'ready' : 'idle');
+                    }}
+                  />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label>内容来源</Label>
+                  <div aria-label="创建方式" className="grid grid-cols-2 rounded-lg bg-muted p-1" role="tablist">
+                    <Button aria-selected={creationMode === 'pdf'} role="tab" size="sm" type="button" variant={creationMode === 'pdf' ? 'secondary' : 'ghost'} onClick={() => setCreationMode('pdf')}>上传 PDF</Button>
+                    <Button aria-selected={creationMode === 'mineru'} role="tab" size="sm" type="button" variant={creationMode === 'mineru' ? 'secondary' : 'ghost'} onClick={() => setCreationMode('mineru')}>导入 MinerU 结果</Button>
+                  </div>
+                </div>
+
+                {creationMode === 'pdf' ? (
+                  <div className="grid gap-2">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-stretch gap-2">
+                      <button
+                        ref={(node) => { pdfDropZoneRef.current = node; }}
+                        aria-label="选择或拖入 PDF"
+                        className={cn(
+                          'flex min-h-24 min-w-0 items-center gap-3 rounded-lg border border-dashed px-4 text-left transition-colors',
+                          pdfDragActive
+                            ? 'border-primary bg-primary/10 text-foreground ring-2 ring-primary/20'
+                            : pdfPath
+                              ? 'border-primary/35 bg-accent text-accent-foreground'
+                              : 'bg-muted/40 hover:bg-accent'
+                        )}
+                        disabled={createState === 'creating'}
+                        type="button"
+                        onClick={() => void choosePdf()}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={(event) => event.preventDefault()}
+                      >
+                        <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-background text-primary ring-1 ring-border">
+                          {pdfPath ? <FileText size={18} aria-hidden="true" /> : <Upload size={18} aria-hidden="true" />}
+                        </div>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-medium">
+                            {pdfPath ? pdfName : '选择或拖入 PDF'}
+                          </span>
+                          <span className="mt-0.5 block text-xs text-muted-foreground">
+                            {pdfDragActive
+                              ? '松开后添加这个 PDF。'
+                              : pdfPath
+                                ? '点击可重新选择；创建后可直接阅读，解析是可选增强。'
+                                : 'PDF 为可选，不上传也能创建空条目。'}
+                          </span>
+                        </span>
+                      </button>
+                      {pdfPath ? (
+                        <Button aria-label="移除已选择的 PDF" disabled={createState === 'creating'} size="icon" type="button" variant="outline" onClick={() => setPdfPath('')}>
+                          <X size={15} aria-hidden="true" />
+                        </Button>
+                      ) : null}
+                    </div>
+                    {pdfPath && !effectiveParserEndpoint ? (
+                      <p className="rounded-md border border-info-border bg-info-surface px-3 py-2 text-xs text-info">
+                        尚未配置解析服务；仍可创建并直接阅读原 PDF，之后再配置解析。
+                      </p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div
+                    ref={(node) => { pdfDropZoneRef.current = node; }}
+                    className={cn(
+                      'grid gap-3 rounded-lg border border-dashed p-4 text-left transition-colors',
+                      pdfDragActive ? 'border-primary bg-primary/10 ring-2 ring-primary/20' : 'bg-muted/20'
+                    )}
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-background text-primary ring-1 ring-border">
+                        <Archive size={18} aria-hidden="true" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{mineruZipPath || pdfDragActive ? (pdfDragActive ? '松开后导入 ZIP' : mineruZipName) : 'MinerU 客户端完整结果 ZIP'}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">直接读取 PDF、解析结果和图片，不会重复解析。</p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button disabled={createState === 'creating'} size="sm" type="button" variant="outline" onClick={() => void chooseMineruZip()}>
+                        <Archive size={14} aria-hidden="true" />选择 ZIP
+                      </Button>
+                      {mineruZipPath ? (
+                        <Button disabled={createState === 'creating'} size="sm" type="button" variant="ghost" onClick={() => setMineruZipPath('')}>
+                          <X size={14} aria-hidden="true" />移除
+                        </Button>
+                      ) : null}
+                      <Button disabled={createState === 'creating'} size="sm" type="button" variant="ghost" onClick={onOpenMineruClientGuide}>
+                        查看教程
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid gap-2">
+                  <Label htmlFor="entry-description">描述</Label>
+                  <Textarea
+                    id="entry-description"
+                    className="min-h-24 resize-y leading-6"
+                    disabled={createState === 'creating'}
+                    placeholder="记录主题、来源或接下来要做的事情"
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                  />
+                </div>
+              </section>
+
+              <section className="grid content-start gap-5 border-t pt-5" aria-labelledby="entry-organize-heading">
+                <div>
+                  <h2 id="entry-organize-heading" className="font-medium">整理信息</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">标签和自定义字段都可以在创建后继续编辑。</p>
+                </div>
+
+                <div className="grid gap-3 rounded-lg border p-3">
+                  <div className="flex items-center gap-2">
+                    <Tags size={15} className="text-primary" aria-hidden="true" />
+                    <Label htmlFor="entry-tags">标签</Label>
+                    {effectiveSelectedTagPaths.length > 0 ? (
+                      <Badge className="ml-auto" variant="secondary">{effectiveSelectedTagPaths.length}</Badge>
+                    ) : null}
+                  </div>
+
+                  {selectedTagPaths.length > 0 ? (
+                    <div aria-label="已选标签" className="flex flex-wrap gap-1.5">
+                      {selectedTagPaths.map((path) => (
+                        <Badge className="max-w-full gap-1 py-1 pl-2 pr-1" key={path} variant="secondary">
+                          <span className="truncate">{path}</span>
+                          <button
+                            aria-label={`移除标签 ${path}`}
+                            className="grid size-4 shrink-0 place-items-center rounded-full hover:bg-foreground/10"
+                            disabled={createState === 'creating'}
+                            type="button"
+                            onClick={() => setSelectedTagPaths((selected) => selected.filter((item) => item !== path))}
+                          >
+                            <X size={11} aria-hidden="true" />
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">尚未添加标签。可以新建路径，也可以从工作区已有标签中选择。</p>
+                  )}
+
+                  <div className="flex gap-2">
+                    <Input
+                      id="entry-tags"
+                      disabled={createState === 'creating'}
+                      placeholder="例如：研究/HCI"
+                      value={tagDraft}
+                      onChange={(event) => setTagDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                          event.preventDefault();
+                          addTagDraft();
+                        }
+                      }}
+                    />
+                    <Button aria-label="添加标签" disabled={createState === 'creating' || parseTagInput(tagDraft).length === 0} size="icon" type="button" variant="outline" onClick={addTagDraft}>
+                      <Plus size={15} aria-hidden="true" />
+                    </Button>
+                  </div>
+                  <p className="text-[11px] leading-4 text-muted-foreground">按 Enter 添加；用“/”创建层级，逗号可一次输入多个标签。</p>
+
+                  {tags.length > 0 ? (
+                    <div className="grid gap-2 border-t pt-2">
+                      <button
+                        aria-expanded={tagPickerOpen}
+                        className="flex items-center justify-between rounded-md px-1 py-1 text-left text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                        type="button"
+                        onClick={() => setTagPickerOpen((open) => !open)}
+                      >
+                        <span>从已有标签中选择</span>
+                        <span className="flex items-center gap-1">{tags.length}<ChevronDown className={cn('transition-transform', tagPickerOpen && 'rotate-180')} size={13} aria-hidden="true" /></span>
+                      </button>
+                      {tagPickerOpen ? (
+                        <div className="grid gap-2">
+                          <p className="text-[11px] text-muted-foreground">沿引导线查看父子层级，点击名称即可选择。</p>
+                          <TagQuickPicker
+                            disabled={createState === 'creating'}
+                            selectedPaths={selectedTagPaths}
+                            tags={tags}
+                            onTogglePath={toggleTagPath}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="border-t pt-5">
+                  <EntryFieldsEditor
+                    disabled={createState === 'creating'}
+                    fields={fields}
+                    onFieldsChange={setFields}
+                  />
+                </div>
+              </section>
+            </CardContent>
+          </div>
+
+          <CardFooter aria-label="创建操作" className="shrink-0 justify-between gap-3 bg-card/95 py-3 shadow-[0_-8px_24px_-20px_rgba(15,23,42,0.65)] backdrop-blur">
+            <div className="hidden min-w-0 sm:block">
+              <p className="truncate text-xs font-medium">{sourceSummary}</p>
+              <p className="text-[11px] text-muted-foreground">{effectiveSelectedTagPaths.length > 0 ? `${effectiveSelectedTagPaths.length} 个标签` : '未添加标签'}</p>
             </div>
-
-            <div className="grid gap-2">
-              <Label htmlFor="entry-description">描述</Label>
-              <Textarea
-                id="entry-description"
-                className="min-h-20 resize-y leading-6"
-                disabled={createState === 'creating'}
-                placeholder="记录这个条目的主题、来源或用途"
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-              />
-            </div>
-
-            <EntryFieldsEditor
-              disabled={createState === 'creating'}
-              fields={fields}
-              onFieldsChange={setFields}
-            />
-
-            <div className="grid gap-2">
-              <Label htmlFor="entry-tags">标签</Label>
-              <Input
-                id="entry-tags"
-                disabled={createState === 'creating'}
-                placeholder="研究/计算机视觉, 会议/CVPR2026"
-                value={tagInput}
-                onChange={(event) =>
-                  setTagInput(
-                    normalizeSelectedTagPaths(parseTagInput(event.target.value)).join(', ')
-                  )
-                }
-              />
-              <TagQuickPicker
-                disabled={createState === 'creating'}
-                selectedPaths={selectedTagPaths}
-                tags={tags}
-                onTogglePath={toggleTagPath}
-              />
-            </div>
-
-            <div className="flex justify-end gap-2">
+            <div className="ml-auto flex gap-2">
               <Button
                 disabled={createState === 'creating'}
                 type="button"
@@ -359,11 +541,11 @@ export function CreateEntryPanel({
                 {createState === 'creating' ? (
                   <Loader2 className="animate-spin" size={15} />
                 ) : null}
-                {pdfPath ? '创建并解析' : '创建条目'}
+                {submitLabel}
               </Button>
             </div>
-          </form>
-        </CardContent>
+          </CardFooter>
+        </form>
       </Card>
     </div>
   );
@@ -404,7 +586,7 @@ function fileNameFromPath(path: string) {
 }
 
 function titleFromFileName(fileName: string) {
-  return fileName.replace(/\.pdf$/i, '').trim();
+  return fileName.replace(/\.(pdf|zip)$/i, '').trim();
 }
 
 function isDragPositionInsideDropZone(

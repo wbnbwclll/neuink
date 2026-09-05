@@ -7,10 +7,12 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::Utc;
+use neuink_domain::segment_note::validate_segment_note_text;
 use neuink_domain::{
-    Annotation, AnnotationId, AnnotationImportance, AnnotationTextSelection, ContentItem, EntryId,
-    EntryMeta, NoteId, PdfAsset, PdfParseState, PdfParseStatus, SegmentBlockNote, SegmentType,
-    SegmentUid, SourceSegment, TagId, TagMeta,
+    pdf_page_annotation_segment_uid, Annotation, AnnotationAnchorKind, AnnotationId,
+    AnnotationImportance, AnnotationTextSelection, ContentItem, EntryId, EntryMeta, NoteId,
+    PdfAsset, PdfParseState, PdfParseStatus, SegmentBlockNote, SegmentType, SegmentUid,
+    SourceSegment, TagId, TagMeta,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -554,23 +556,22 @@ impl Workspace {
         let mut records = Vec::new();
 
         for entry in self.list_entries()? {
-            if !matches!(
-                entry.pdf.as_ref().map(|pdf| pdf.parse.status),
-                Some(PdfParseStatus::Succeeded)
-            ) {
-                continue;
-            }
-
             let annotations = self.read_annotations(&entry.id)?;
             if annotations.is_empty() {
                 continue;
             }
 
-            let segments_by_uid: HashMap<SegmentUid, SourceSegment> = self
-                .read_segments(&entry.id)?
-                .into_iter()
-                .map(|segment| (segment.uid.clone(), segment))
-                .collect();
+            let segments_by_uid: HashMap<SegmentUid, SourceSegment> = if matches!(
+                entry.pdf.as_ref().map(|pdf| pdf.parse.status),
+                Some(PdfParseStatus::Succeeded)
+            ) {
+                self.read_segments(&entry.id)?
+                    .into_iter()
+                    .map(|segment| (segment.uid.clone(), segment))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
 
             for annotation in annotations {
                 let segment = segments_by_uid.get(&annotation.segment_uid).cloned();
@@ -626,10 +627,25 @@ impl Workspace {
         importance: AnnotationImportance,
         text_selection: Option<AnnotationTextSelection>,
     ) -> Result<Vec<Annotation>, WorkspaceError> {
-        let segment = self.ensure_segment_annotation_allowed(entry_id, &segment_uid)?;
         let mut annotations = self.read_annotations(entry_id)?;
-        let mut annotation = Annotation::new_for_segment(&segment, kind, content, importance);
-        annotation.text_selection = text_selection;
+        let annotation = match text_selection {
+            Some(selection)
+                if segment_uid == pdf_page_annotation_segment_uid(selection.page_idx) =>
+            {
+                self.ensure_pdf_page_annotation_allowed(entry_id, &segment_uid, &selection)?;
+                Annotation::new_for_pdf_page(selection, kind, content, importance)?
+            }
+            selection => {
+                let segment = self.ensure_segment_annotation_allowed(entry_id, &segment_uid)?;
+                if let Some(selection) = selection.as_ref() {
+                    selection.validate()?;
+                }
+                let mut annotation =
+                    Annotation::new_for_segment(&segment, kind, content, importance);
+                annotation.text_selection = selection;
+                annotation
+            }
+        };
         annotations.push(annotation);
         atomic_write_json(self.layout.entry_annotations_file(entry_id), &annotations)?;
         Ok(annotations)
@@ -644,13 +660,26 @@ impl Workspace {
         importance: AnnotationImportance,
     ) -> Result<Vec<Annotation>, WorkspaceError> {
         let mut annotations = self.read_annotations(entry_id)?;
-        let annotation = annotations
-            .iter_mut()
-            .find(|annotation| annotation.annotation_id == *annotation_id)
+        let annotation_index = annotations
+            .iter()
+            .position(|annotation| annotation.annotation_id == *annotation_id)
             .ok_or_else(|| WorkspaceError::AnnotationMissing(annotation_id.to_string()))?;
-        let segment = self.ensure_segment_annotation_allowed(entry_id, &annotation.segment_uid)?;
+        let anchor_kind = annotations[annotation_index].anchor_kind;
+        let segment_uid = annotations[annotation_index].segment_uid.clone();
+        let text_selection = annotations[annotation_index].text_selection.clone();
+        let segment = if anchor_kind == AnnotationAnchorKind::PdfPage {
+            let selection = text_selection
+                .as_ref()
+                .ok_or(neuink_domain::DomainError::PdfAnnotationSelectionRectsRequired)?;
+            self.ensure_pdf_page_annotation_allowed(entry_id, &segment_uid, selection)?;
+            None
+        } else {
+            Some(self.ensure_segment_annotation_allowed(entry_id, &segment_uid)?)
+        };
+        let annotation = &mut annotations[annotation_index];
         annotation.update(kind, content, importance);
-        if annotation.segment_snapshot.is_none() {
+        if annotation.segment_snapshot.is_none() && segment.is_some() {
+            let segment = segment.as_ref().expect("segment presence checked");
             annotation.refresh_segment_snapshot(&segment);
         }
         atomic_write_json(self.layout.entry_annotations_file(entry_id), &annotations)?;
@@ -680,6 +709,7 @@ impl Workspace {
         segment_uid: SegmentUid,
         text: String,
     ) -> Result<Vec<SegmentBlockNote>, WorkspaceError> {
+        validate_segment_note_text(&text)?;
         let segment_uid = self.resolve_source_segment(entry_id, &segment_uid)?.uid;
         let mut notes = self.read_segment_notes(entry_id)?;
         if let Some(note) = notes
@@ -728,6 +758,23 @@ impl Workspace {
             return Err(WorkspaceError::PdfNotParsed(entry_id.to_string()));
         }
         self.resolve_source_segment(entry_id, segment_uid)
+    }
+
+    fn ensure_pdf_page_annotation_allowed(
+        &self,
+        entry_id: &EntryId,
+        segment_uid: &SegmentUid,
+        selection: &AnnotationTextSelection,
+    ) -> Result<(), WorkspaceError> {
+        let entry = self.read_entry_meta(entry_id)?;
+        if entry.pdf.is_none() {
+            return Err(WorkspaceError::PdfMissing(entry_id.to_string()));
+        }
+        selection.validate()?;
+        if *segment_uid != pdf_page_annotation_segment_uid(selection.page_idx) {
+            return Err(WorkspaceError::SegmentMissing(segment_uid.to_string()));
+        }
+        Ok(())
     }
 
     fn enrich_segments_with_empty_mineru_regions(

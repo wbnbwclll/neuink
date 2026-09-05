@@ -1,8 +1,16 @@
-import { Eye, EyeOff, Loader2, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Eye, EyeOff, Hammer, Loader2, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Command, CommandInput } from '@/components/ui/command';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
 import {
   rebuildSearchIndex,
@@ -32,6 +40,7 @@ export function SearchPanel({ buildStatus = null, root, status, onOpenResult }: 
   const [mode, setMode] = useState<SearchMode>('hybrid');
   const [hoverPreviewEnabled, setHoverPreviewEnabled] = useState(true);
   const [rebuildRequested, setRebuildRequested] = useState(false);
+  const [buildConfirmOpen, setBuildConfirmOpen] = useState(false);
   const { notify } = useToast();
   const { busy, error, results } = useGlobalSearch({ root, status, query, mode });
   const semanticMode = mode === 'hybrid' || mode === 'semantic';
@@ -53,6 +62,8 @@ export function SearchPanel({ buildStatus = null, root, status, onOpenResult }: 
     Boolean(root) &&
     status === 'ready' &&
     Boolean(searchIndexStatus?.semantic_document_count);
+  const needsBuild = searchIndexStatus?.semantic_status === 'needs_build';
+  const pendingVectorCount = searchIndexStatus?.semantic_document_count ?? 0;
   const rebuilding =
     rebuildRequested || buildStatus?.state === 'queued' || buildStatus?.state === 'running';
   const buildProgress = buildStatus && buildStatus.total > 0
@@ -70,16 +81,21 @@ export function SearchPanel({ buildStatus = null, root, status, onOpenResult }: 
       setSearchIndexStatus(response.status);
       notify({
         tone: 'success',
-        title: '搜索索引已重建',
-        description: `已重建 ${response.rebuilt_vector_count} 个向量。`
+        title: needsBuild ? '向量索引已构建' : '向量索引已更新',
+        description: `已处理 ${response.rebuilt_vector_count} 个向量。`
       });
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setSearchIndexError(message);
-      notify({ tone: 'danger', title: '重建搜索索引失败', description: message });
+      notify({ tone: 'danger', title: '构建向量索引失败', description: message });
     } finally {
       setRebuildRequested(false);
     }
+  };
+
+  const confirmBuild = () => {
+    setBuildConfirmOpen(false);
+    void rebuildVectors();
   };
 
   return (
@@ -147,17 +163,19 @@ export function SearchPanel({ buildStatus = null, root, status, onOpenResult }: 
                 className="shrink-0"
                 disabled={rebuilding}
                 size="xs"
-                title="重建向量索引"
+                title={needsBuild ? '构建向量索引' : '增量更新向量索引'}
                 type="button"
                 variant="ghost"
-                onClick={() => void rebuildVectors()}
+                onClick={() => setBuildConfirmOpen(true)}
               >
                 {rebuilding ? (
                   <Loader2 className="animate-spin" size={12} aria-hidden="true" />
+                ) : needsBuild ? (
+                  <Hammer size={12} aria-hidden="true" />
                 ) : (
                   <RefreshCw size={12} aria-hidden="true" />
                 )}
-                重建
+                {needsBuild ? '构建' : '更新'}
               </Button>
             ) : null}
           </div>
@@ -183,6 +201,34 @@ export function SearchPanel({ buildStatus = null, root, status, onOpenResult }: 
           onOpenResult={onOpenResult}
         />
       </Command>
+
+      <Dialog open={buildConfirmOpen} onOpenChange={setBuildConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle size={16} aria-hidden="true" />
+              {needsBuild ? '构建向量索引' : '更新向量索引'}
+            </DialogTitle>
+            <DialogDescription>
+              {needsBuild
+                ? `将为 ${pendingVectorCount} 条内容生成语义向量，用于语义与混合搜索。`
+                : '将为新增或变更的内容补充语义向量，通常只需几秒到几十秒。'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm leading-6 text-amber-800 dark:text-amber-200">
+            构建过程会占用大量 CPU，应用可能暂时卡顿；首次构建可能需要数分钟。构建期间关键词搜索不受影响，可随时继续使用。
+          </div>
+          <DialogFooter>
+            <Button disabled={rebuilding} type="button" variant="outline" onClick={() => setBuildConfirmOpen(false)}>
+              取消
+            </Button>
+            <Button disabled={rebuilding} type="button" onClick={confirmBuild}>
+              <Hammer size={14} aria-hidden="true" />
+              {needsBuild ? '开始构建' : '开始更新'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </aside>
   );
 }

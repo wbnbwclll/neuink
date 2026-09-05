@@ -3,13 +3,12 @@ import { Extension, markInputRule } from '@tiptap/core';
 import Color from '@tiptap/extension-color';
 import Highlight from '@tiptap/extension-highlight';
 import Placeholder from '@tiptap/extension-placeholder';
-import { TextStyle } from '@tiptap/extension-text-style';
 import UnderlineExtension from '@tiptap/extension-underline';
 import { Markdown } from '@tiptap/markdown';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
-import { ChevronDown, ChevronRight, Loader2, MousePointer2, Save, Trash2, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { ChevronDown, ChevronRight, FileText, Languages, Loader2, MousePointer2, Save, Trash2, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -22,6 +21,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import { MarkdownTextStyle } from '@/modules/notes/editor/MarkdownTextStyle';
 import { sanitizePastedNoteHtml } from '@/modules/notes/editor/pasteSanitizer';
 import { SourceSnapshotPreview } from '@/shared/components/SourceSnapshotPreview';
 import type { AnnotationTextSelection, SourceSegment } from '@/shared/types/domain';
@@ -30,6 +30,10 @@ import { ReaderEmptyState, ReaderModeSwitch } from '../ReaderSurfacePrimitives';
 import { SegmentSourceContextPreview } from './SegmentSourceContextPreview';
 import { TipTapToolbar } from './TipTapToolbar';
 import { hasNoteText, segmentTypeLabel } from './readerUtils';
+import {
+  getSegmentNoteValidation,
+  getSegmentNoteVisibleText
+} from './segmentNoteLimits';
 import { useStoredCollapseState } from './useStoredCollapseState';
 
 const SegmentMarkdownShortcuts = Extension.create({
@@ -96,19 +100,24 @@ export function SegmentNoteEditor({
   onSave: () => Promise<boolean> | boolean | void;
 }) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [visibleNoteText, setVisibleNoteText] = useState(() =>
+    getSegmentNoteVisibleText(noteText)
+  );
+  const syncedSegmentUidRef = useRef<string | null>(segment?.uid ?? null);
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
+        underline: false,
         codeBlock: {
           HTMLAttributes: {
             class: 'rounded-md bg-muted px-3 py-2 font-mono text-xs'
           }
         }
       }),
-      TextStyle,
+      MarkdownTextStyle,
       Markdown,
       SegmentMarkdownShortcuts,
-      Color,
+      Color.configure({ types: ['textStyle'] }),
       Highlight.configure({ multicolor: true }),
       UnderlineExtension,
       Placeholder.configure({
@@ -120,17 +129,27 @@ export function SegmentNoteEditor({
     editorProps: {
       attributes: {
         class:
-          'segment-note-editor h-full min-h-0 overflow-x-hidden overflow-y-auto rounded-md border bg-white px-3 py-3 text-sm leading-6 outline-none focus:border-ring focus:ring-2 focus:ring-ring/20 [&_blockquote]:border-l-4 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-base [&_h2]:font-semibold [&_hr]:my-3 [&_hr]:border-border [&_ol]:ml-5 [&_ol]:list-decimal [&_pre]:my-2 [&_ul]:ml-5 [&_ul]:list-disc'
+          'segment-note-editor h-full min-h-0 overflow-x-hidden overflow-y-auto rounded-md border bg-white px-3 py-3 pb-8 text-sm leading-6 outline-none focus:border-ring focus:ring-2 focus:ring-ring/20 [&_blockquote]:border-l-4 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-base [&_h2]:font-semibold [&_hr]:my-3 [&_hr]:border-border [&_ol]:ml-5 [&_ol]:list-decimal [&_pre]:my-2 [&_ul]:ml-5 [&_ul]:list-disc'
       },
       transformPastedHTML: sanitizePastedNoteHtml
     },
     onUpdate: ({ editor: currentEditor }) => {
+      setVisibleNoteText(currentEditor.getText());
       onNoteTextChange(currentEditor.getMarkdown());
     }
   });
 
+  const noteValidation = getSegmentNoteValidation(visibleNoteText);
+
   useEffect(() => {
     if (!editor) {
+      return;
+    }
+
+    const segmentUid = segment?.uid ?? null;
+    const segmentChanged = syncedSegmentUidRef.current !== segmentUid;
+    if (!segmentChanged && editor.getMarkdown() === noteText) {
+      setVisibleNoteText(editor.getText());
       return;
     }
 
@@ -138,9 +157,12 @@ export function SegmentNoteEditor({
       contentType: 'markdown',
       emitUpdate: false
     });
+    syncedSegmentUidRef.current = segmentUid;
+    setVisibleNoteText(editor.getText());
   }, [editor, noteText, segment?.uid]);
 
   const translationPreviewText = translatedText?.trim() || null;
+  const [contextExpanded, setContextExpanded] = useState(sourceInitiallyExpanded);
   const {
     collapsed: translationCollapsed,
     toggleCollapsed: toggleTranslationCollapsed
@@ -167,7 +189,7 @@ export function SegmentNoteEditor({
             ) : null}
 
             <Button
-              disabled={!segment || busy || !dirty}
+              disabled={!segment || busy || !dirty || noteValidation.overLimit}
               size="sm"
               type="button"
               onClick={() => void onSave()}
@@ -222,64 +244,81 @@ export function SegmentNoteEditor({
       <div className="flex min-h-0 min-w-0 flex-col overflow-hidden p-3">
         {segment ? (
           <div className="flex h-full min-h-0 min-w-0 flex-col gap-3">
-            <div className="grid max-h-[22rem] shrink-0 min-w-0 gap-3 overflow-y-auto overscroll-contain xl:grid-cols-2 xl:items-start">
-              <SegmentSourceContextPreview
-                defaultExpanded={sourceInitiallyExpanded}
-                highlightSelections={highlightSelections}
-                pdfDocument={pdfDocument}
-                segment={segment}
-                sourceEntryId={sourceEntryId}
-                workspaceRoot={workspaceRoot}
-              />
-
-              <section className="grid min-w-0 gap-2 rounded-md border bg-white px-3 py-2">
-                <div className="flex min-w-0 items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-start gap-1.5">
+            <section className="shrink-0 rounded-md border bg-muted/30 px-3 py-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <div className="min-w-[11rem] flex-1">
+                  <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-foreground">
+                    <FileText size={13} aria-hidden="true" />
+                    <span>来源上下文</span>
+                    <span className="font-normal text-muted-foreground">第 {segment.page_idx + 1} 页 · {segmentTypeLabel(segment.segment_type)}</span>
+                  </div>
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground" title={segment.text.trim() || segment.markdown?.trim() || undefined}>
+                    {segment.text.trim() || segment.markdown?.trim() || '暂无解析文本'}
+                  </p>
+                </div>
+                <div className="ml-auto flex shrink-0 items-center gap-1">
+                  {translationPreviewText ? (
                     <Button
-                      className="-ml-1 mt-0.5 shrink-0"
-                      size="icon-xs"
-                      title={translationCollapsed ? '展开翻译' : '折叠翻译'}
+                      size="sm"
                       type="button"
                       variant="ghost"
                       onClick={toggleTranslationCollapsed}
                     >
-                      {translationCollapsed ? (
-                        <ChevronRight size={13} aria-hidden="true" />
-                      ) : (
-                        <ChevronDown size={13} aria-hidden="true" />
-                      )}
+                      <Languages size={13} aria-hidden="true" />
+                      {translationCollapsed ? '查看译文' : '收起译文'}
                     </Button>
-                    <div className="text-xs font-semibold text-foreground">翻译</div>
-                  </div>
-                  {!translationPreviewText ? (
-                    <span className="shrink-0 text-[11px] text-muted-foreground">暂无译文</span>
                   ) : null}
-                </div>
-
-                {!translationCollapsed ? (
-                  <div
-                    className="max-h-44 min-w-0 max-w-full overflow-auto overscroll-contain rounded-md bg-muted/30 px-2.5 py-2 text-xs leading-5 text-muted-foreground"
-                    title={translationPreviewText ?? '暂无译文'}
+                  <Button
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                    onClick={() => setContextExpanded((current) => !current)}
                   >
-                    {translationPreviewText ? (
-                      <SourceSnapshotPreview
-                        allowScroll
-                        compact
-                        markdown={translationPreviewText}
-                        segmentType={segment.segment_type}
-                      />
-                    ) : (
-                      <span className="text-muted-foreground">暂无译文</span>
-                    )}
-                  </div>
-                ) : null}
-              </section>
-            </div>
+                    {contextExpanded ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
+                    {contextExpanded ? '收起原文' : '查看原文'}
+                  </Button>
+                </div>
+              </div>
+
+              {contextExpanded ? (
+                <div className="mt-2 min-w-0">
+                  <SegmentSourceContextPreview
+                    defaultExpanded
+                    embeddedOriginal
+                    highlightSelections={highlightSelections}
+                    pdfDocument={pdfDocument}
+                    segment={segment}
+                    sourceEntryId={sourceEntryId}
+                    workspaceRoot={workspaceRoot}
+                  />
+                </div>
+              ) : null}
+
+              {translationPreviewText && !translationCollapsed ? (
+                <div className="mt-2 max-h-40 min-w-0 overflow-y-auto overscroll-contain rounded-md border bg-white px-2.5 py-2 text-xs leading-5 text-muted-foreground">
+                  <SourceSnapshotPreview
+                    allowScroll={false}
+                    compact
+                    markdown={translationPreviewText}
+                    segmentType={segment.segment_type}
+                  />
+                </div>
+              ) : null}
+            </section>
 
             <div className="grid min-h-0 min-w-0 flex-1 grid-rows-[auto_minmax(0,1fr)] overflow-hidden border-t border-border pt-3">
               <TipTapToolbar editor={editor} disabled={false} />
-              <div className="min-h-0 min-w-0 overflow-hidden [&_.tiptap]:h-full">
+              <div className="relative min-h-0 min-w-0 overflow-hidden [&_.tiptap]:h-full">
                 <EditorContent className="h-full min-h-0" editor={editor} />
+                <div
+                  aria-live="polite"
+                  className={cn(
+                    'pointer-events-none absolute bottom-2 right-2 rounded bg-white/90 px-1 text-[11px] leading-4 shadow-sm',
+                    noteValidation.overLimit ? 'text-destructive' : 'text-muted-foreground'
+                  )}
+                >
+                  {noteValidation.length} / {noteValidation.maxLength}
+                </div>
               </div>
             </div>
           </div>

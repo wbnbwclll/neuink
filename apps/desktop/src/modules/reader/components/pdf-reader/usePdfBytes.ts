@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { readPdfBytes } from '@/shared/ipc/workspaceApi';
 
@@ -7,12 +7,18 @@ export type PdfBytesLoadState =
   | { status: 'ready'; bytes: Uint8Array; error: null }
   | { status: 'error'; bytes: null; error: string };
 
-export function usePdfBytes(pdfPath: string | null): PdfBytesLoadState {
+export type RetryablePdfBytesLoadState = PdfBytesLoadState & {
+  retry: () => void;
+};
+
+export function usePdfBytes(pdfPath: string | null): RetryablePdfBytesLoadState {
   const [loadState, setLoadState] = useState<PdfBytesLoadState>({
     status: 'idle',
     bytes: null,
     error: null
   });
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const retry = useCallback(() => setLoadAttempt((attempt) => attempt + 1), []);
 
   useEffect(() => {
     if (!pdfPath) {
@@ -42,7 +48,7 @@ export function usePdfBytes(pdfPath: string | null): PdfBytesLoadState {
     return () => {
       cancelled = true;
     };
-  }, [pdfPath]);
+  }, [loadAttempt, pdfPath]);
 
-  return useMemo(() => loadState, [loadState]);
+  return useMemo(() => ({ ...loadState, retry }), [loadState, retry]);
 }

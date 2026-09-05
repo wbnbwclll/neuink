@@ -54,7 +54,7 @@ describe('TranslationTaskDialog', () => {
     });
   });
 
-  it('shows every content type and submits only the enabled types', async () => {
+  it('starts empty and lets the user select individual blocks', async () => {
     const onTranslate = vi.fn().mockResolvedValue(undefined);
     const heading = sourceSegment('heading-1', 'heading', 'A heading');
     const paragraph = sourceSegment('paragraph-1', 'paragraph', 'A paragraph');
@@ -69,17 +69,39 @@ describe('TranslationTaskDialog', () => {
     );
 
     await waitFor(() => {
-      expect(getByRole('button', { name: '翻译选中（2）' })).toBeTruthy();
+      expect(getByRole('button', { name: '翻译选中（0）' })).toBeTruthy();
     });
     expect(getByRole('button', { name: '公式 0' }).hasAttribute('disabled')).toBe(true);
 
-    fireEvent.click(getByRole('button', { name: '段落 1' }));
+    const checkboxes = getByRole('dialog').querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    expect(Array.from(checkboxes).every((checkbox) => !checkbox.checked)).toBe(true);
+    fireEvent.click(getByRole('checkbox', { name: '选择第 1 页 段落' }));
     fireEvent.click(getByRole('button', { name: '翻译选中（1）' }));
 
-    expect(onTranslate).toHaveBeenCalledWith([heading], 'pending');
+    expect(onTranslate).toHaveBeenCalledWith([paragraph], 'pending');
   });
 
-  it('treats legacy skipped blocks as pending and keeps the pending list visible', async () => {
+  it('does not auto-select a whole type when it is shown again', async () => {
+    const paragraph = sourceSegment('paragraph-1', 'paragraph', 'A paragraph');
+    const { getByRole } = render(
+      <TranslationTaskDialog
+        open
+        segments={[paragraph]}
+        translation={null}
+        onOpenChange={vi.fn()}
+        onTranslate={vi.fn()}
+      />
+    );
+
+    await waitFor(() => expect(getByRole('button', { name: '翻译选中（0）' })).toBeTruthy());
+    fireEvent.click(getByRole('button', { name: '段落 1' }));
+    fireEvent.click(getByRole('button', { name: '段落 1' }));
+
+    expect(getByRole('button', { name: '翻译选中（0）' })).toBeTruthy();
+    expect(getByRole('checkbox', { name: '选择第 1 页 段落' })).toHaveProperty('checked', false);
+  });
+
+  it('keeps skipped blocks visible without making them retryable', async () => {
     const skipped = sourceSegment('skipped-1', 'page_header', 'Conference header');
     const { getByRole, getByText } = render(
       <TranslationTaskDialog
@@ -96,11 +118,33 @@ describe('TranslationTaskDialog', () => {
     });
     fireEvent.click(getByRole('button', { name: '待翻译 1' }));
 
-    expect(getByText('第 1 页 · 页眉')).toBeTruthy();
-    expect(getByText('待翻译')).toBeTruthy();
+    expect(getByText('第 1 页')).toBeTruthy();
+    expect(getByText('页眉')).toBeTruthy();
+    expect(getByText('已跳过')).toBeTruthy();
+    expect(getByRole('checkbox', { name: '选择第 1 页 页眉' })).toHaveProperty('disabled', true);
   });
 
-  it('shows the active batch message and scoped job progress', () => {
+  it('locks row selection while a translation task is running', async () => {
+    const { getByRole } = render(
+      <TranslationTaskDialog
+        busy
+        open
+        progress={{ current: 1, percent: 50, total: 2 }}
+        segments={[segment, sourceSegment('paragraph-2', 'paragraph', 'Second paragraph')]}
+        translation={null}
+        onOpenChange={vi.fn()}
+        onTranslate={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      const checkboxes = Array.from(getByRole('dialog').querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+      expect(checkboxes.length).toBe(3);
+      expect(checkboxes.every((checkbox) => checkbox.disabled)).toBe(true);
+    });
+  });
+
+  it('shows stable translation action and scoped job progress', () => {
     const { getByText } = render(
       <TranslationTaskDialog
         busy
@@ -114,7 +158,7 @@ describe('TranslationTaskDialog', () => {
       />
     );
 
-    expect(getByText('翻译批次 1/3 · 2/5')).toBeTruthy();
+    expect(getByText('正在翻译 · 2/5')).toBeTruthy();
   });
 
   it('hides persistent low-level errors and keeps failed blocks retryable', () => {

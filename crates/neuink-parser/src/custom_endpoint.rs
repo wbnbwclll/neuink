@@ -1,18 +1,11 @@
-use std::{
-    io::{Cursor, Read},
-    path::Path,
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 use neuink_domain::NeuinkDocument;
 use reqwest::{header::CONTENT_TYPE, multipart, RequestBuilder, StatusCode};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::time::sleep;
-use zip::ZipArchive;
 
-use crate::{
-    mineru_middle::enrich_document_with_middle, normalizer::normalize_parser_response, ParserError,
-};
+use crate::{mineru_zip::normalize_mineru_zip, normalizer::normalize_parser_response, ParserError};
 
 const TRANSIENT_HTTP_RETRY_DELAY: Duration = Duration::from_secs(2);
 const TRANSIENT_HTTP_RETRY_ATTEMPTS: usize = 4;
@@ -631,54 +624,6 @@ fn response_is_zip(response: &reqwest::Response) -> bool {
             lower.contains("application/zip") || lower.contains("application/octet-stream")
         })
         .unwrap_or(false)
-}
-
-fn normalize_mineru_zip(zip_bytes: &[u8]) -> Result<NeuinkDocument, ParserError> {
-    let mut archive = ZipArchive::new(Cursor::new(zip_bytes))?;
-    let names = (0..archive.len())
-        .filter_map(|index| {
-            archive
-                .by_index(index)
-                .ok()
-                .map(|file| file.name().to_string())
-        })
-        .collect::<Vec<_>>();
-
-    for suffix in ["_content_list_v2.json", "_content_list.json"] {
-        for name in names.iter().filter(|name| name.ends_with(suffix)) {
-            let mut file = archive.by_name(name)?;
-            let mut content = String::new();
-            file.read_to_string(&mut content)?;
-            let value = serde_json::from_str::<Value>(&content)?;
-            let wrapped = if name.ends_with("_content_list_v2.json") {
-                json!({ "content_list_v2": value })
-            } else {
-                json!({ "content_list": value })
-            };
-            let mut document = normalize_parser_response(&wrapped)?;
-            drop(file);
-            enrich_from_middle_file(&mut archive, &names, &mut document)?;
-            return Ok(document);
-        }
-    }
-
-    Err(ParserError::MissingContentList)
-}
-
-fn enrich_from_middle_file(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
-    names: &[String],
-    document: &mut NeuinkDocument,
-) -> Result<(), ParserError> {
-    let Some(name) = names.iter().find(|name| name.ends_with("_middle.json")) else {
-        return Ok(());
-    };
-    let mut file = archive.by_name(name)?;
-    let mut content = String::new();
-    file.read_to_string(&mut content)?;
-    let middle = serde_json::from_str::<Value>(&content)?;
-    enrich_document_with_middle(document, &middle);
-    Ok(())
 }
 
 fn is_transient_gateway_status(status: StatusCode) -> bool {

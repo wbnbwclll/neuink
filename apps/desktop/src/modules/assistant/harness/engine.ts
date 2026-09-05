@@ -13,6 +13,7 @@ import {
 import type {
   AssistantActiveNote,
   AssistantActiveSegment,
+  AssistantActiveSurfaceSnapshot,
   AssistantAgentRun,
   AssistantContext,
   AssistantContextPlan,
@@ -30,12 +31,23 @@ import {
 } from '@/shared/lib/agentRuntimeSettings';
 
 import { assistantContextCharBudget, assistantNoteCharBudget } from '../sdk/contextBudget';
-import { answerWithKeywordGrounding, type GroundedAnswer } from '../sdk/qna';
+import { answerWithGroundedAgent, type GroundedAnswer } from '../sdk/qna';
 import { registerEvidence } from '../runtime/evidenceLedger';
 import { createCompiledTaskState, transitionTaskState } from '../runtime/taskState';
 import { finalizeVerifiedProposals } from '../runtime/verifiedProposal';
 import { AssistantVerificationError } from './verification';
+import { verifyHarnessResult } from './verification';
 import { observeAssistantContext } from './context';
+import {
+  buildInvocationPlanForContract,
+  compileAssistantExecutionContract
+} from './executionContract';
+import { orchestrateAssistantTask } from './taskOrchestrator';
+import {
+  appendConversationMemory,
+  buildConversationTail,
+  updateConversationMemory
+} from './conversationMemory';
 import {
   AssistantHarnessError,
   createAgentRun,
@@ -65,13 +77,16 @@ type RunAssistantHarnessOptions = {
   currentEntry?: { id: string; title: string } | null;
   currentNote?: AssistantActiveNote | null;
   currentSegment?: AssistantActiveSegment | null;
+  currentSurface?: AssistantActiveSurfaceSnapshot | null;
   destinationEntryId?: string | null;
   mentionScope?: ScopeSnapshot | null;
   tagMentionScopes?: Record<string, ScopeSnapshot>;
   onCreateEntry?: (title: string) => Promise<AssistantEntryMetaTarget>;
+  onAnswerReset?: () => void;
   onDelta?: (delta: string) => void;
   onNoteProposal?: (proposal: AssistantNoteProposal) => void;
   onToolEvent?: (event: AssistantToolTraceEvent) => void;
+  onReasoningDelta?: (delta: string) => void;
   preferredAgentId?: string | null;
   profiles?: LlmProfile[];
   question: string;
@@ -87,18 +102,23 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
     abortSignal,
     assistantContext,
     availableEntries = [],
+    availableNotes = [],
     contextPlan,
     composerSnapshot,
     conversationHistory = [],
     conversationId,
     currentEntry,
     currentNote,
+    currentSegment,
+    currentSurface,
     mentionScope,
     tagMentionScopes,
     onCreateEntry,
+    onAnswerReset,
     onDelta,
     onNoteProposal,
     onToolEvent,
+    onReasoningDelta,
     preferredAgentId,
     profiles = [],
     question,
@@ -119,6 +139,8 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
   try {
     throwIfAborted(abortSignal);
     const observed = observeAssistantContext({
+      activeSegment: currentSegment,
+      activeSurface: currentSurface,
       assistantContext,
       contextPlan,
       fallbackEntryId: currentEntry?.id ?? null,
@@ -151,17 +173,87 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
     throwIfAborted(abortSignal);
 
     const runtimeSettings = await loadWorkspaceAgentRuntimeSettings(root);
-    const plan = modelDrivenPlan(question, contextPlan, snapshot);
-    const invocationPlan = {
-      enabledToolIds: [...runtimeSettings.mainAssistant.enabledToolIds],
-      mainAssistantId: preferredAgentId ?? runtimeSettings.mainAssistant.id,
-      missing: [],
-      mode: 'agent_execute' as const,
-      rationale: 'The model policy chooses the next action from conversation and observations.',
-      skillIdsToLoad: [],
-      subagentTasks: [],
-      writePolicy: 'workspace_write' as const
-    };
+    agentRun.subagentTaskCount += 1;
+    upsertRunNode(agentRun, {
+      agentId: 'task-orchestrator-agent',
+      id: `${runId}-orchestrate`,
+      inputSummary: `goal=${question.slice(0, 180)}`,
+      kind: 'subagent',
+      status: 'running',
+      title: 'Understand task and select capabilities'
+    });
+    emitHarnessEvent(onToolEvent, {
+      id: `${runId}-orchestrate`,
+      status: 'running',
+      summary: '正在理解用户目标、当前上下文和所需能力。',
+      toolName: 'agent.orchestrate'
+    });
+    const orchestration = await orchestrateAssistantTask({
+      availableEntries,
+      availableNotes,
+      composerSnapshot,
+      contextPlan,
+      conversationHistory,
+      profiles,
+      question,
+      runtimeSettings,
+      scope: mentionScope ?? scope,
+      settings,
+      snapshot,
+    });
+    upsertRunNode(agentRun, {
+      agentId: orchestration.orchestratorAgentId,
+      id: `${runId}-orchestrate`,
+      kind: 'subagent',
+      outputSummary: `intent=${orchestration.plan.intent}, tools=${orchestration.requiredToolIds.join(',') || 'none'}`,
+      status: 'succeeded',
+      title: 'Understand task and select capabilities'
+    });
+    emitHarnessEvent(onToolEvent, {
+      id: `${runId}-orchestrate`,
+      status: 'done',
+      summary: `已识别任务意图：${orchestration.plan.intent}。`,
+      toolName: 'agent.orchestrate'
+    });
+    const contract = compileAssistantExecutionContract(orchestration);
+    const plan = contract.plan;
+    const invocationPlan = buildInvocationPlanForContract(
+      contract,
+      runtimeSettings,
+      preferredAgentId
+    );
+    activeTaskState = createCompiledTaskState({
+      conversationId: conversationId ?? 'local',
+      request: question,
+      spec: plan
+    });
+    recordNode(agentRun, onToolEvent, {
+      id: `${runId}-plan`,
+      kind: 'planner',
+      summary: `orchestrator=${orchestration.orchestratorAgentId}, intent=${plan.intent}, requiredTools=${contract.requiredToolIds.join(',') || 'none'}, sourcePolicy=${contract.sourcePolicy}`,
+      title: 'Orchestrate and compile execution contract'
+    });
+    if (plan.missing.length > 0) {
+      const answer = plan.clarificationQuestion ?? `当前任务缺少必要上下文：${plan.missing.join(', ')}。`;
+      const awaitingTaskState = transitionTaskState(
+        activeTaskState,
+        'awaiting_user',
+        'compile'
+      );
+      onDelta?.(answer);
+      return {
+        agentRun: finishAgentRun(agentRun, 'succeeded'),
+        answer,
+        plan,
+        sources: [],
+        taskState: awaitingTaskState
+      };
+    }
+    if (invocationPlan.missing.length > 0) {
+      throw new Error(
+        `当前 Agent 未启用完成此任务所需的工具：${invocationPlan.missing.join(', ')}。请在 Agent 工具配置中启用后重试。`
+      );
+    }
     const activeExecution = selectAgentExecution(
       runtimeSettings,
       question,
@@ -171,11 +263,6 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
     );
     const executionProfile =
       profiles.find((profile) => profile.id === activeExecution.agent.llmProfileId) ?? settings;
-    activeTaskState = createCompiledTaskState({
-      conversationId: conversationId ?? 'local',
-      request: question,
-      spec: plan
-    });
     agentRun.invocationMode = 'agent_execute';
     agentRun.mainAssistantId = activeExecution.agent.id;
     upsertRunNode(agentRun, {
@@ -194,7 +281,8 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
       toolName: 'agent.loop'
     });
 
-    const grounded = await answerWithKeywordGrounding({
+    let streamedAnswer = false;
+    const grounded = await answerWithGroundedAgent({
       abortSignal,
       activeExecution,
       assistantContext,
@@ -213,7 +301,20 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
         tagMentionScopes
       }),
       invocationPlan,
+      onAnswerReset: onAnswerReset
+        ? () => {
+            streamedAnswer = false;
+            onAnswerReset();
+          }
+        : undefined,
       onCreateEntry,
+      onDelta: onDelta
+        ? (delta) => {
+            streamedAnswer = true;
+            onDelta(delta);
+          }
+        : undefined,
+      onReasoningDelta,
       onToolEvent,
       plan,
       profiles,
@@ -224,6 +325,16 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
       settings: executionProfile
     });
     throwIfAborted(abortSignal);
+    const verification = verifyHarnessResult({
+      activeExecution,
+      grounded,
+      invocationPlan,
+      plan,
+      snapshot
+    });
+    if (verification.errors.length > 0) {
+      throw new AssistantVerificationError(verification.errors);
+    }
     verifyGroundedProposals({
       composerSnapshot,
       history: conversationHistory,
@@ -255,6 +366,57 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
       agentLoopState: grounded.agentLoopState
     };
     activeTaskState = nextTaskState;
+    const memoryAgent = runtimeSettings.subagents.find(
+      (agent) => agent.id === 'memory-agent' && agent.enabled
+    );
+    if (memoryAgent) {
+      agentRun.subagentTaskCount += 1;
+      upsertRunNode(agentRun, {
+        agentId: memoryAgent.id,
+        id: `${runId}-memory`,
+        kind: 'subagent',
+        status: 'running',
+        title: 'Update semantic memory checkpoint'
+      });
+      const memoryProfile = profiles.find(
+        (profile) => profile.id === memoryAgent.llmProfileId
+      ) ?? settings;
+      try {
+        grounded.conversationMemory = await updateConversationMemory({
+          answer: grounded.answer,
+          history: conversationHistory,
+          pendingProposalCount: proposalIds.length,
+          question,
+          settings: memoryProfile,
+          sourceCount: grounded.sources.length,
+          systemPrompt: memoryAgent.systemPrompt
+        });
+        upsertRunNode(agentRun, {
+          agentId: memoryAgent.id,
+          id: `${runId}-memory`,
+          kind: 'subagent',
+          outputSummary: `summary=${grounded.conversationMemory.summary.slice(0, 180)}`,
+          status: 'succeeded',
+          title: 'Update semantic memory checkpoint'
+        });
+      } catch (memoryError) {
+        upsertRunNode(agentRun, {
+          agentId: memoryAgent.id,
+          error: errorMessage(memoryError),
+          id: `${runId}-memory`,
+          kind: 'subagent',
+          status: 'failed',
+          title: 'Update semantic memory checkpoint'
+        });
+        emitHarnessEvent(onToolEvent, {
+          error: errorMessage(memoryError),
+          id: `${runId}-memory`,
+          status: 'error',
+          summary: 'The semantic memory checkpoint was not updated; the durable transcript remains available.',
+          toolName: 'agent.memory'
+        });
+      }
+    }
     upsertRunNode(agentRun, {
       agentId: activeExecution.agent.id,
       id: `${runId}-loop`,
@@ -270,7 +432,7 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
       summary: 'Agent reached a terminal response for this turn.',
       toolName: 'agent.loop'
     });
-    onDelta?.(grounded.answer);
+    if (!streamedAnswer) onDelta?.(grounded.answer);
     return {
       ...grounded,
       agentRun: finishAgentRun(agentRun, 'succeeded'),
@@ -298,44 +460,6 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
   }
 }
 
-function modelDrivenPlan(
-  question: string,
-  contextPlan: AssistantContextPlan | null | undefined,
-  snapshot: AssistantContextSnapshot
-): AssistantTaskPlan {
-  const activeNoteSnapshot = snapshot.active_note;
-  return {
-    attachments: contextPlan?.items ?? [],
-    capabilities: [
-      'read_document', 'read_note', 'search_evidence', 'synthesize',
-      'propose_note', 'propose_entry_meta_change', 'propose_tag_change'
-    ],
-    citationPolicy: 'preserve',
-    confidence: 1,
-    deliverables: ['chat_answer'],
-    evidencePolicy: 'optional',
-    intent: 'general_qa',
-    missing: [],
-    needsCurrentNote: false,
-    needsDocumentContext: false,
-    needsNoteProposal: false,
-    needsSegmentSearch: false,
-    rationale: 'Semantic routing is delegated to the Agent policy.',
-    request: question,
-    target: activeNoteSnapshot
-      ? {
-          entryId: activeNoteSnapshot.entry_id,
-          kind: 'markdown_note',
-          noteId: activeNoteSnapshot.note_id
-        }
-      : {
-          entryId: snapshot.active_entry?.entry_id,
-          kind: 'chat_only'
-        },
-    steps: []
-  };
-}
-
 export function modelDrivenBrief({
   composerSnapshot,
   contextPlan,
@@ -349,10 +473,7 @@ export function modelDrivenBrief({
   mentionScope: ScopeSnapshot;
   tagMentionScopes?: Record<string, ScopeSnapshot>;
 }) {
-  const transcript = history
-    .slice(-12)
-    .map((message) => `${message.role === 'user' ? 'User' : 'Assistant'}: ${message.content}`)
-    .join('\n');
+  const transcript = buildConversationTail(history);
   const mentionMap = formatMentionMap(composerSnapshot, mentionScope, tagMentionScopes);
   const historicalMentionMaps = history
     .filter((message) => message.role === 'user')
@@ -373,7 +494,7 @@ export function modelDrivenBrief({
   const taskObservation = latestTask?.type === 'task-state'
     ? `Previous task state: status=${latestTask.task.status}, goal=${JSON.stringify(latestTask.task.goal.normalizedGoal)}, proposals=${latestTask.task.proposalIds.length}. A later natural-language request may continue, correct, or replace it; decide from the conversation.`
     : '';
-  return [
+  return appendConversationMemory([
     'Use a model-driven Agent loop. Interpret all user replies as natural language; never require fixed phrases, regex slots, or magic retry wording.',
     'Answer directly when no external observation or side effect is needed. Naming, summarization, wording, planning, and deciding whether to ask are model-native cognition, not tools.',
     'Call tools only for workspace observation, deterministic computation, Skill loading, or an authorized side effect. For "name and create", choose the name internally and call create_entry once. For title suggestions only, answer without tools.',
@@ -385,7 +506,7 @@ export function modelDrivenBrief({
     taskObservation,
     contextPlan?.summary ? `UI context summary (informational only; the Agent decides semantic roles): ${contextPlan.summary}` : '',
     transcript ? `Recent conversation:\n${transcript}` : ''
-  ].filter(Boolean).join('\n\n');
+  ].filter(Boolean).join('\n\n'), history);
 }
 
 function formatMentionMap(
@@ -453,7 +574,7 @@ function recordNode(
   onToolEvent: ((event: AssistantToolTraceEvent) => void) | undefined,
   event: {
     id: string;
-    kind: 'hydrate' | 'observe';
+    kind: 'hydrate' | 'observe' | 'planner';
     sourceCount?: number;
     summary: string;
     title: string;

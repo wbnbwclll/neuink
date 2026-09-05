@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { isMineruImagePath } from "@/shared/components/SourceSnapshotPreview";
 import type { TranslatedSegment } from "@/shared/ipc/workspaceApi";
 import type { TranslationStatus } from "@/shared/ipc/workspaceApi";
+import type { PdfHoverPreviewFontSize, PdfHoverPreviewSize } from "@/shared/lib/readerPreferences";
 import type {
   Annotation,
   AnnotationImportance,
@@ -24,6 +25,8 @@ import {
   type PdfTextSelectionHighlight,
 } from "./PdfCanvasPage";
 import { hasPdfTextSelection } from "./pdfCanvasDom";
+import { resolvePdfSelectionAnchorSegment } from "./pdfPageAnnotations";
+import { notifyPdfInteraction } from "./pdfRenderQueue";
 import {
   PdfTextSelectionToolbar,
   type PendingPdfTextSelection,
@@ -37,10 +40,13 @@ const PREVIEW_SUPPRESS_MS = 600;
 const EMPTY_ANNOTATIONS: Annotation[] = [];
 
 function PdfSourcePageImpl({
+  activeAnnotationId = null,
   autoTranslateTextSelection = false,
   flashSegmentUid,
   hoveredSegmentUid,
   hoverPreviewEnabled,
+  hoverPreviewFontSize = 'standard',
+  hoverPreviewSize = 'standard',
   hoverPreviewShowRegion,
   hoverPreviewShowOriginal,
   hoverPreviewShowNote,
@@ -53,6 +59,9 @@ function PdfSourcePageImpl({
   pdfDocument,
   renderPriority,
   renderEnabled,
+  searchActive = false,
+  searchMatchCount = 0,
+  searchQuery = '',
   showRegions,
   sourceBacklinksBySegmentUid,
   sourceEntryId,
@@ -77,11 +86,15 @@ function PdfSourcePageImpl({
   onCreateTextSelectionAnnotation,
   onTranslateTextSelection,
   onToggleSegment,
+  altClickOpensNote = false,
 }: {
+  activeAnnotationId?: string | null;
   autoTranslateTextSelection?: boolean;
   flashSegmentUid: string | null;
   hoveredSegmentUid: string | null;
   hoverPreviewEnabled: boolean;
+  hoverPreviewFontSize?: PdfHoverPreviewFontSize;
+  hoverPreviewSize?: PdfHoverPreviewSize;
   hoverPreviewShowRegion: boolean;
   hoverPreviewShowOriginal: boolean;
   hoverPreviewShowNote: boolean;
@@ -94,6 +107,9 @@ function PdfSourcePageImpl({
   pdfDocument: PDFDocumentProxy;
   renderPriority: "preload" | "visible";
   renderEnabled: boolean;
+  searchActive?: boolean;
+  searchMatchCount?: number;
+  searchQuery?: string;
   showRegions: boolean;
   sourceBacklinksBySegmentUid: SourceBacklinksBySegmentUid;
   sourceEntryId: string;
@@ -123,6 +139,7 @@ function PdfSourcePageImpl({
   }) => Promise<void> | void;
   onTranslateTextSelection?: (input: { segment: SourceSegment; text: string }) => Promise<string>;
   onToggleSegment: (segment: SourceSegment) => void;
+  altClickOpensNote?: boolean;
 }) {
   const pointerDownRef = useRef<{
     selectingText: boolean;
@@ -133,7 +150,8 @@ function PdfSourcePageImpl({
   } | null>(null);
   const [previewPosition, setPreviewPosition] = useState<{
     x: number;
-    y: number;
+    segmentTop: number;
+    segmentBottom: number;
   } | null>(null);
   const [previewRegionId, setPreviewRegionId] = useState<string | null>(null);
   const [localHoveredGroupUid, setLocalHoveredGroupUid] = useState<string | null>(null);
@@ -160,12 +178,13 @@ function PdfSourcePageImpl({
     () =>
       pageTextSelectionAnnotations.flatMap((annotation) =>
         (annotation.text_selection?.rects ?? []).map((rect, index) => ({
+          active: annotation.annotation_id === activeAnnotationId,
           color: annotation.text_selection?.color ?? 'yellow',
           id: `${annotation.annotation_id}:${index}`,
           rect,
         })),
       ),
-    [pageTextSelectionAnnotations],
+    [activeAnnotationId, pageTextSelectionAnnotations],
   );
   const previewSuppressUntilRef = useRef(0);
   const previewPointerInsideRef = useRef(false);
@@ -229,6 +248,16 @@ function PdfSourcePageImpl({
     }
   };
 
+  useEffect(() => {
+    const closeSelectionUi = () => clearFloatingSegmentUi(true);
+    window.addEventListener('neuink:reader-surface-change', closeSelectionUi);
+    window.addEventListener('blur', closeSelectionUi);
+    return () => {
+      window.removeEventListener('neuink:reader-surface-change', closeSelectionUi);
+      window.removeEventListener('blur', closeSelectionUi);
+    };
+  }, []);
+
   const clearListPreviewAfterPointerExit = () => {
     if (previewClearTimerRef.current !== null) {
       window.clearTimeout(previewClearTimerRef.current);
@@ -269,14 +298,14 @@ function PdfSourcePageImpl({
     element: HTMLDivElement,
     clientX: number,
     clientY: number,
+    elementRect = element.getBoundingClientRect(),
   ) => {
-    const rect = element.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
+    if (elementRect.width <= 0 || elementRect.height <= 0) {
       return null;
     }
 
-    const x = ((clientX - rect.left) / rect.width) * 1000;
-    const y = ((clientY - rect.top) / rect.height) * 1000;
+    const x = ((clientX - elementRect.left) / elementRect.width) * 1000;
+    const y = ((clientY - elementRect.top) / elementRect.height) * 1000;
 
     if (x < 0 || x > 1000 || y < 0 || y > 1000) {
       return null;
@@ -320,6 +349,7 @@ function PdfSourcePageImpl({
     clientY: number,
     buttons: number,
   ) => {
+    notifyPdfInteraction();
     if (suppressRegions || !hoverPreviewEnabled) {
       clearHoveredRegion();
       return;
@@ -330,23 +360,40 @@ function PdfSourcePageImpl({
       return;
     }
 
+    // Pointer samples only arrive while the cursor is over the page hit layer,
+    // so any stale "pointer inside the preview card" flag must be false. The
+    // card's own pointerleave never fires when it unmounts or re-anchors away
+    // from a stationary cursor, which otherwise left previews stuck forever.
+    if (previewPointerInsideRef.current) {
+      previewPointerInsideRef.current = false;
+    }
+    cancelListPreviewClear();
+
+    const hitLayerRect = element.getBoundingClientRect();
     const region = findRegionAtPoint(
       element,
       clientX,
       clientY,
+      hitLayerRect,
     );
 
     const nextGroupUid = region?.hoverGroupUid ?? null;
     const nextRegionId = region?.id ?? null;
-    const nextPreviewPosition =
-      region && buttons === 0 ? { x: clientX, y: clientY } : null;
+    const nextPreviewPosition = region && buttons === 0
+      ? {
+          x: hitLayerRect.left + (region.bbox[0] / 1000) * hitLayerRect.width,
+          segmentTop: hitLayerRect.top + (region.bbox[1] / 1000) * hitLayerRect.height,
+          segmentBottom: hitLayerRect.top + (region.bbox[3] / 1000) * hitLayerRect.height
+        }
+      : null;
     if (
       hoveredGroupUidRef.current === nextGroupUid &&
       previewRegionIdRef.current === nextRegionId
     ) {
       setPreviewPosition((current) =>
         current?.x === nextPreviewPosition?.x &&
-        current?.y === nextPreviewPosition?.y
+        current?.segmentTop === nextPreviewPosition?.segmentTop &&
+        current?.segmentBottom === nextPreviewPosition?.segmentBottom
           ? current
           : nextPreviewPosition,
       );
@@ -371,6 +418,7 @@ function PdfSourcePageImpl({
   };
 
   const queueHoveredSegmentUpdate = (event: ReactPointerEvent<HTMLDivElement>) => {
+    notifyPdfInteraction();
     pendingHoverSampleRef.current = {
       buttons: event.buttons,
       clientX: event.clientX,
@@ -396,6 +444,7 @@ function PdfSourcePageImpl({
   };
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    notifyPdfInteraction();
     if (event.button !== 0) {
       pointerDownRef.current = null;
       return;
@@ -411,6 +460,13 @@ function PdfSourcePageImpl({
       event.clientX,
       event.clientY,
     );
+
+    if (altClickOpensNote && event.altKey && region) {
+      event.preventDefault();
+      pointerDownRef.current = null;
+      onOpenSegmentNote(region.sourceSegment);
+      return;
+    }
 
     const startedOnTextLayer = isPdfTextLayerTarget(event.target);
     pointerDownRef.current = {
@@ -461,10 +517,12 @@ function PdfSourcePageImpl({
       return;
     }
 
-    const segment = findSelectionAnchorSegment(page.regions, rects);
-    if (!segment) {
-      return;
-    }
+    const segment = resolvePdfSelectionAnchorSegment({
+      pageIdx: page.pageIdx,
+      rects,
+      regions: page.regions,
+      text,
+    });
 
     const selectionRect = range.getBoundingClientRect();
     setPendingTextSelection({
@@ -649,8 +707,15 @@ function PdfSourcePageImpl({
 
       <div
         ref={hitLayerRef}
-        className="relative w-fit overflow-hidden rounded-md border bg-white shadow-sm"
+        className={`relative w-fit overflow-hidden rounded-md border bg-white shadow-sm ${
+          searchActive
+            ? 'ring-2 ring-primary/60'
+            : searchMatchCount > 0
+              ? 'ring-1 ring-warning/50'
+              : ''
+        }`}
         data-testid={`pdf-page-hit-layer-${page.pageIdx}`}
+        data-pdf-page-surface="true"
         onClick={handleClick}
         onContextMenu={handleContextMenu}
         onPointerDown={handlePointerDown}
@@ -705,6 +770,8 @@ function PdfSourcePageImpl({
           pageIdx={page.pageIdx}
           renderPriority={renderPriority}
           renderEnabled={renderEnabled}
+          searchActive={searchActive}
+          searchQuery={searchQuery}
         />
 
         <PdfTextSelectionHighlightLayer highlights={pageTextSelectionHighlights} />
@@ -740,18 +807,26 @@ function PdfSourcePageImpl({
                       ? previewPosition
                       : null
                   }
+                  previewFontSize={hoverPreviewFontSize}
+                  previewSize={hoverPreviewSize}
                   previewShowRegion={hoverPreviewShowRegion}
                   previewShowOriginal={hoverPreviewShowOriginal}
                   previewShowNote={hoverPreviewShowNote}
                   previewShowAnnotation={hoverPreviewShowAnnotation}
                   previewShowTranslation={hoverPreviewShowTranslation}
                   relatedImagePath={
-                    region.sourceSegment.asset_path ??
-                    relatedImagePathForSegment(
-                      region.sourceSegment,
-                      page.segments,
-                    )
+                    isCaptionRole(region.sourceSegment)
+                      ? null
+                      : region.sourceSegment.asset_path ??
+                        relatedImagePathForSegment(
+                          region.sourceSegment,
+                          page.segments,
+                        )
                   }
+                  relatedCaptionText={relatedCaptionTextForSegment(
+                    region.sourceSegment,
+                    page.segments,
+                  )}
                   regionBbox={region.bbox}
                   regionId={region.id}
                   segment={region.segment}
@@ -942,6 +1017,37 @@ function relatedImagePathForSegment(
   );
 }
 
+// MinerU v2 keeps captions as separate segments sharing the visual group of
+// their figure/table; surface their text when hovering the visual itself.
+function relatedCaptionTextForSegment(
+  segment: SourceSegment,
+  segments: SourceSegment[],
+) {
+  const groupId = segment.visual_group_id;
+  if (!groupId) {
+    return null;
+  }
+
+  return (
+    segments
+      .filter(
+        (item) =>
+          item.uid !== segment.uid &&
+          item.visual_group_id === groupId &&
+          (item.block_role === "caption" || item.block_role === "footnote"),
+      )
+      .map((item) => item.text)
+      .filter(Boolean)
+      .join("\n\n") || null
+  );
+}
+
+// Hovering a caption shows its text only; the image belongs to the visual
+// region, not the caption strip.
+function isCaptionRole(segment: SourceSegment) {
+  return segment.block_role === "caption" || segment.block_role === "footnote";
+}
+
 function sourceBacklinksForSegment(
   segment: SourceSegment,
   sourceBacklinksBySegmentUid: SourceBacklinksBySegmentUid,
@@ -967,23 +1073,6 @@ function clipClientRectToPage(rect: DOMRect, pageRect: DOMRect) {
     return null;
   }
   return { bottom, left, right, top } as DOMRect;
-}
-
-function findSelectionAnchorSegment(
-  regions: PageSegments['regions'],
-  rects: Array<[number, number, number, number]>,
-) {
-  let best: { area: number; segment: SourceSegment } | null = null;
-  for (const region of regions) {
-    const area = rects.reduce(
-      (total, rect) => total + intersectionArea(rect, region.bbox),
-      0,
-    );
-    if (!best || area > best.area) {
-      best = { area, segment: region.sourceSegment };
-    }
-  }
-  return best?.area ? best.segment : null;
 }
 
 function intersectionArea(

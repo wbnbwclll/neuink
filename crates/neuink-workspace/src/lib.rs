@@ -4,6 +4,7 @@ pub mod entry_meta;
 pub mod error;
 pub mod layout;
 pub mod note;
+pub mod reading_state;
 pub mod search;
 pub mod trash;
 pub mod workspace;

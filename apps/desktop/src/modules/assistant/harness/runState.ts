@@ -106,8 +106,7 @@ export function throwIfAborted(abortSignal?: AbortSignal) {
 export function isAbortError(error: unknown) {
   return (
     (error instanceof DOMException && error.name === 'AbortError') ||
-    (error instanceof Error && error.name === 'AbortError') ||
-    (error instanceof Error && /aborted|canceled|cancelled/i.test(error.message))
+    (error instanceof Error && error.name === 'AbortError')
   );
 }
 

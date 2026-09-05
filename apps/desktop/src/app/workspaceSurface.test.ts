@@ -29,9 +29,9 @@ describe('workspaceSurfaceReducer', () => {
     expect(surfaceKey({ kind: 'entry-trash', entryId: 'a' })).toBe('entry-trash:a');
   });
 
-  it('treats the legacy annotation surface and segment records as one workspace', () => {
-    expect(surfaceKey({ kind: 'annotations', entryId: 'a' })).toBe(
-      surfaceKey({ kind: 'segment-notes', entryId: 'a' })
+  it('uses one canonical surface for segment notes and annotations', () => {
+    expect(surfaceKey({ kind: 'segment-notes', entryId: 'a', mode: 'annotation' })).toBe(
+      'segment-records:a'
     );
   });
 
@@ -105,6 +105,20 @@ describe('workspaceSurfaceReducer', () => {
 
     expect(next.leftTabs).toEqual([library]);
     expect(next.left).toEqual(library);
+    expect(next.rightTabs).toEqual([pdfB]);
+    expect(next.right).toEqual(pdfB);
+  });
+
+  it('closes every tab for a deleted note while preserving its entry surfaces', () => {
+    const next = workspaceSurfaceReducer(layout({
+      left: noteA,
+      leftTabs: [library, pdfA, noteA],
+      right: noteA,
+      rightTabs: [noteA, pdfB]
+    }), { type: 'removeNote', entryId: 'a', noteId: 'n1' });
+
+    expect(next.leftTabs).toEqual([library, pdfA]);
+    expect(next.left).toEqual(pdfA);
     expect(next.rightTabs).toEqual([pdfB]);
     expect(next.right).toEqual(pdfB);
   });

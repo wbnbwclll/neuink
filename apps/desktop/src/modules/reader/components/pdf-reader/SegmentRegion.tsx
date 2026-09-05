@@ -1,4 +1,3 @@
-import { layout, prepare } from '@chenglou/pretext';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { CSSProperties, KeyboardEvent, MouseEvent } from 'react';
@@ -8,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { SourceSnapshotPreview } from '@/shared/components/SourceSnapshotPreview';
 import type { TranslatedSegment, TranslationStatus } from '@/shared/ipc/workspaceApi';
+import type { PdfHoverPreviewFontSize, PdfHoverPreviewSize } from '@/shared/lib/readerPreferences';
 import type { Annotation, SourceSegment } from '@/shared/types/domain';
 
 import { segmentColor, segmentDisplayLabel } from './readerUtils';
@@ -15,8 +15,6 @@ import { ListHoverPreview, listItemTextAtIndex } from './ListHoverPreview';
 import { parseListItemRegions, type ListItemRegion } from './listItemRegions';
 
 const PREVIEW_MARGIN = 12;
-const PREVIEW_FONT_FAMILY =
-  '"Geist Variable", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif';
 const PREVIEW_COLUMN_GAP = 18;
 const REPLACEMENT_MIN_WIDTH = 24;
 const REPLACEMENT_MIN_HEIGHT = 8;
@@ -31,6 +29,8 @@ function SegmentRegionImpl({
   listItemIndex,
   pageIdx,
   previewPosition,
+  previewFontSize = 'standard',
+  previewSize = 'standard',
   previewShowRegion,
   previewShowOriginal,
   previewShowNote,
@@ -39,6 +39,7 @@ function SegmentRegionImpl({
   previewNote,
   previewAnnotations,
   relatedImagePath,
+  relatedCaptionText,
   regionBbox,
   regionId,
   segment,
@@ -65,7 +66,9 @@ function SegmentRegionImpl({
   isContinuation: boolean;
   listItemIndex?: number;
   pageIdx: number;
-  previewPosition: { x: number; y: number } | null;
+  previewPosition: { x: number; segmentTop: number; segmentBottom: number } | null;
+  previewFontSize?: PdfHoverPreviewFontSize;
+  previewSize?: PdfHoverPreviewSize;
   previewShowRegion: boolean;
   previewShowOriginal: boolean;
   previewShowNote: boolean;
@@ -74,6 +77,7 @@ function SegmentRegionImpl({
   previewNote: string | null;
   previewAnnotations: Annotation[];
   relatedImagePath?: string | null;
+  relatedCaptionText?: string | null;
   regionBbox: readonly [number, number, number, number];
   regionId: string;
   segment: SourceSegment;
@@ -274,27 +278,13 @@ function SegmentRegionImpl({
             segmentIndicatorClassName('bottom-left', indicatorsExpanded),
             'bg-success text-white ring-success/20'
           )}
-          title={`${sourceBacklinkCount} source backlinks`}
+          title={`${sourceBacklinkCount} 个来源链接`}
         >
           <Link2 size={11} aria-hidden="true" />
           {indicatorsExpanded ? <span className="pr-0.5">{sourceBacklinkCount}</span> : null}
         </span>
       ) : null}
 
-      {active && interactive && onAddSourceLink ? (
-        <button
-          className="pointer-events-auto absolute bottom-0 right-0 z-[4] inline-flex h-6 translate-x-[calc(100%+0.5rem)] translate-y-6 items-center gap-1 rounded-sm border border-primary/25 bg-popover px-1.5 text-[10px] font-semibold text-primary shadow-sm transition-transform duration-150 ease-out hover:bg-muted"
-          title="Add source link"
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onAddSourceLink(segment);
-          }}
-        >
-          <Link2 size={11} aria-hidden="true" />
-          Link
-        </button>
-      ) : null}
 
       {active && previewPosition ? (
         <SegmentPreview
@@ -302,6 +292,8 @@ function SegmentRegionImpl({
           listItemRegions={listItemRegions}
           pageIdx={pageIdx}
           position={previewPosition}
+          previewFontSize={previewFontSize}
+          previewSize={previewSize}
           showOriginal={previewShowOriginal}
           showNote={previewShowNote}
           showAnnotation={previewShowAnnotation}
@@ -309,6 +301,7 @@ function SegmentRegionImpl({
           noteText={previewNote}
           annotations={previewAnnotations}
           relatedImagePath={relatedImagePath}
+          relatedCaptionText={relatedCaptionText}
           segment={segment}
           translatedText={translatedText}
           translationStatus={translationStatus}
@@ -325,6 +318,7 @@ function SegmentRegionImpl({
     </div>
   );
 }
+
 
 export const SegmentRegion = memo(
   SegmentRegionImpl,
@@ -412,11 +406,12 @@ function buildReplacementTextStyle({
   const preferredMaxSize = isHeading ? 30 : isTable ? 16 : 21;
   const heightMaxSize = Math.max(minSize, Math.floor(availableHeight * (isHeading ? 0.78 : 0.72)));
   const maxSize = Math.max(minSize, Math.min(preferredMaxSize, heightMaxSize));
+  const lineUnits = measurePreviewLineUnits(measuredText);
 
   for (let fontSize = maxSize; fontSize >= minSize; fontSize -= 1) {
     const lineHeight = replacementLineHeight(fontSize, isHeading);
     const estimatedHeight = estimateTextHeight(
-      measuredText,
+      lineUnits,
       availableWidth,
       fontSize,
       lineHeight
@@ -478,7 +473,10 @@ function SegmentPreview({
   isContinuation,
   listItemRegions,
   pageIdx,
+  previewFontSize,
+  previewSize,
   relatedImagePath,
+  relatedCaptionText,
   segment,
   showOriginal,
   showNote,
@@ -497,11 +495,14 @@ function SegmentPreview({
   onPointerEnter,
   onPointerLeave
 }: {
-  position: { x: number; y: number };
+  position: { x: number; segmentTop: number; segmentBottom: number };
   isContinuation: boolean;
   listItemRegions: ListItemRegion[];
   pageIdx: number;
+  previewFontSize: PdfHoverPreviewFontSize;
+  previewSize: PdfHoverPreviewSize;
   relatedImagePath?: string | null;
+  relatedCaptionText?: string | null;
   segment: SourceSegment;
   showOriginal: boolean;
   showNote: boolean;
@@ -525,6 +526,7 @@ function SegmentPreview({
   }
 
   const originalText = segment.markdown ?? segment.text;
+  const captionText = relatedCaptionText?.trim() || null;
   const isScrollableList = segment.segment_type === 'list';
   const showTranslationPreview =
     showTranslation && translationVisible && Boolean(translatedText);
@@ -547,6 +549,7 @@ function SegmentPreview({
 
   const layoutText = [
     showOriginal ? originalText : null,
+    showOriginal ? captionText : null,
     showTranslationPreview ? translatedText : null,
     showNotePreview ? noteText : null,
     showAnnotationPreview ? annotations.map((annotation) => annotation.content).join('\n') : null
@@ -554,11 +557,13 @@ function SegmentPreview({
     .filter(Boolean)
     .join('\n\n');
   const previewLayout = buildPreviewLayout({
+    fontSize: previewFontSize,
     hasFooter: Boolean(
       sourceLinkHint || (translationVisible && translationMode === 'replace' && translatedText)
     ),
     position,
     preferScrollable: segment.segment_type === 'list',
+    size: previewSize,
     text: layoutText
   });
 
@@ -610,6 +615,19 @@ function SegmentPreview({
               )}
             </div>
           ) : null}
+          {showOriginal && captionText ? (
+            <div className="border-t pt-2">
+              <div className="mb-1 text-[11px] font-semibold text-muted-foreground">题注</div>
+              <SourceSnapshotPreview
+                allowScroll={false}
+                compact
+                markdown={captionText}
+                segmentType="paragraph"
+                sourceEntryId={sourceEntryId}
+                workspaceRoot={workspaceRoot}
+              />
+            </div>
+          ) : null}
           {showTranslationPreview && translatedText ? (
             <div className={showOriginal ? 'border-t pt-2' : ''}>
               <div className="mb-1 text-[11px] font-semibold text-muted-foreground">译文</div>
@@ -641,7 +659,7 @@ function SegmentPreview({
               <div className="mb-1 text-[11px] font-semibold text-muted-foreground">批注</div>
               <div className="grid gap-1.5">
                 {annotations.map((annotation) => (
-                  <div className="rounded-sm border bg-background/70 px-2 py-1.5 text-xs leading-5" key={annotation.annotation_id}>
+                  <div className="rounded-sm border bg-background/70 px-2 py-1.5 text-[inherit] leading-[inherit]" key={annotation.annotation_id}>
                     <div className="mb-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
                       <Badge variant="outline">{annotation.kind}</Badge>
                       <span>重要性 {annotation.importance}</span>
@@ -655,7 +673,7 @@ function SegmentPreview({
           {translationHint ? (
             <div className={showOriginal ? 'border-t pt-2' : ''}>
               <div className="mb-1 text-[11px] font-semibold text-muted-foreground">译文</div>
-              <p className="text-xs leading-5 text-muted-foreground">{translationHint}</p>
+              <p className="text-[inherit] leading-[inherit] text-muted-foreground">{translationHint}</p>
             </div>
           ) : null}
         </div>
@@ -706,9 +724,11 @@ function getTranslationHint({
 }
 
 type PreviewLayoutInput = {
+  fontSize?: PdfHoverPreviewFontSize;
   hasFooter: boolean;
-  position: { x: number; y: number };
+  position: { x: number; segmentTop: number; segmentBottom: number };
   preferScrollable: boolean;
+  size?: PdfHoverPreviewSize;
   text: string;
 };
 
@@ -719,12 +739,25 @@ type PreviewLayout = {
   width: number;
 };
 
-export function buildPreviewLayout({ hasFooter, position, preferScrollable, text }: PreviewLayoutInput): PreviewLayout {
+export function buildPreviewLayout({
+  fontSize = 'standard',
+  hasFooter,
+  position,
+  preferScrollable,
+  size = 'standard',
+  text
+}: PreviewLayoutInput): PreviewLayout {
   const viewportWidth = typeof window === 'undefined' ? 1024 : window.innerWidth;
   const viewportHeight = typeof window === 'undefined' ? 768 : window.innerHeight;
   const maxWidth = Math.max(320, viewportWidth - PREVIEW_MARGIN * 2);
-  const maxHeight = Math.max(260, viewportHeight - PREVIEW_MARGIN * 2);
+  const availableHeight = Math.max(260, viewportHeight - PREVIEW_MARGIN * 2);
+  const maxHeight = Math.max(
+    260,
+    Math.min(availableHeight, availableHeight * previewCardHeightScale(size))
+  );
   const hasTable = hasTableLikeContent(text);
+  const cardScale = previewCardWidthScale(size);
+  const fontScale = previewFontScale(fontSize);
 
   const candidates = (preferScrollable
     ? [{ columns: 1, fontSize: 12, lineHeight: 20, width: 480 }]
@@ -737,7 +770,9 @@ export function buildPreviewLayout({ hasFooter, position, preferScrollable, text
   ])
     .map((candidate) => ({
       ...candidate,
-      width: Math.min(candidate.width, maxWidth)
+      fontSize: candidate.fontSize * fontScale,
+      lineHeight: candidate.lineHeight * fontScale,
+      width: Math.min(candidate.width * cardScale, maxWidth)
     }))
     .map((candidate) => ({
       ...candidate,
@@ -753,13 +788,19 @@ export function buildPreviewLayout({ hasFooter, position, preferScrollable, text
       );
     });
 
+  const lineUnits = measurePreviewLineUnits(text);
   const measuredCandidates = candidates.map((candidate) => {
     const contentWidth = Math.max(
       180,
       candidate.width - 16 - Math.max(0, candidate.columns - 1) * PREVIEW_COLUMN_GAP
     );
     const columnWidth = Math.max(160, contentWidth / candidate.columns);
-    const textHeight = estimateTextHeight(text, columnWidth, candidate.fontSize, candidate.lineHeight);
+    const textHeight = estimateTextHeight(
+      lineUnits,
+      columnWidth,
+      candidate.fontSize,
+      candidate.lineHeight
+    );
     const chromeHeight = 52 + (hasFooter ? 30 : 0);
     const estimatedHeight = Math.ceil(textHeight / candidate.columns) + chromeHeight;
 
@@ -774,7 +815,7 @@ export function buildPreviewLayout({ hasFooter, position, preferScrollable, text
     measuredCandidates[measuredCandidates.length - 1];
 
   const safeHeight = Math.min(selected.estimatedHeight, maxHeight);
-  const pointerGap = 14;
+  const pointerGap = 8;
   const rightSpace = viewportWidth - PREVIEW_MARGIN - position.x - pointerGap;
   const leftSpace = position.x - pointerGap - PREVIEW_MARGIN;
   const placeRight = rightSpace >= selected.width || rightSpace >= leftSpace;
@@ -787,12 +828,12 @@ export function buildPreviewLayout({ hasFooter, position, preferScrollable, text
     viewportWidth - selected.width - PREVIEW_MARGIN,
   );
 
-  const belowSpace = viewportHeight - PREVIEW_MARGIN - position.y - pointerGap;
-  const aboveSpace = position.y - pointerGap - PREVIEW_MARGIN;
+  const belowSpace = viewportHeight - PREVIEW_MARGIN - position.segmentBottom - pointerGap;
+  const aboveSpace = position.segmentTop - pointerGap - PREVIEW_MARGIN;
   const placeBelow = belowSpace >= safeHeight || belowSpace >= aboveSpace;
   const preferredTop = placeBelow
-    ? position.y + pointerGap
-    : position.y - pointerGap - safeHeight;
+    ? position.segmentBottom + pointerGap
+    : position.segmentTop - pointerGap - safeHeight;
   const top = clamp(
     preferredTop,
     PREVIEW_MARGIN,
@@ -806,7 +847,7 @@ export function buildPreviewLayout({ hasFooter, position, preferScrollable, text
       columnGap: preferScrollable ? undefined : PREVIEW_COLUMN_GAP,
       fontSize: selected.fontSize,
       lineHeight: `${selected.lineHeight}px`,
-      maxHeight: preferScrollable ? Math.min(420, maxHeight - 64) : undefined,
+      maxHeight: preferScrollable ? Math.min(420 * cardScale, maxHeight - 64) : undefined,
       overflowX: preferScrollable ? 'hidden' : undefined,
       overflowY: preferScrollable ? 'auto' : undefined,
       overscrollBehavior: preferScrollable ? 'contain' : undefined,
@@ -817,20 +858,52 @@ export function buildPreviewLayout({ hasFooter, position, preferScrollable, text
   };
 }
 
-function estimateTextHeight(text: string, width: number, fontSize: number, lineHeight: number) {
-  try {
-    const prepared = prepare(text || ' ', `${fontSize}px ${PREVIEW_FONT_FAMILY}`, {
-      whiteSpace: 'pre-wrap'
-    });
-    const measured = layout(prepared, width, lineHeight);
-    return Math.max(lineHeight, Math.ceil(measured.height));
-  } catch {
-    const averageCharsPerLine = Math.max(20, Math.floor(width / Math.max(5, fontSize * 0.55)));
-    const lineCount = text
-      .split(/\r?\n/)
-      .reduce((total, line) => total + Math.max(1, Math.ceil(line.length / averageCharsPerLine)), 0);
-    return Math.max(lineHeight, lineCount * lineHeight);
-  }
+function previewFontScale(size: PdfHoverPreviewFontSize) {
+  if (size === 'small') return 0.85;
+  if (size === 'large') return 1.2;
+  return 1;
+}
+
+function previewCardWidthScale(size: PdfHoverPreviewSize) {
+  if (size === 'compact') return 0.82;
+  if (size === 'large') return 1.2;
+  return 1;
+}
+
+function previewCardHeightScale(size: PdfHoverPreviewSize) {
+  if (size === 'compact') return 0.62;
+  if (size === 'large') return 0.94;
+  return 0.78;
+}
+
+function estimateTextHeight(
+  lineUnits: number[],
+  width: number,
+  fontSize: number,
+  lineHeight: number
+) {
+  const unitsPerLine = Math.max(12, width / fontSize);
+  const lineCount = lineUnits.reduce(
+    (total, units) => total + Math.max(1, Math.ceil(units / unitsPerLine)),
+    0
+  );
+  return Math.max(lineHeight, lineCount * lineHeight);
+}
+
+function measurePreviewLineUnits(text: string) {
+  return text.split(/\r?\n/).map((line) => {
+    let units = 0;
+    for (const character of line) units += previewCharacterWidth(character);
+    return units;
+  });
+}
+
+function previewCharacterWidth(character: string) {
+  if (/\s/.test(character)) return 0.35;
+  if (character.charCodeAt(0) > 0xff) return 1;
+  if (/[A-Z0-9]/.test(character)) return 0.68;
+  if (/\p{P}/u.test(character)) return 0.4;
+  return 0.55;
 }
 
 function hasTableLikeContent(text: string) {

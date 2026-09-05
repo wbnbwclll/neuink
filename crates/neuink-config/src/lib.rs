@@ -17,9 +17,35 @@ pub struct AppSettings {
     #[serde(default)]
     pub translation_automation: TranslationAutomationSettings,
     #[serde(default)]
+    pub sciverse: SciverseSettings,
+    #[serde(default)]
     pub recent_workspaces: Vec<RecentWorkspace>,
     pub autosave_interval_ms: Option<u64>,
     pub theme: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SciverseSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_sciverse_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key_ref: Option<String>,
+}
+
+impl Default for SciverseSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: default_sciverse_base_url(),
+            api_key_ref: None,
+        }
+    }
+}
+
+fn default_sciverse_base_url() -> String {
+    "https://api.sciverse.space".to_string()
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -65,6 +91,16 @@ fn default_translation_segment_types() -> Vec<String> {
     .collect()
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmApiProtocol {
+    Anthropic,
+    Google,
+    #[default]
+    #[serde(other)]
+    OpenaiCompatible,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct LlmSettings {
     pub base_url: String,
@@ -79,6 +115,8 @@ pub struct LlmSettings {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub api_protocol: LlmApiProtocol,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -96,4 +134,6 @@ pub struct LlmProfile {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub api_protocol: LlmApiProtocol,
 }

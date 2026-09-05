@@ -46,7 +46,7 @@ apps/desktop/src-tauri/resources/embedding-models/default/
 
 ## 3. 外部能力
 
-- Parser 可连接 MinerU 云端或用户配置的兼容端点；
+- Parser 可连接用户配置的 MinerU 兼容端点，也可直接导入 MinerU 客户端 ZIP；
 - LLM 由用户配置，不随安装包内置；
 - 本地资料阅读、笔记和关键词搜索不应依赖 LLM；
 - 主安装包不捆绑 Python MinerU 服务或大型语言模型。

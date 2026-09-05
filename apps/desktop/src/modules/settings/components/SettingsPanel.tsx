@@ -27,8 +27,10 @@ import {
   saveAgentRuntimeSettings,
   saveLlmSettings,
   setTaskLlmProfile,
+  type LlmApiProtocol,
   type LlmProfile,
-  type LlmSettingsState
+  type LlmSettingsState,
+  resolveLlmApiProtocol
 } from '@/shared/ipc/assistantApi';
 import {
   getWorkspaceSettings,
@@ -40,15 +42,6 @@ import {
   type WorkspacePathInspection,
   type WorkspaceSettings
 } from '@/shared/ipc/workspaceApi';
-import {
-  CLOUD_PARSER_ENDPOINT,
-  type ParserSourceMode,
-  isCloudParserEndpoint,
-  persistCloudUnlockState,
-  readInitialParserSourceMode,
-  readStoredCloudUnlockState,
-  verifyCloudParserSecret
-} from '@/shared/lib/parserSettings';
 import {
   createBlankSkillPackage,
   equalAgentRuntimeSettings,
@@ -94,10 +87,6 @@ type SettingsPanelProps = {
   uiScale: UiScale;
   onParserEndpointChange: (value: string) => void;
   onParserApiKeyChange: (value: string) => void;
-  popoEnhancementEnabled: boolean;
-  popoEnhancementEndpoint: string;
-  onPopoEnhancementEnabledChange: (value: boolean) => void;
-  onPopoEnhancementEndpointChange: (value: string) => void;
   onReaderPreferencesChange: (preferences: ReaderPreferences) => void;
   onResetWorkspaceRoot?: () => Promise<void>;
   onBeforeWorkspaceChange?: () => Promise<void>;
@@ -149,10 +138,6 @@ export function SettingsPanel({
   uiScale,
   onParserEndpointChange,
   onParserApiKeyChange,
-  popoEnhancementEnabled,
-  popoEnhancementEndpoint,
-  onPopoEnhancementEnabledChange,
-  onPopoEnhancementEndpointChange,
   onReaderPreferencesChange,
   onResetWorkspaceRoot,
   onBeforeWorkspaceChange,
@@ -182,6 +167,7 @@ export function SettingsPanel({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('http://localhost:11434/v1');
+  const [apiProtocol, setApiProtocol] = useState<LlmApiProtocol>('openai_compatible');
   const [model, setModel] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [maxContextLength, setMaxContextLength] = useState('8192');
@@ -194,31 +180,10 @@ export function SettingsPanel({
     readModelCatalogCache()
   );
   const [providersExpanded, setProvidersExpanded] = useState(false);
-  const [cloudUnlocked, setCloudUnlocked] = useState(readStoredCloudUnlockState);
-  const [unlockSecret, setUnlockSecret] = useState('');
-  const [unlockBusy, setUnlockBusy] = useState(false);
   const [customParserEndpoint, setCustomParserEndpoint] = useState(parserEndpoint);
   const [customParserApiKey, setCustomParserApiKey] = useState(parserApiKey);
-  const [parserSourceMode, setParserSourceMode] = useState<ParserSourceMode>(() =>
-    readInitialParserSourceMode(parserEndpoint)
-  );
-  const [parserSourceIntent, setParserSourceIntent] = useState<ParserSourceMode>(() =>
-    readInitialParserSourceMode(parserEndpoint)
-  );
   const [savedParserEndpoint, setSavedParserEndpoint] = useState(parserEndpoint);
   const [savedParserApiKey, setSavedParserApiKey] = useState(parserApiKey);
-  const [draftPopoEnhancementEnabled, setDraftPopoEnhancementEnabled] = useState(
-    popoEnhancementEnabled
-  );
-  const [draftPopoEnhancementEndpoint, setDraftPopoEnhancementEndpoint] = useState(
-    popoEnhancementEndpoint
-  );
-  const [savedPopoEnhancementEnabled, setSavedPopoEnhancementEnabled] = useState(
-    popoEnhancementEnabled
-  );
-  const [savedPopoEnhancementEndpoint, setSavedPopoEnhancementEndpoint] = useState(
-    popoEnhancementEndpoint
-  );
   const [draftReaderPreferences, setDraftReaderPreferences] = useState(readerPreferences);
   const [savedReaderPreferences, setSavedReaderPreferences] = useState(readerPreferences);
   const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettings | null>(null);
@@ -269,7 +234,15 @@ export function SettingsPanel({
     draftAgentRuntimeSettings.skillPackages[0]?.id ?? null
   );
   const [activeSettingsTab, setActiveSettingsTab] = useState<
-    'models' | 'tasks' | 'data' | 'appearance' | 'reader' | 'main-agent' | 'subagents' | 'skills'
+    | 'models'
+    | 'tasks'
+    | 'data'
+    | 'appearance'
+    | 'reader'
+    | 'external-tools'
+    | 'main-agent'
+    | 'subagents'
+    | 'skills'
   >(
     'models'
   );
@@ -288,8 +261,7 @@ export function SettingsPanel({
   const visibleProviderPresets = providersExpanded
     ? PROVIDER_PRESETS
     : PROVIDER_PRESETS.slice(0, COLLAPSED_PROVIDER_COUNT);
-  const effectiveParserEndpoint =
-    parserSourceMode === 'cloud' ? CLOUD_PARSER_ENDPOINT : customParserEndpoint.trim();
+  const effectiveParserEndpoint = customParserEndpoint.trim();
 
   useEffect(() => {
     let cancelled = false;
@@ -301,6 +273,8 @@ export function SettingsPanel({
       const target = nextSettings.profiles[0] ?? null;
       if (target) {
         fillForm(target);
+        // 仅用于初始化编辑表单，不应让第一条模型卡片呈现为已选中状态。
+        setEditingId(null);
       }
       setDraftAssistantProfileId(nextSettings.assistant_profile_id);
       setDraftTranslationProfileId(nextSettings.translation_profile_id);
@@ -355,14 +329,8 @@ export function SettingsPanel({
       return;
     }
     pendingSavedParserEndpointRef.current = null;
-    setCloudUnlocked(readStoredCloudUnlockState());
-    if (!isCloudParserEndpoint(parserEndpoint)) {
-      setCustomParserEndpoint(parserEndpoint);
-    }
+    setCustomParserEndpoint(parserEndpoint);
     setSavedParserEndpoint(parserEndpoint);
-    const nextSourceMode = readInitialParserSourceMode(parserEndpoint);
-    setParserSourceMode(nextSourceMode);
-    setParserSourceIntent(nextSourceMode);
   }, [parserEndpoint]);
 
   useEffect(() => {
@@ -371,14 +339,29 @@ export function SettingsPanel({
   }, [parserApiKey]);
 
   useEffect(() => {
-    setDraftPopoEnhancementEnabled(popoEnhancementEnabled);
-    setSavedPopoEnhancementEnabled(popoEnhancementEnabled);
-  }, [popoEnhancementEnabled]);
+    if (customParserEndpoint === savedParserEndpoint) {
+      return;
+    }
+    pendingSavedParserEndpointRef.current = customParserEndpoint;
+    const timer = window.setTimeout(() => {
+      setSavedParserEndpoint(customParserEndpoint);
+      onParserEndpointChange(customParserEndpoint);
+      announceAutoSave('解析 URL 已更新。');
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [customParserEndpoint, savedParserEndpoint, onParserEndpointChange]);
 
   useEffect(() => {
-    setDraftPopoEnhancementEndpoint(popoEnhancementEndpoint);
-    setSavedPopoEnhancementEndpoint(popoEnhancementEndpoint);
-  }, [popoEnhancementEndpoint]);
+    if (customParserApiKey === savedParserApiKey) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSavedParserApiKey(customParserApiKey);
+      onParserApiKeyChange(customParserApiKey);
+      announceAutoSave('解析 API Key 已更新。');
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [customParserApiKey, savedParserApiKey, onParserApiKeyChange]);
 
   useEffect(() => {
     setDraftReaderPreferences(readerPreferences);
@@ -448,6 +431,7 @@ export function SettingsPanel({
     setEditingId(profile.id);
     setName(profile.name);
     setBaseUrl(profile.base_url);
+    setApiProtocol(resolveLlmApiProtocol(profile.api_protocol));
     setModel(profile.model);
     setApiKey(profile.api_key ?? '');
     setMaxContextLength(String(profile.max_context_length ?? 8192));
@@ -464,6 +448,7 @@ export function SettingsPanel({
 
     const fingerprint = profileFingerprint({
       api_key: apiKey || null,
+      api_protocol: apiProtocol,
       base_url: baseUrl,
       id: editingId,
       max_context_length: Number(maxContextLength) || null,
@@ -484,6 +469,7 @@ export function SettingsPanel({
         profileId: editingId,
         name: name || model,
         baseUrl,
+        apiProtocol,
         model,
         apiKey,
         maxContextLength: Number(maxContextLength) || undefined,
@@ -500,11 +486,12 @@ export function SettingsPanel({
           announceAutoSave('模型配置已更新。');
         })
         .catch((caught) => notifyFailure('模型配置自动保存失败', caught));
-    }, 600);
+    }, 1300);
 
     return () => window.clearTimeout(timer);
   }, [
     apiKey,
+    apiProtocol,
     baseUrl,
     editingId,
     maxContextLength,
@@ -582,7 +569,8 @@ export function SettingsPanel({
   const newProfile = () => {
     setEditingId(null);
     setName('');
-    setBaseUrl('http://localhost:11434/v1');
+    setBaseUrl('');
+    setApiProtocol('openai_compatible');
     setModel('');
     setApiKey('');
     setMaxContextLength('8192');
@@ -603,6 +591,7 @@ export function SettingsPanel({
       const nextSettings = await saveLlmSettings({
         name: name || model,
         baseUrl,
+        apiProtocol,
         model,
         apiKey,
         maxContextLength: Number(maxContextLength) || undefined,
@@ -638,6 +627,7 @@ export function SettingsPanel({
         profileId: editingId,
         name: name || model,
         baseUrl,
+        apiProtocol,
         model,
         apiKey,
         maxContextLength: Number(maxContextLength) || undefined,
@@ -665,6 +655,7 @@ export function SettingsPanel({
   const applyProviderPreset = (preset: ProviderPreset) => {
     setName(preset.label);
     setBaseUrl(preset.baseUrl);
+    setApiProtocol(preset.protocol);
     setEditingId(null);
     const cachedModels = modelCatalogCache[normalizeBaseUrl(preset.baseUrl)]?.models ?? [];
     applyModelPreset(cachedModels[0] ?? preset.models[0]);
@@ -681,61 +672,10 @@ export function SettingsPanel({
     );
   };
 
-  const selectParserSourceMode = (nextMode: ParserSourceMode, options?: { force?: boolean }) => {
-    if (nextMode === 'cloud' && !cloudUnlocked && !options?.force) {
-      setParserSourceIntent('cloud');
-      notify({ title: '需要云端解析秘钥', description: '输入并验证秘钥后才会启用云端 MinerU。' });
-      return;
-    }
-
-    setParserSourceIntent(nextMode);
-    setParserSourceMode(nextMode);
-    if (nextMode === 'cloud') {
-      pendingSavedParserEndpointRef.current = CLOUD_PARSER_ENDPOINT;
-      setSavedParserEndpoint(CLOUD_PARSER_ENDPOINT);
-      onParserEndpointChange(CLOUD_PARSER_ENDPOINT);
-      onParserApiKeyChange('');
-      notify({ tone: 'success', title: '已切换到云端 MinerU' });
-      return;
-    }
-
-    if (customParserEndpoint.trim()) {
-      setSavedParserEndpoint(customParserEndpoint.trim());
-      onParserEndpointChange(customParserEndpoint.trim());
-      notify({ tone: 'success', title: '已切换到自定义解析服务' });
-      return;
-    }
-    notify({ title: '缺少解析 URL', description: '请先填写自定义解析服务地址。' });
-  };
-
-  const unlockCloudParser = async () => {
-    if (!unlockSecret.trim() || unlockBusy) {
-      return;
-    }
-
-    try {
-      setUnlockBusy(true);
-      const matched = await verifyCloudParserSecret(unlockSecret);
-      if (!matched) {
-        notify({ tone: 'danger', title: '秘钥错误', description: '无法启用云端 MinerU。' });
-        return;
-      }
-
-      persistCloudUnlockState(true);
-      setCloudUnlocked(true);
-      setUnlockSecret('');
-      selectParserSourceMode('cloud', { force: true });
-    } catch (caught) {
-      notifyFailure('解锁云端解析失败', caught);
-    } finally {
-      setUnlockBusy(false);
-    }
-  };
-
   const refreshModels = async () => {
     setModelRefreshBusy(true);
     try {
-      const models = await listOpenAiCompatibleModels({ baseUrl, apiKey });
+      const models = await listOpenAiCompatibleModels({ baseUrl, apiKey, apiProtocol });
       const nextModels = mergeModelPresets(
         models.map((model) => mergeRemoteModelPreset(model, providerPreset?.models ?? [])),
         providerPreset?.models ?? []
@@ -787,6 +727,7 @@ export function SettingsPanel({
           profileId: editingId ?? undefined,
           name: name || model || 'Untitled model',
           baseUrl,
+          apiProtocol,
           model,
           apiKey,
           maxContextLength: Number(maxContextLength) || undefined,
@@ -825,19 +766,13 @@ export function SettingsPanel({
       }
       setDraftAgentRuntimeSettings(normalizedRuntimeSettings);
       setSavedAgentRuntimeSettings(normalizedRuntimeSettings);
-      const nextParserEndpoint =
-        parserSourceMode === 'cloud' ? CLOUD_PARSER_ENDPOINT : customParserEndpoint.trim();
-      const nextParserApiKey =
-        parserSourceMode === 'cloud' ? '' : customParserApiKey.trim();
+      const nextParserEndpoint = customParserEndpoint.trim();
+      const nextParserApiKey = customParserApiKey.trim();
       pendingSavedParserEndpointRef.current = nextParserEndpoint;
       setSavedParserEndpoint(nextParserEndpoint);
       setSavedParserApiKey(nextParserApiKey);
-      setSavedPopoEnhancementEnabled(draftPopoEnhancementEnabled);
-      setSavedPopoEnhancementEndpoint(draftPopoEnhancementEndpoint);
       onParserEndpointChange(nextParserEndpoint);
       onParserApiKeyChange(nextParserApiKey);
-      onPopoEnhancementEnabledChange(draftPopoEnhancementEnabled);
-      onPopoEnhancementEndpointChange(draftPopoEnhancementEndpoint);
       onReaderPreferencesChange(draftReaderPreferences);
       setSavedReaderPreferences(draftReaderPreferences);
 
@@ -853,7 +788,7 @@ export function SettingsPanel({
   const test = async () => {
     setBusy(true);
     try {
-      await testOpenAiCompatibleConnection({ baseUrl, apiKey });
+      await testOpenAiCompatibleConnection({ baseUrl, apiKey, apiProtocol });
       notify({ tone: 'success', title: '连接测试通过' });
     } catch (caught) {
       notifyFailure('连接测试失败', caught);
@@ -863,7 +798,10 @@ export function SettingsPanel({
   };
 
   const testProfile = async (
-    profile: Pick<LlmProfile, 'base_url' | 'id' | 'name'> & { api_key?: string | null }
+    profile: Pick<LlmProfile, 'base_url' | 'id' | 'name'> & {
+      api_key?: string | null;
+      api_protocol?: LlmProfile['api_protocol'] | null;
+    }
   ) => {
     setProfileTestStates((current) => ({
       ...current,
@@ -872,7 +810,8 @@ export function SettingsPanel({
     try {
       await testOpenAiCompatibleConnection({
         baseUrl: profile.base_url,
-        apiKey: profile.api_key ?? ''
+        apiKey: profile.api_key ?? '',
+        apiProtocol: resolveLlmApiProtocol(profile.api_protocol)
       });
       setProfileTestStates((current) => ({
         ...current,
@@ -1072,10 +1011,10 @@ export function SettingsPanel({
       <SettingsPanelLayout
       activeSettingsTab={activeSettingsTab}
       apiKey={apiKey}
+      apiProtocol={apiProtocol}
       baseUrl={baseUrl}
       busy={busy}
       cachedModelCatalog={cachedModelCatalog}
-      cloudUnlocked={cloudUnlocked}
       collapsedProviderCount={PROVIDER_PRESETS.length > COLLAPSED_PROVIDER_COUNT ? PROVIDER_PRESETS.length : 0}
       customParserEndpoint={customParserEndpoint}
       customParserApiKey={customParserApiKey}
@@ -1094,6 +1033,7 @@ export function SettingsPanel({
       modelRefreshBusy={modelRefreshBusy}
       name={name}
       onApiKeyChange={setApiKey}
+      onApiProtocolChange={setApiProtocol}
       onBack={onBack}
       onBaseUrlChange={setBaseUrl}
       onOpenWorkspace={() => void chooseWorkspaceFolder('switch')}
@@ -1118,7 +1058,25 @@ export function SettingsPanel({
       onCreateProfile={() => createProfile()}
       onMaxContextLengthChange={setMaxContextLength}
       onMaxOutputTokensChange={setMaxOutputTokens}
-      onModelChange={setModel}
+      onModelChange={(value) => {
+        setModel(value);
+        // 手动输入/粘贴的模型 ID 命中已同步的模型目录时，自动回填上下文与输出参数；
+        // 用户手动改过的值（非默认）不覆盖。
+        const preset = modelPresets.find((item) => item.id === value.trim());
+        if (!preset) {
+          return;
+        }
+        const currentContext = maxContextLength.trim();
+        if (
+          preset.maxContextLength != null &&
+          (currentContext === '' || currentContext === '8192')
+        ) {
+          setMaxContextLength(String(preset.maxContextLength));
+        }
+        if (preset.maxOutputTokens != null && maxOutputTokens.trim() === '') {
+          setMaxOutputTokens(String(preset.maxOutputTokens));
+        }
+      }}
       onModelPresetSelect={(value) => {
         const preset = modelPresets.find((item) => item.id === value);
         if (preset) {
@@ -1127,34 +1085,8 @@ export function SettingsPanel({
       }}
       onNameChange={setName}
       onNewProfile={newProfile}
-      onParserEndpointChange={(nextValue) => {
-        setCustomParserEndpoint(nextValue);
-        setParserSourceIntent('custom');
-        setParserSourceMode('custom');
-        setSavedParserEndpoint(nextValue);
-        onParserEndpointChange(nextValue);
-        announceAutoSave('解析 URL 已更新。');
-      }}
-      onParserApiKeyChange={(nextValue) => {
-        setCustomParserApiKey(nextValue);
-        setSavedParserApiKey(nextValue);
-        onParserApiKeyChange(nextValue);
-        announceAutoSave('解析 API Key 已更新。');
-      }}
-      popoEnhancementEnabled={draftPopoEnhancementEnabled}
-      popoEnhancementEndpoint={draftPopoEnhancementEndpoint}
-      onPopoEnhancementEnabledChange={(nextValue) => {
-        setDraftPopoEnhancementEnabled(nextValue);
-        setSavedPopoEnhancementEnabled(nextValue);
-        onPopoEnhancementEnabledChange(nextValue);
-        announceAutoSave('Popo 增强设置已更新。');
-      }}
-      onPopoEnhancementEndpointChange={(nextValue) => {
-        setDraftPopoEnhancementEndpoint(nextValue);
-        setSavedPopoEnhancementEndpoint(nextValue);
-        onPopoEnhancementEndpointChange(nextValue);
-        announceAutoSave('Popo 增强 URL 已更新。');
-      }}
+      onParserEndpointChange={setCustomParserEndpoint}
+      onParserApiKeyChange={setCustomParserApiKey}
       onReaderPreferencesChange={(nextPreferences) => {
         setDraftReaderPreferences(nextPreferences);
         setSavedReaderPreferences(nextPreferences);
@@ -1162,6 +1094,10 @@ export function SettingsPanel({
         announceAutoSave('阅读设置已更新。');
       }}
       onProviderPresetSelect={(value) => {
+        if (value === '__custom__') {
+          newProfile();
+          return;
+        }
         if (value.startsWith('__profile__')) {
           const profile = settings.profiles.find((item) => `__profile__${item.id}` === value);
           if (profile) {
@@ -1179,12 +1115,11 @@ export function SettingsPanel({
       onDeleteProfile={(profileId) => deleteProfile(profileId)}
       onSaveProfile={() => saveCurrentProfile()}
       onResetWorkspaceRoot={() => void resetWorkspaceRoot()}
-      onSelectParserSourceMode={selectParserSourceMode}
       onSetActiveSettingsTab={setActiveSettingsTab}
       onAddAgent={() => {
         notify({
           title: '暂不支持新增子 Agent',
-          description: '当前版本只开放两个内置子 Agent：EvidenceAgent 和 PatchPlannerAgent。'
+          description: '当前版本使用 4 个职责固定的内置子 Agent；可在子 Agent 页面配置模型、启用状态与权限。'
         });
         setActiveSettingsTab('subagents');
       }}
@@ -1213,7 +1148,6 @@ export function SettingsPanel({
           })
           .catch((caught) => notifyFailure('任务模型自动保存失败', caught));
       }}
-      onSetUnlockSecret={setUnlockSecret}
       onTemperatureChange={setTemperature}
       onTest={() => void test()}
       onTestProfile={(profile) => void testProfile(profile)}
@@ -1221,9 +1155,6 @@ export function SettingsPanel({
       onToggleProvidersExpanded={() => setProvidersExpanded((value) => !value)}
       onTopPChange={setTopP}
       onTranslationAutomationChange={saveTranslationAutomation}
-      onUnlockCloudParser={() => void unlockCloudParser()}
-      parserSourceIntent={parserSourceIntent}
-      parserSourceMode={parserSourceMode}
       providerLogo={(preset) => <ProviderLogo preset={preset} />}
       providerPreset={providerPreset}
       providerPresets={visibleProviderPresets}
@@ -1235,8 +1166,6 @@ export function SettingsPanel({
       themePresets={themePresets}
       uiScale={uiScale}
       topP={topP}
-      unlockBusy={unlockBusy}
-      unlockSecret={unlockSecret}
       workspaceCurrentLabel={formatPathForDisplay(workspaceRoot ?? workspaceSettings?.root ?? '')}
       workspaceDefaultLabel={formatPathForDisplay(workspaceSettings?.default_root ?? '')}
       workspaceBusy={workspaceBusy}
@@ -1353,21 +1282,17 @@ function formatEndpointForDisplay(value: string) {
   if (!trimmed) {
     return '未填写解析服务 URL';
   }
-  if (isCloudParserEndpoint(trimmed)) {
-    return 'NeuLab 云端解析服务';
-  }
   return trimmed;
 }
 
 type PendingSettingsDraft = {
+  apiProtocol: LlmApiProtocol;
   baseUrl: string;
   customParserEndpoint: string;
   customParserApiKey: string;
   draftAgentRuntimeSettings: AgentRuntimeSettings;
   draftAssistantProfileId: string | null;
   draftTranslationProfileId: string | null;
-  draftPopoEnhancementEnabled: boolean;
-  draftPopoEnhancementEndpoint: string;
   effectiveParserEndpoint: string;
   editingId: string | null;
   name: string;
@@ -1378,10 +1303,7 @@ type PendingSettingsDraft = {
   readerPreferences: ReaderPreferences;
   savedParserEndpoint: string;
   savedParserApiKey: string;
-  savedPopoEnhancementEnabled: boolean;
-  savedPopoEnhancementEndpoint: string;
   savedReaderPreferences: ReaderPreferences;
-  parserSourceMode: ParserSourceMode;
   savedAgentRuntimeSettings: AgentRuntimeSettings;
   settings: LlmSettingsState;
   temperature: string;
@@ -1390,6 +1312,7 @@ type PendingSettingsDraft = {
 
 function profileFingerprint(profile: {
   api_key: string | null;
+  api_protocol: LlmApiProtocol;
   base_url: string;
   id: string;
   max_context_length: number | null;
@@ -1401,6 +1324,7 @@ function profileFingerprint(profile: {
 }) {
   return JSON.stringify({
     apiKey: profile.api_key ?? '',
+    apiProtocol: profile.api_protocol,
     baseUrl: profile.base_url.trim(),
     maxContextLength: profile.max_context_length,
     maxOutputTokens: profile.max_output_tokens,
@@ -1417,6 +1341,7 @@ function hasPendingChanges(draft: PendingSettingsDraft) {
   const modelChanged = editingProfile
     ? editingProfile.name !== (draft.name || draft.model || 'Untitled model') ||
       editingProfile.base_url !== normalizeBaseUrl(draft.baseUrl) ||
+      resolveLlmApiProtocol(editingProfile.api_protocol) !== draft.apiProtocol ||
       editingProfile.model !== draft.model.trim() ||
       (editingProfile.api_key ?? '') !== draft.apiKey.trim() ||
       String(editingProfile.max_context_length ?? 8192) !== String(Number(draft.maxContextLength) || 8192) ||
@@ -1433,10 +1358,7 @@ function hasPendingChanges(draft: PendingSettingsDraft) {
     draft.draftTranslationProfileId !== draft.settings.translation_profile_id;
   const parserChanged =
     draft.effectiveParserEndpoint.trim() !== draft.savedParserEndpoint.trim() ||
-    (draft.parserSourceMode === 'custom' && draft.customParserApiKey !== draft.savedParserApiKey);
-  const popoChanged =
-    draft.draftPopoEnhancementEnabled !== draft.savedPopoEnhancementEnabled ||
-    draft.draftPopoEnhancementEndpoint.trim() !== draft.savedPopoEnhancementEndpoint.trim();
+    draft.customParserApiKey !== draft.savedParserApiKey;
   const readerPreferencesChanged = !equalReaderPreferences(
     draft.readerPreferences,
     draft.savedReaderPreferences
@@ -1451,7 +1373,6 @@ function hasPendingChanges(draft: PendingSettingsDraft) {
     assistantChanged ||
     translationChanged ||
     parserChanged ||
-    popoChanged ||
     agentRuntimeChanged ||
     readerPreferencesChanged
   );

@@ -106,6 +106,7 @@ export type AssistantTaskIntent =
   | 'note_create'
   | 'note_update'
   | 'segment_note_update'
+  | 'entry_create'
   | 'entry_meta_update'
   | 'tag_attach'
   | 'tag_create'
@@ -118,13 +119,16 @@ export type AssistantTaskTargetKind =
   | 'chat_only'
   | 'entry_meta'
   | 'markdown_note'
-  | 'segment_note';
+  | 'new_entry'
+  | 'segment_note'
+  | 'tag';
 
 export type AssistantTaskCapability =
   | 'read_document'
   | 'read_note'
   | 'search_evidence'
   | 'synthesize'
+  | 'create_entry'
   | 'propose_note'
   | 'propose_entry_meta_change'
   | 'propose_tag_change';
@@ -134,6 +138,7 @@ export type AssistantTaskDeliverable =
   | 'note_create_proposal'
   | 'note_patch_proposal'
   | 'segment_note_proposal'
+  | 'entry_created'
   | 'entry_meta_change_proposal'
   | 'tag_change_proposal';
 
@@ -163,6 +168,7 @@ export type AssistantTaskPlan = {
   };
   intent: AssistantTaskIntent;
   evidencePolicy?: 'none' | 'optional' | 'required';
+  editCoordinatePolicy?: 'line_and_hash';
   missing: AssistantTaskPlanMissing[];
   noteAction?: 'append' | 'create' | 'delete' | 'patch' | 'prepend' | 'replace';
   tagChange?: {
@@ -177,6 +183,7 @@ export type AssistantTaskPlan = {
   needsDocumentContext: boolean;
   needsNoteProposal: boolean;
   needsSegmentSearch: boolean;
+  requiredToolIds?: import('./agentRuntime').AgentToolId[];
   rationale: string;
   request?: string;
   target: {
@@ -190,6 +197,7 @@ export type AssistantTaskPlan = {
     id: string;
     kind:
       | 'draft_note'
+      | 'create_entry'
       | 'propose_entry_meta_change'
       | 'propose_tag_change'
       | 'read_context'
@@ -309,11 +317,14 @@ export type AssistantSubagentTaskPlan = {
 
 export type AgentInvocationPlan = {
   enabledToolIds: string[];
+  failurePolicy?: 'allow_general_fallback' | 'stop';
   missing: string[];
   mode: AssistantInvocationMode;
   noteEditMode?: AssistantNoteEditMode;
   mainAssistantId: string;
   rationale: string;
+  requiredToolIds?: string[];
+  sourcePolicy?: 'active_context_only' | 'mixed' | 'none' | 'sciverse_only' | 'workspace_only';
   skillIdsToLoad: string[];
   subagentTasks: AssistantSubagentTaskPlan[];
   writePolicy: AssistantWritePolicy;
@@ -377,6 +388,29 @@ export type AssistantActiveSegment = {
   text: string;
 };
 
+export type AssistantActiveSurfaceSnapshot = {
+  capturedAt: string;
+  entryId: EntryId | null;
+  kind:
+    | 'annotations'
+    | 'create-entry'
+    | 'mineru-client-guide'
+    | 'entry-overview'
+    | 'entry-trash'
+    | 'library'
+    | 'note'
+    | 'pdf'
+    | 'reflow'
+    | 'segment-notes'
+    | 'settings'
+    | 'source-links'
+    | 'tag-editor';
+  noteId: NoteId | null;
+  pane: 'left' | 'right';
+  segmentUid: string | null;
+  surfaceKey: string;
+};
+
 export type AssistantNoteProposalAction =
   | 'append'
   | 'create'
@@ -417,6 +451,26 @@ export type AssistantMarkdownPatchOperation =
   | {
       text: string;
       type: 'append';
+    }
+  | {
+      endLine: number;
+      expectedText: string;
+      newText: string;
+      startLine: number;
+      type: 'replace_lines';
+    }
+  | {
+      endLine: number;
+      expectedText: string;
+      startLine: number;
+      type: 'delete_lines';
+    }
+  | {
+      expectedText: string;
+      line: number;
+      position: 'after' | 'before';
+      text: string;
+      type: 'insert_lines';
     };
 
 export type AssistantNoteProposal = {

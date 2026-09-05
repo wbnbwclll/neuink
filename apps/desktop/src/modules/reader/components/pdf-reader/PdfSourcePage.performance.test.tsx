@@ -9,7 +9,13 @@ import type { SourceSegment } from '@/shared/types/domain';
 
 vi.mock('./PdfCanvasPage', () => ({
   PdfCanvasPage: () => <div data-testid="mock-pdf-canvas" />,
-  PdfTextSelectionHighlightLayer: () => <div data-testid="mock-pdf-highlights" />,
+  PdfTextSelectionHighlightLayer: ({ highlights }: { highlights: Array<{ active?: boolean }> }) => (
+    <div
+      data-active-highlights={highlights.filter((highlight) => highlight.active).length}
+      data-highlight-count={highlights.length}
+      data-testid="mock-pdf-highlights"
+    />
+  ),
 }));
 
 import { PdfSourcePage } from './PdfSourcePage';
@@ -78,16 +84,54 @@ describe('PdfSourcePage performance boundaries', () => {
       '3px solid var(--primary)',
     );
   });
+
+  it('marks only the focused persisted annotation as active', () => {
+    const page = createPage(1);
+    const annotation = {
+      annotation_id: 'annotation-1',
+      content: 'Selected conclusion',
+      created_at: '2026-09-05T00:00:00Z',
+      importance: 'normal' as const,
+      kind: 'highlight',
+      segment_uid: 'segment-0',
+      text_selection: {
+        color: 'yellow' as const,
+        page_idx: 0,
+        rects: [[100, 100, 300, 140] as [number, number, number, number]],
+        text: 'Selected source text',
+      },
+      updated_at: '2026-09-05T00:00:00Z',
+    };
+    const result = render(
+      pdfSourcePage(
+        page,
+        null,
+        new Map([['segment-0', [annotation]]]),
+        annotation.annotation_id,
+      ),
+    );
+
+    const layer = result.getByTestId('mock-pdf-highlights');
+    expect(layer.dataset.highlightCount).toBe('1');
+    expect(layer.dataset.activeHighlights).toBe('1');
+  });
+
 });
 
 function renderPdfSourcePage(page: PageSegments) {
   return render(pdfSourcePage(page));
 }
 
-function pdfSourcePage(page: PageSegments, flashSegmentUid: string | null = null) {
+function pdfSourcePage(
+  page: PageSegments,
+  flashSegmentUid: string | null = null,
+  annotationsBySegmentUid = new Map(),
+  activeAnnotationId: string | null = null,
+) {
   return (
     <PdfSourcePage
-      annotationsBySegmentUid={new Map()}
+      activeAnnotationId={activeAnnotationId}
+      annotationsBySegmentUid={annotationsBySegmentUid}
       flashSegmentUid={flashSegmentUid}
       hoveredSegmentUid={null}
       hoverPreviewEnabled
@@ -116,6 +160,7 @@ function pdfSourcePage(page: PageSegments, flashSegmentUid: string | null = null
       onOpenSegmentNote={() => undefined}
       onOpenSourceBacklink={() => undefined}
       onToggleSegment={() => undefined}
+      altClickOpensNote
     />
   );
 }

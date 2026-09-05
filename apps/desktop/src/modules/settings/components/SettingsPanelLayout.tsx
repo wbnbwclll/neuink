@@ -5,6 +5,7 @@ import {
   BookOpen,
   Database,
   Palette,
+  PlugZap,
   Server,
   Workflow
 } from 'lucide-react';
@@ -18,6 +19,7 @@ import {
 } from '@/components/ui/tooltip';
 import { Tabs } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
+import type { LlmApiProtocol } from '@/shared/ipc/assistantApi';
 import type { ReaderPreferences } from '@/shared/lib/readerPreferences';
 import type { AppThemePreset, AppThemePresetId } from '@/shared/lib/themePresets';
 import type { UiScale } from '@/shared/lib/uiScale';
@@ -28,6 +30,7 @@ import type {
 } from '@/shared/types/agentRuntime';
 
 import { DataSettingsSection } from './DataSettingsSection';
+import { ExternalToolsSettingsSection } from './ExternalToolsSettingsSection';
 import { GeneralSettingsSections } from './GeneralSettingsSections';
 import { ModelSettingsSection } from './ModelSettingsSection';
 import type { ModelPreset, ProviderPreset } from './providerPresets';
@@ -38,6 +41,7 @@ type LlmProfileLike = {
   model: string;
   base_url: string;
   api_key?: string | null;
+  api_protocol?: LlmApiProtocol | null;
   max_context_length?: number | null;
   max_output_tokens?: number | null;
   temperature?: number | null;
@@ -62,28 +66,25 @@ type TranslationAutomationSettingsLike = {
   segment_types: string[];
 };
 
-type ParserSourceMode = 'cloud' | 'custom';
-
 type SettingsTab =
   | 'models'
   | 'tasks'
   | 'data'
   | 'appearance'
   | 'reader'
+  | 'external-tools'
   | 'main-agent'
   | 'subagents'
   | 'skills';
 
 export type SettingsPanelLayoutProps = {
   activeSettingsTab: SettingsTab;
+  apiProtocol: LlmApiProtocol;
   baseUrl: string;
   busy: boolean;
   cachedModelCatalog: { models: ModelPreset[]; updatedAt: string } | null;
-  cloudUnlocked: boolean;
   customParserEndpoint: string;
   customParserApiKey: string;
-  popoEnhancementEnabled: boolean;
-  popoEnhancementEndpoint: string;
   readerPreferences: ReaderPreferences;
   draftAssistantProfileId: string | null;
   draftTranslationProfileId: string | null;
@@ -97,6 +98,7 @@ export type SettingsPanelLayoutProps = {
   modelRefreshBusy: boolean;
   name: string;
   onBack?: () => void;
+  onApiProtocolChange: (value: LlmApiProtocol) => void;
   onBaseUrlChange: (value: string) => void;
   onOpenWorkspace: () => void;
   onCreateWorkspace: () => void;
@@ -112,8 +114,6 @@ export type SettingsPanelLayoutProps = {
   onNewProfile: () => void;
   onParserEndpointChange: (value: string) => void;
   onParserApiKeyChange: (value: string) => void;
-  onPopoEnhancementEnabledChange: (value: boolean) => void;
-  onPopoEnhancementEndpointChange: (value: string) => void;
   onReaderPreferencesChange: (preferences: ReaderPreferences) => void;
   onProviderPresetSelect: (label: string) => void;
   onRefreshModels: () => void;
@@ -121,7 +121,6 @@ export type SettingsPanelLayoutProps = {
   onDeleteProfile: (profileId: string) => Promise<void> | void;
   onSaveProfile: () => Promise<void> | void;
   onResetWorkspaceRoot: () => void;
-  onSelectParserSourceMode: (mode: ParserSourceMode) => void;
   onSetActiveSettingsTab: (value: SettingsTab) => void;
   onAddAgent: () => void;
   onAddSkillPackage: () => void;
@@ -134,13 +133,9 @@ export type SettingsPanelLayoutProps = {
   onSetTaskProfile: (task: 'assistant' | 'translation', profileId: string) => void;
   onThemePresetChange: (value: AppThemePresetId) => void;
   onUiScaleChange: (value: UiScale) => void;
-  onSetUnlockSecret: (value: string) => void;
   onTest: () => void;
   onTestProfile: (profile: LlmProfileLike) => void;
   profileTestStates: Record<string, { message?: string; status: 'error' | 'idle' | 'success' | 'testing' }>;
-  onUnlockCloudParser: () => void;
-  parserSourceIntent: ParserSourceMode;
-  parserSourceMode: ParserSourceMode;
   providerPreset: ProviderPreset | null;
   providerPresets: ProviderPreset[];
   providersExpanded: boolean;
@@ -151,8 +146,6 @@ export type SettingsPanelLayoutProps = {
   themePresets: AppThemePreset[];
   uiScale: UiScale;
   topP: string;
-  unlockBusy: boolean;
-  unlockSecret: string;
   workspaceCurrentLabel: string;
   workspaceDefaultLabel: string;
   workspaceBusy: boolean;
@@ -179,15 +172,26 @@ export type SettingsPanelLayoutProps = {
   selectedSkillPackageId: string | null;
 };
 
-const SETTINGS_SECTIONS = [
-  { value: 'models' as const, icon: Bot, title: '大模型' },
-  { value: 'tasks' as const, icon: Server, title: '任务模型' },
-  { value: 'data' as const, icon: Database, title: '数据与解析' },
-  { value: 'appearance' as const, icon: Palette, title: '外观主题' },
-  { value: 'reader' as const, icon: BookOpen, title: '阅读' },
-  { value: 'main-agent' as const, icon: Bot, title: '主 Agent' },
-  { value: 'subagents' as const, icon: Workflow, title: '子 Agent' },
-  { value: 'skills' as const, icon: Archive, title: 'Skills' }
+const SETTINGS_GROUPS = [
+  {
+    title: '应用设置',
+    items: [
+      { value: 'models' as const, icon: Bot, title: '大模型' },
+      { value: 'tasks' as const, icon: Server, title: '任务模型' },
+      { value: 'data' as const, icon: Database, title: '数据与解析' },
+      { value: 'appearance' as const, icon: Palette, title: '外观主题' },
+      { value: 'reader' as const, icon: BookOpen, title: '阅读' },
+      { value: 'external-tools' as const, icon: PlugZap, title: '外部工具与 MCP' }
+    ]
+  },
+  {
+    title: 'Agent 系统',
+    items: [
+      { value: 'main-agent' as const, icon: Bot, title: '主 Agent' },
+      { value: 'subagents' as const, icon: Workflow, title: '子 Agent' },
+      { value: 'skills' as const, icon: Archive, title: 'Skills 技能库' }
+    ]
+  }
 ];
 
 export function SettingsPanelLayout(props: SettingsPanelLayoutProps) {
@@ -198,11 +202,6 @@ export function SettingsPanelLayout(props: SettingsPanelLayoutProps) {
       ? 'rounded-none border-0 border-t'
       : 'rounded-lg'
   );
-  const settingsContentClassName =
-    'm-0 min-h-0 overflow-auto bg-background px-5 py-4';
-  const settingsContentInnerClassName = (className: string) =>
-    cn('settings-panel-content-inner', className);
-
   return (
     <section
       className={cn(
@@ -231,9 +230,10 @@ export function SettingsPanelLayout(props: SettingsPanelLayoutProps) {
         <div className="settings-panel-nav border-r border-border/70 bg-card">
           <div className="side-body overflow-auto">
             <div className="settings-panel-nav-body p-2">
-              <SettingsSidebarSection open title="设置分组">
+              {SETTINGS_GROUPS.map((group) => (
+              <SettingsSidebarSection key={group.title} open title={group.title}>
                 <div className="grid gap-1">
-                  {SETTINGS_SECTIONS.map((section) => {
+                  {group.items.map((section) => {
                     const Icon = section.icon;
                     const active = activeSettingsTab === section.value;
 
@@ -268,6 +268,7 @@ export function SettingsPanelLayout(props: SettingsPanelLayoutProps) {
                   })}
                 </div>
               </SettingsSidebarSection>
+              ))}
             </div>
           </div>
         </div>
@@ -275,6 +276,7 @@ export function SettingsPanelLayout(props: SettingsPanelLayoutProps) {
         <ModelSettingsSection props={props} />
         <GeneralSettingsSections props={props} />
         <DataSettingsSection props={props} />
+        <ExternalToolsSettingsSection props={props} />
       </Tabs>
     </section>
   );

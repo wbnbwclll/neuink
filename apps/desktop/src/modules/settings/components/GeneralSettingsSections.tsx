@@ -318,17 +318,29 @@ export function GeneralSettingsSections({ props }: { props: SettingsPanelLayoutP
                           })
                         }
                       />
-                      <ReaderSettingRow
-                        checked={readerPreferences.leftClickOpensNotePane}
-                        description="左键点击 PDF 区域时，直接打开右侧笔记或批注面板。"
-                        label="左键打开笔记"
-                        onCheckedChange={(checked) =>
-                          onReaderPreferencesChange({
-                            ...readerPreferences,
-                            leftClickOpensNotePane: checked
-                          })
-                        }
-                      />
+                      <div className="flex items-center justify-between gap-4 border-t pt-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium">打开片段笔记</div>
+                          <div className="mt-0.5 text-xs leading-5 text-muted-foreground">选择单击或双击片段后打开笔记；PDF 与重排分屏时单击始终只用于定位。</div>
+                        </div>
+                        <Select
+                          value={readerPreferences.segmentNoteOpenGesture}
+                          onValueChange={(value) =>
+                            onReaderPreferencesChange({
+                              ...readerPreferences,
+                              leftClickOpensNotePane: value === 'single',
+                              segmentNoteOpenGesture: value as ReaderPreferences['segmentNoteOpenGesture']
+                            })
+                          }
+                        >
+                          <SelectTrigger className="w-28" size="sm"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="button">选中后操作</SelectItem>
+                            <SelectItem value="single">单击</SelectItem>
+                            <SelectItem value="modifier">Alt + 单击</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
                       <ReaderSettingRow
                         checked={readerPreferences.closeSegmentOverlayOnBlankClick}
                         description="片段笔记或批注打开后，点击 PDF 正文空白区域会关闭面板。"
@@ -375,6 +387,38 @@ export function GeneralSettingsSections({ props }: { props: SettingsPanelLayoutP
                       }
                     />
                     <ReaderSettingRow checked={readerPreferences.hoverPreviewEnabled} label="悬停预览" description="鼠标悬停在 PDF 区域上时显示片段预览。" onCheckedChange={(checked) => onReaderPreferencesChange({ ...readerPreferences, hoverPreviewEnabled: checked })} />
+                    <ReaderSelectRow
+                      description="调整悬停卡片中原文、译文、笔记和批注的文字大小。"
+                      disabled={!readerPreferences.hoverPreviewEnabled}
+                      inset
+                      label="预览文字大小"
+                      options={[
+                        { label: '较小', value: 'small' },
+                        { label: '标准', value: 'standard' },
+                        { label: '较大', value: 'large' }
+                      ]}
+                      value={readerPreferences.pdfHoverPreviewFontSize}
+                      onValueChange={(value) => onReaderPreferencesChange({
+                        ...readerPreferences,
+                        pdfHoverPreviewFontSize: value as ReaderPreferences['pdfHoverPreviewFontSize']
+                      })}
+                    />
+                    <ReaderSelectRow
+                      description="调整悬停卡片可占用的宽度和内容空间。"
+                      disabled={!readerPreferences.hoverPreviewEnabled}
+                      inset
+                      label="预览卡片大小"
+                      options={[
+                        { label: '紧凑', value: 'compact' },
+                        { label: '标准', value: 'standard' },
+                        { label: '宽大', value: 'large' }
+                      ]}
+                      value={readerPreferences.pdfHoverPreviewSize}
+                      onValueChange={(value) => onReaderPreferencesChange({
+                        ...readerPreferences,
+                        pdfHoverPreviewSize: value as ReaderPreferences['pdfHoverPreviewSize']
+                      })}
+                    />
                     <ReaderSettingRow checked={readerPreferences.hoverPreviewShowRegion} disabled={!readerPreferences.hoverPreviewEnabled} inset label="区域" description="悬停时高亮 PDF 中对应的片段区域。" onCheckedChange={(checked) => onReaderPreferencesChange({ ...readerPreferences, hoverPreviewShowRegion: checked })} />
                     <ReaderSettingRow checked={readerPreferences.hoverPreviewShowOriginal} disabled={!readerPreferences.hoverPreviewEnabled && !readerPreferences.reflowHoverSourceEnabled} inset label="解析后原文" description="在悬停预览中显示 MinerU 解析后的内容。" onCheckedChange={(checked) => onReaderPreferencesChange({ ...readerPreferences, hoverPreviewShowOriginal: checked })} />
                     <ReaderSettingRow checked={readerPreferences.hoverPreviewShowTranslation} disabled={!readerPreferences.hoverPreviewEnabled && !readerPreferences.reflowHoverSourceEnabled} inset label="译文" description="在悬停预览中显示可用译文。" onCheckedChange={(checked) => onReaderPreferencesChange({ ...readerPreferences, hoverPreviewShowTranslation: checked })} />
@@ -396,7 +440,13 @@ export function GeneralSettingsSections({ props }: { props: SettingsPanelLayoutP
                       </Select>
                     </div>
                     <ReaderSettingRow checked={readerPreferences.showRegions} label="默认显示区域" description="默认显示 PDF 上的分段区域框。" onCheckedChange={(checked) => onReaderPreferencesChange({ ...readerPreferences, showRegions: checked })} />
-                    <ReaderSettingRow checked={readerPreferences.leftClickOpensNotePane} label="左键打开笔记" description="在 PDF 或重排视图点击片段时打开对应笔记。" onCheckedChange={(checked) => onReaderPreferencesChange({ ...readerPreferences, leftClickOpensNotePane: checked })} />
+                    <div className="flex items-center justify-between gap-4 border-t pt-3">
+                      <div className="min-w-0"><div className="text-sm font-medium">打开片段笔记</div><div className="mt-0.5 text-xs leading-5 text-muted-foreground">分屏 PDF/重排时单击始终只定位对侧，不打开笔记。</div></div>
+                      <Select value={readerPreferences.segmentNoteOpenGesture} onValueChange={(value) => onReaderPreferencesChange({ ...readerPreferences, leftClickOpensNotePane: value === 'single', segmentNoteOpenGesture: value as ReaderPreferences['segmentNoteOpenGesture'] })}>
+                        <SelectTrigger className="w-28" size="sm"><SelectValue /></SelectTrigger>
+                        <SelectContent><SelectItem value="button">选中后操作</SelectItem><SelectItem value="single">单击</SelectItem><SelectItem value="modifier">Alt + 单击</SelectItem></SelectContent>
+                      </Select>
+                    </div>
                     <ReaderSettingRow checked={readerPreferences.closeSegmentOverlayOnBlankClick} label="空白处关闭片段浮层" description="在 PDF 或重排视图点击空白区域时关闭笔记或批注浮层。" onCheckedChange={(checked) => onReaderPreferencesChange({ ...readerPreferences, closeSegmentOverlayOnBlankClick: checked })} />
                     <ReaderSettingRow checked={readerPreferences.closeSegmentOverlayOnSameSegmentClick} label="再次点击片段关闭" description="在 PDF 或重排视图再次点击已打开的片段时关闭浮层。" onCheckedChange={(checked) => onReaderPreferencesChange({ ...readerPreferences, closeSegmentOverlayOnSameSegmentClick: checked })} />
                   </div>
@@ -520,5 +570,44 @@ function ReaderSettingRow({
       </span>
       <Switch checked={checked} disabled={disabled} onCheckedChange={onCheckedChange} />
     </label>
+  );
+}
+
+function ReaderSelectRow({
+  description,
+  disabled = false,
+  inset = false,
+  label,
+  onValueChange,
+  options,
+  value
+}: {
+  description: string;
+  disabled?: boolean;
+  inset?: boolean;
+  label: string;
+  onValueChange: (value: string) => void;
+  options: Array<{ label: string; value: string }>;
+  value: string;
+}) {
+  return (
+    <div
+      className={`flex items-start justify-between gap-4 rounded-xl border border-border/70 bg-background/80 px-3 py-3 transition ${
+        disabled ? 'opacity-55' : ''
+      } ${inset ? 'ml-4' : ''}`}
+    >
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-foreground">{label}</div>
+        <div className="mt-1 text-xs leading-5 text-muted-foreground">{description}</div>
+      </div>
+      <Select disabled={disabled} value={value} onValueChange={onValueChange}>
+        <SelectTrigger className="w-28 shrink-0" size="sm"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
   );
 }

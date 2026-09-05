@@ -1,10 +1,13 @@
-import { FileText, Highlighter, Link2, Tags } from 'lucide-react';
-import { useMemo } from 'react';
+import { FileText, Highlighter, Link2, Pencil, Tags } from 'lucide-react';
+import { useMemo, useState } from 'react';
 
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { EntryEditDialog } from '@/modules/library/components/EntryEditDialog';
 import { buildTagPathById } from '@/modules/library/utils/tagTree';
 import type { TagMeta } from '@/shared/types/domain';
+import type { PdfReaderResponse } from '@/shared/ipc/workspaceApi';
+import { useEntryTagSuggestions } from './pdf-reader/useEntryTagSuggestions';
 
 import type { LibraryEntry } from '../../library/components/LibrarySidebar';
 import type { SourceBacklinksBySegmentUid } from '../types';
@@ -13,13 +16,45 @@ import { ReaderSection, ReaderSurfaceBody } from './ReaderSurfacePrimitives';
 
 export function EntryOverview({
   entry,
+  onUpdateEntry,
   sourceBacklinksBySegmentUid,
   tags
+  , workspaceRoot
+  , onReadPdfReader
+  , onApplyEntryTagPaths
 }: {
   entry: LibraryEntry;
+  onUpdateEntry: (
+    entryId: string,
+    request: { fields: Record<string, string>; tagPaths: string[]; title: string }
+  ) => Promise<unknown> | unknown;
   sourceBacklinksBySegmentUid: SourceBacklinksBySegmentUid;
   tags: TagMeta[];
+  workspaceRoot?: string | null;
+  onReadPdfReader?: (entryId: string) => Promise<PdfReaderResponse>;
+  onApplyEntryTagPaths?: (entryId: string, tagPaths: string[]) => Promise<unknown> | unknown;
 }) {
+  const [editOpen, setEditOpen] = useState(false);
+  const [segments, setSegments] = useState<PdfReaderResponse['segments']>([]);
+  const [tagsExpanded, setTagsExpanded] = useState(false);
+  const tagSuggestions = useEntryTagSuggestions({
+    autoRun: false,
+    entry,
+    onApplyEntryTagPaths: onApplyEntryTagPaths ?? (async () => undefined),
+    segments,
+    workspaceRoot: workspaceRoot ?? null
+  });
+  const loadAndGenerateTags = async () => {
+    if (tagSuggestions.busy) return;
+    if (segments.length === 0) {
+      if (!onReadPdfReader) return;
+      const data = await onReadPdfReader(entry.id);
+      setSegments(data.segments);
+      await tagSuggestions.generate(data.segments);
+      return;
+    }
+    await tagSuggestions.generate();
+  };
   const tagPaths = useMemo(() => {
     const pathById = buildTagPathById(tags);
     const resolved = entry.tagIds
@@ -29,9 +64,9 @@ export function EntryOverview({
       left.localeCompare(right, 'zh-CN')
     );
   }, [entry.tagIds, entry.tags, tags]);
-  const description = entry.fields.description?.trim() ?? '';
+  const description = entry.fields.description?.trim() || entry.fields['描述']?.trim() || '';
   const customFields = Object.entries(entry.fields)
-    .filter(([key, value]) => key.toLowerCase() !== 'description' && value.trim())
+    .filter(([key, value]) => key.toLowerCase() !== 'description' && key !== '描述' && value.trim())
     .sort(([left], [right]) => left.localeCompare(right, 'zh-CN'));
   const sourceLinkCount = Object.values(sourceBacklinksBySegmentUid)
     .flat()
@@ -39,27 +74,35 @@ export function EntryOverview({
   const noteCount = entry.contents.filter((content) => content.kind === 'note').length;
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden">
-      <EntryContentHeader contentTitle="条目概览" entryTitle={entry.title} />
-      <ReaderSurfaceBody>
-        <section className="rounded-lg border bg-card px-5 py-5 sm:px-6">
+    <div className="entry-overview grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden">
+      <EntryContentHeader contentTitle="条目概览" entryTitle={entry.title}>
+        <Button
+          size="icon-sm"
+          title="编辑条目"
+          type="button"
+          variant="outline"
+          onClick={() => setEditOpen(true)}
+        >
+          <Pencil size={14} aria-hidden="true" />
+        </Button>
+      </EntryContentHeader>
+      <ReaderSurfaceBody className="entry-overview-body overflow-x-hidden">
+        <section className="entry-overview-summary rounded-lg border bg-card px-5 py-5">
           <div className="text-xs font-medium text-muted-foreground">条目标题</div>
-          <h1 className="mt-1 break-words text-xl font-semibold leading-8 text-foreground">
+          <h1 className="entry-overview-breakable mt-1 text-xl font-semibold leading-8 text-foreground">
             {entry.title}
           </h1>
           <div className="mt-4 border-t pt-4">
             <div className="text-xs font-medium text-muted-foreground">描述</div>
             {description ? (
-              <p className="mt-1.5 whitespace-pre-wrap break-words text-sm leading-7 text-foreground">
-                {description}
-              </p>
+              <p className="entry-overview-breakable mt-1.5 whitespace-pre-wrap text-sm leading-6 text-foreground">{description}</p>
             ) : (
               <p className="mt-1.5 text-sm text-muted-foreground">暂无描述。</p>
             )}
           </div>
         </section>
 
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="entry-overview-stats grid gap-3">
           <OverviewStat icon={FileText} label="笔记" value={`${noteCount} 篇`} />
           <OverviewStat icon={Tags} label="标签" value={`${tagPaths.length} 个`} />
           <OverviewStat
@@ -70,18 +113,11 @@ export function EntryOverview({
           <OverviewStat icon={Link2} label="来源链接" value={`${sourceLinkCount} 条`} />
         </div>
 
-        <ReaderSection title="标签" description="显示条目当前关联的完整标签路径">
+        <ReaderSection className="entry-overview-section" title="标签" description="显示条目当前关联的完整标签路径">
           {tagPaths.length > 0 ? (
-            <div className="flex flex-wrap items-start gap-2">
+            <div className="flex flex-wrap gap-1.5">
               {tagPaths.map((path) => (
-                <Badge
-                  className="h-auto max-w-full whitespace-normal break-all px-2.5 py-1 text-left leading-5"
-                  key={path}
-                  title={path}
-                  variant="secondary"
-                >
-                  {path}
-                </Badge>
+                <span className="entry-overview-breakable min-w-0 max-w-full rounded-md border bg-muted/30 px-2 py-1 text-sm" key={path}>{path}</span>
               ))}
             </div>
           ) : (
@@ -89,23 +125,53 @@ export function EntryOverview({
           )}
         </ReaderSection>
 
+        <ReaderSection className="entry-overview-section" title="推荐标签" description="按需分析当前论文并选择要添加的标签">
+          <div className="flex flex-wrap gap-1.5">
+            {tagSuggestions.recommendations.slice(0, tagsExpanded ? undefined : 10).map((tag) => (
+              <span className="entry-overview-breakable min-w-0 max-w-full rounded-md border border-primary/20 bg-primary/5 px-2 py-1 text-sm" key={tag.path}>
+                {tag.path}
+              </span>
+            ))}
+            {tagSuggestions.recommendations.length > 10 ? (
+              <Button size="xs" type="button" variant="ghost" onClick={() => setTagsExpanded((value) => !value)}>
+                {tagsExpanded ? '收起' : `… 还有 ${tagSuggestions.recommendations.length - 10} 个`}
+              </Button>
+            ) : null}
+            {tagSuggestions.recommendations.length === 0 ? (
+              <Button disabled={tagSuggestions.busy} size="sm" type="button" variant="outline" onClick={() => void loadAndGenerateTags()}>
+                {tagSuggestions.busy ? '正在分析…' : '生成推荐标签'}
+              </Button>
+            ) : null}
+            {tagSuggestions.recommendations.length > 0 ? (
+              <Button disabled={tagSuggestions.busy} size="sm" type="button" variant="outline" onClick={() => void loadAndGenerateTags()}>
+                重新生成
+              </Button>
+            ) : null}
+          </div>
+          {tagSuggestions.recommendations.length > 0 ? (
+            <div className="mt-3 flex justify-end">
+              <Button disabled={tagSuggestions.busy} size="sm" type="button" onClick={() => void tagSuggestions.apply()}>
+                保存推荐标签
+              </Button>
+            </div>
+          ) : null}
+        </ReaderSection>
+
         {customFields.length > 0 ? (
-          <ReaderSection title="条目属性" description="创建或编辑条目时保存的补充信息">
-            <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+          <ReaderSection className="entry-overview-section" title="条目属性" description="创建或编辑条目时保存的补充信息">
+            <dl className="entry-overview-fields grid gap-x-8 gap-y-4">
               {customFields.map(([key, value]) => (
                 <div className="min-w-0" key={key}>
-                  <dt className="text-xs font-medium text-muted-foreground">{key}</dt>
-                  <dd className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
-                    {value}
-                  </dd>
+                  <dt className="entry-overview-breakable text-xs font-medium text-muted-foreground">{key}</dt>
+                  <dd className="entry-overview-breakable mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground">{value}</dd>
                 </div>
               ))}
             </dl>
           </ReaderSection>
         ) : null}
 
-        <ReaderSection title="文件与时间">
-          <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+        <ReaderSection className="entry-overview-section" title="文件与时间">
+          <dl className="entry-overview-fields grid gap-x-8 gap-y-4">
             <OverviewField label="原始 PDF" value={entry.pdfFileName ?? '未导入'} />
             <OverviewField label="条目状态" value={entry.status === 'Parsed' ? '已解析' : entry.status} />
             <OverviewField label="创建时间" value={formatOverviewDate(entry.createdAt)} />
@@ -113,6 +179,15 @@ export function EntryOverview({
           </dl>
         </ReaderSection>
       </ReaderSurfaceBody>
+      {editOpen ? (
+        <EntryEditDialog
+          entry={entry}
+          open={editOpen}
+          tags={tags}
+          onOpenChange={setEditOpen}
+          onUpdateEntry={onUpdateEntry}
+        />
+      ) : null}
     </div>
   );
 }
@@ -127,14 +202,14 @@ function OverviewStat({
   value: string;
 }) {
   return (
-    <Card size="sm">
-      <CardContent className="flex items-center gap-3">
+    <Card className="min-w-0 max-w-full" size="sm">
+      <CardContent className="flex min-w-0 items-center gap-3">
         <div className="grid size-9 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
           <Icon size={17} aria-hidden="true" />
         </div>
         <div className="min-w-0">
           <div className="text-xs text-muted-foreground">{label}</div>
-          <div className="mt-0.5 break-words font-semibold text-foreground">{value}</div>
+          <div className="entry-overview-breakable mt-0.5 font-semibold text-foreground">{value}</div>
         </div>
       </CardContent>
     </Card>
@@ -144,8 +219,8 @@ function OverviewStat({
 function OverviewField({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
-      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
-      <dd className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{value}</dd>
+      <dt className="entry-overview-breakable text-xs font-medium text-muted-foreground">{label}</dt>
+      <dd className="entry-overview-breakable mt-1 whitespace-pre-wrap text-sm leading-6 text-foreground">{value}</dd>
     </div>
   );
 }

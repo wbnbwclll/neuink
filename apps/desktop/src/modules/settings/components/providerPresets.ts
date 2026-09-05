@@ -1,3 +1,5 @@
+﻿import type { LlmApiProtocol } from '@/shared/ipc/assistantApi';
+
 export type ModelPreset = {
   id: string;
   label?: string;
@@ -18,6 +20,7 @@ export type ProviderPreset = {
   };
   label: string;
   models: ModelPreset[];
+  protocol: LlmApiProtocol;
 };
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
@@ -25,6 +28,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'https://api.deepseek.com',
     brand: { background: '#101828', foreground: '#ffffff', mark: 'DS' },
     label: 'DeepSeek',
+    protocol: 'openai_compatible',
     models: [
       {
         id: 'deepseek-v4-flash',
@@ -58,6 +62,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'http://localhost:11434/v1',
     brand: { background: '#f4f4f5', foreground: '#18181b', mark: 'OL' },
     label: 'Ollama',
+    protocol: 'openai_compatible',
     models: [
       {
         id: 'qwen2.5:7b',
@@ -119,6 +124,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'https://api.openai.com/v1',
     brand: { background: '#111827', foreground: '#ffffff', mark: 'AI' },
     label: 'OpenAI',
+    protocol: 'openai_compatible',
     models: [
       {
         id: 'gpt-5.5',
@@ -168,6 +174,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'https://openrouter.ai/api/v1',
     brand: { background: '#6d28d9', foreground: '#ffffff', mark: 'OR' },
     label: 'OpenRouter',
+    protocol: 'openai_compatible',
     models: [
       {
         id: 'deepseek/deepseek-chat',
@@ -252,6 +259,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'https://api.moonshot.ai/v1',
     brand: { background: '#111827', foreground: '#ffffff', mark: 'KM' },
     label: 'Kimi / Moonshot',
+    protocol: 'openai_compatible',
     models: [
       {
         id: 'kimi-k2.7-code',
@@ -289,6 +297,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
     brand: { background: '#155eef', foreground: '#ffffff', mark: 'DB' },
     label: '豆包 / 火山方舟',
+    protocol: 'openai_compatible',
     models: [
       {
         id: 'doubao-seed-1-6',
@@ -316,6 +325,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     brand: { background: '#ff6a00', foreground: '#ffffff', mark: 'QW' },
     label: '通义千问 / DashScope',
+    protocol: 'openai_compatible',
     models: [
       {
         id: 'qwen-max',
@@ -348,6 +358,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     brand: { background: '#0f766e', foreground: '#ffffff', mark: 'GL' },
     label: '智谱 GLM',
+    protocol: 'openai_compatible',
     models: [
       {
         id: 'glm-4.5',
@@ -375,6 +386,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
     brand: { background: '#2563eb', foreground: '#ffffff', mark: 'HY' },
     label: '腾讯混元',
+    protocol: 'openai_compatible',
     models: [
       {
         id: 'hunyuan-turbos-latest',
@@ -397,6 +409,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'https://api.minimax.chat/v1',
     brand: { background: '#7c3aed', foreground: '#ffffff', mark: 'MM' },
     label: 'MiniMax',
+    protocol: 'openai_compatible',
     models: [
       {
         id: 'MiniMax-M1',

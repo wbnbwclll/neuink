@@ -7,6 +7,7 @@ export type ToastMessage = {
   action?: ReactNode;
   id: string;
   durationMs: number;
+  onDismiss?: () => void;
   onExpire?: () => void;
   showProgress?: boolean;
   tone: ToastTone;
@@ -17,6 +18,7 @@ export type ToastMessage = {
 export type ToastInput = {
   action?: ReactNode;
   durationMs?: number;
+  onDismiss?: () => void;
   onExpire?: () => void;
   showProgress?: boolean;
   tone?: ToastTone;

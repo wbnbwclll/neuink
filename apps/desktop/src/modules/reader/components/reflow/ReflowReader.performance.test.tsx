@@ -4,6 +4,7 @@ import { render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SourceSegment } from '@/shared/types/domain';
+import { DEFAULT_REFLOW_COMPONENT_PREFERENCES } from '@/shared/lib/readerPreferences';
 
 import { ReflowReader } from './ReflowReader';
 
@@ -40,6 +41,9 @@ describe('ReflowReader virtualization', () => {
           hoverPreviewShowAnnotation={true}
           notesBySegmentUid={new Map()}
           pdfDocument={null}
+          reflowBackgroundColor="#fff8ed"
+          reflowComponents={DEFAULT_REFLOW_COMPONENT_PREFERENCES}
+          reflowFontSize={20}
           reflowTranslationMode="source"
           segments={segments}
           sourceBacklinksBySegmentUid={{}}
@@ -68,6 +72,13 @@ describe('ReflowReader virtualization', () => {
         ?.getAttribute('data-reflow-total-groups')
     ).toBe('240');
     expect(container.querySelectorAll('[data-reflow-virtual-item]').length).toBeLessThan(40);
+    expect(
+      (container.querySelector('[data-reflow-font-size]') as HTMLElement | null)?.style.fontSize
+    ).toBe('20px');
+    expect(
+      (container.querySelector('[data-reflow-background-color]') as HTMLElement | null)?.style
+        .backgroundColor
+    ).toBe('rgb(255, 248, 237)');
   });
 });
 

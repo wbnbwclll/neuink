@@ -86,7 +86,9 @@ export function AnnotationLibraryView({
     [activeTagIds, annotations, importanceFilter, kindFilter, query, sortBy, tagPathById]
   );
   const coreCount = annotations.filter((record) => record.annotation.importance === 'core').length;
-  const orphanCount = annotations.filter((record) => record.segment_status !== 'current').length;
+  const orphanCount = annotations.filter(
+    (record) => record.segment_status === 'orphaned' || record.segment_status === 'missing'
+  ).length;
   const selectedRecord =
     (selectedAnnotationId
       ? filteredAnnotations.find((record) => record.annotation.annotation_id === selectedAnnotationId) ??
@@ -258,7 +260,12 @@ export function AnnotationLibraryView({
                                 <span className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
                                   {annotationImportanceLabel(record.annotation.importance)}
                                 </span>
-                                {record.segment_status !== 'current' ? (
+                                {record.segment_status === 'page_anchored' ? (
+                                  <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                                    PDF 页级锚点
+                                  </span>
+                                ) : null}
+                                {record.segment_status === 'orphaned' || record.segment_status === 'missing' ? (
                                   <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
                                     失联
                                   </span>
@@ -289,7 +296,7 @@ export function AnnotationLibraryView({
 
                   {selectedRecord ? (
                     <Button
-                      disabled={selectedRecord.segment_status !== 'current' || !selectedRecord.segment}
+                      disabled={!selectedRecord.segment}
                       size="sm"
                       type="button"
                       variant="outline"
@@ -317,7 +324,10 @@ export function AnnotationLibraryView({
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                           <AnnotationTypeBadge label={annotationDisplayLabel(selectedRecord.annotation)} />
                           <ImportanceBadge importance={selectedRecord.annotation.importance} />
-                          {selectedRecord.segment_status !== 'current' ? (
+                          {selectedRecord.segment_status === 'page_anchored' ? (
+                            <Badge variant="secondary">PDF 页级锚点</Badge>
+                          ) : null}
+                          {selectedRecord.segment_status === 'orphaned' || selectedRecord.segment_status === 'missing' ? (
                             <Badge variant="destructive">片段失联</Badge>
                           ) : null}
                         </div>
@@ -464,6 +474,9 @@ function filterAnnotations({
 
 function formatSegmentLabel(record: AnnotationCatalogRecord) {
   if (record.segment) {
+    if (record.segment_status === 'page_anchored') {
+      return `PDF 选区 · ${pageLabel(record.segment.page_idx)}`;
+    }
     return `${segmentTypeLabel(record.segment.segment_type)} · ${pageLabel(record.segment.page_idx)}`;
   }
   return `Segment ${record.annotation.segment_uid.slice(0, 8)}`;

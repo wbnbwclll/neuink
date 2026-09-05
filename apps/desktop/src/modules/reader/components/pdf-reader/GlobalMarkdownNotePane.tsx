@@ -57,7 +57,12 @@ export function GlobalMarkdownNotePane({
   onCreateSourceLinkFromPaste: (sourceEntryId: string, segmentUid: string) => Promise<SourceLink>;
   onNoteImageInserted?: (imageId: string) => void;
   onInsertCopiedSource: () => void;
-  onSaveNote: (title: string, markdown: string) => Promise<NoteDocument>;
+  onSaveNote: (
+    title: string,
+    markdown: string,
+    links: SourceLink[],
+    expectedRevision?: string | null
+  ) => Promise<NoteDocument>;
   onSourceLinkInserted: (link: SourceLink) => void;
   onTogglePinned: () => void;
 }) {

@@ -8,7 +8,8 @@ import {
   runEntryTranslation,
   type EntryTranslation,
   type Job,
-  type JobEvent
+  type JobEvent,
+  type JobScope
 } from '@/shared/ipc/workspaceApi';
 
 export type TranslationRunStrategy = 'restart' | 'resume';
@@ -17,21 +18,12 @@ export type TranslationStartOptions = {
   segmentUids?: string[];
 };
 
-type JobScopeEntry = {
-  entry_id?: string;
-  entryId?: string;
-  root?: string;
-};
-
 function isTranslationJobForEntry(job: Job, workspaceRoot: string, entryId: string) {
   if (job.kind !== 'translation') {
     return false;
   }
-  const scope = (job.scope ?? null) as JobScopeEntry | null;
-  if (!scope) {
-    return false;
-  }
-  return scope.root === workspaceRoot && (scope.entry_id === entryId || scope.entryId === entryId);
+  const scope: JobScope | null = job.scope;
+  return scope?.kind === 'entry' && scope.root === workspaceRoot && scope.entry_id === entryId;
 }
 
 function translationFromPayload(payload: unknown) {
@@ -44,6 +36,30 @@ function translationFromPayload(payload: unknown) {
 
 function isTerminalJobStatus(status: Job['status']) {
   return status === 'succeeded' || status === 'failed' || status === 'canceled';
+}
+
+const RECEIVED_CHARS_PATTERN = /已接收\s*(\d+)\s*字/;
+
+/** Keep the running action stable while retaining the latest stream receipt count. */
+export function normalizeTranslationJobMessage(
+  status: Job['status'],
+  message: string | null | undefined,
+  previous: string | null = null
+) {
+  if (status !== 'processing' && status !== 'queued') {
+    return message ?? null;
+  }
+
+  const received = message?.match(RECEIVED_CHARS_PATTERN)?.[1];
+  if (received) {
+    const previousReceived = previous?.match(RECEIVED_CHARS_PATTERN)?.[1];
+    if (previousReceived && Number(previousReceived) > Number(received)) {
+      return previous;
+    }
+    return `正在翻译 · 已接收 ${received} 字`;
+  }
+
+  return previous?.match(RECEIVED_CHARS_PATTERN) ? previous : '正在翻译';
 }
 
 export function useEntryTranslationTask({
@@ -92,7 +108,7 @@ export function useEntryTranslationTask({
             if (runningJob) {
               activeJobIdRef.current = runningJob.id;
               setActiveJob(runningJob);
-              setTranslationMessage(runningJob.message ?? null);
+              setTranslationMessage(normalizeTranslationJobMessage(runningJob.status, runningJob.message));
             }
             setTranslationBusy(Boolean(runningJob));
           })
@@ -130,7 +146,9 @@ export function useEntryTranslationTask({
 
       activeJobIdRef.current = nextEvent.job.id;
       setActiveJob(nextEvent.job);
-      setTranslationMessage(nextEvent.job.message ?? null);
+      setTranslationMessage((previous) =>
+        normalizeTranslationJobMessage(nextEvent.job.status, nextEvent.job.message, previous)
+      );
 
       const payloadTranslation = translationFromPayload(nextEvent.payload);
       if (payloadTranslation) {
@@ -175,13 +193,7 @@ export function useEntryTranslationTask({
 
       setTranslationBusy(true);
       setTranslationDetail(null);
-      setTranslationMessage(
-        options.segmentUids
-          ? `正在翻译选中的 ${options.segmentUids.length} 个 Block`
-          : strategy === 'resume'
-            ? '继续翻译全文'
-            : '开始翻译全文',
-      );
+      setTranslationMessage('正在翻译');
       try {
         const response = await runEntryTranslation(workspaceRoot, entryId, {
           force: options.force,

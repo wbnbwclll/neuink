@@ -1,4 +1,11 @@
-import { ArrowLeftRight, ChevronDown, PanelRight, X } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, Link2, PanelRight, X } from 'lucide-react';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
 import {
   type PointerEvent as ReactPointerEvent,
   type RefObject,
@@ -18,7 +25,17 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { surfaceKey, type WorkspacePaneId, type WorkspaceSurface, type WorkspaceSurfaceLayout } from './workspaceSurface';
+import {
+  surfaceKey,
+  workspaceSurfaceLabel,
+  type WorkspacePaneId,
+  type WorkspaceSurface,
+  type WorkspaceSurfaceLayout
+} from './workspaceSurface';
+import {
+  resolveWorkspaceSurfacePair,
+  workspaceSurfacePairRelationLabel
+} from './workspaceSurfacePairing';
 
 const TAB_WIDTH = 176;
 const MENU_WIDTH = 34;
@@ -27,7 +44,10 @@ const TAB_STEP = 180;
 type WorkspaceTabsBarProps = {
   entries: Array<{ id: string; title: string }>;
   layout: WorkspaceSurfaceLayout;
+  onAddToAssistantContext?: (surface: WorkspaceSurface) => void;
   onClose: (pane: WorkspacePaneId, surface: WorkspaceSurface) => void;
+  onCloseOthers: (pane: WorkspacePaneId, surface: WorkspaceSurface) => void;
+  onClosePane: (pane: WorkspacePaneId) => void;
   onMove: (surface: WorkspaceSurface, pane: WorkspacePaneId, targetIndex?: number) => void;
   onSelect: (pane: WorkspacePaneId, surface: WorkspaceSurface) => void;
   onSwap: () => void;
@@ -36,7 +56,10 @@ type WorkspaceTabsBarProps = {
 export function WorkspaceTabsBar({
   entries,
   layout,
+  onAddToAssistantContext,
   onClose,
+  onCloseOthers,
+  onClosePane,
   onMove,
   onSelect,
   onSwap
@@ -59,6 +82,11 @@ export function WorkspaceTabsBar({
   const suppressNextTabClickRef = useRef(false);
   const dragActive = pointerDrag?.dragging === true;
   const draggingKey = pointerDrag?.dragging ? surfaceKey(pointerDrag.surface) : null;
+  const pairRelationLabel = layout.right
+    ? workspaceSurfacePairRelationLabel(
+        resolveWorkspaceSurfacePair(layout.left, layout.right).relation
+      )
+    : null;
 
   const startPointerDrag = (surface: WorkspaceSurface, event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.target instanceof Element && event.target.closest('[data-tab-close="true"]')) {
@@ -95,6 +123,13 @@ export function WorkspaceTabsBar({
       if (!visual) return null;
       const centerX = visual.rect.left + offsetX + visual.rect.width / 2;
       const centerY = visual.rect.top + offsetY + visual.rect.height / 2;
+      const splitTarget = document.querySelector<HTMLElement>('[data-workspace-split-drop-target]');
+      if (splitTarget) {
+        const bounds = splitTarget.getBoundingClientRect();
+        if (centerX >= bounds.left && centerX <= bounds.right && centerY >= bounds.top && centerY <= bounds.bottom) {
+          return { index: 0, pane: 'right' as const };
+        }
+      }
       const target = [...document.querySelectorAll<HTMLElement>('[data-workspace-drop-pane]')]
         .reverse()
         .find((paneElement) => {
@@ -156,8 +191,15 @@ export function WorkspaceTabsBar({
         return;
       }
       if (pointerDrag.dragging) {
+        const elementAtPointer = typeof document.elementFromPoint === 'function'
+          ? document.elementFromPoint(event.clientX, event.clientY)
+          : null;
+        const assistantDropZone = elementAtPointer
+          ?.closest<HTMLElement>('[data-assistant-context-dropzone="true"]');
         const target = updateDropTarget(event.clientX - pointerDrag.startX, event.clientY - pointerDrag.startY);
-        if (target) {
+        if (assistantDropZone && isAssistantContextSurface(pointerDrag.surface)) {
+          onAddToAssistantContext?.(pointerDrag.surface);
+        } else if (target) {
           onMove(pointerDrag.surface, target.pane, target.index);
         }
         suppressNextTabClickRef.current = true;
@@ -186,7 +228,7 @@ export function WorkspaceTabsBar({
       window.removeEventListener('blur', cancelPointerDrag);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [layout.leftTabs, layout.rightTabs, onMove, pointerDrag]);
+  }, [layout.leftTabs, layout.rightTabs, onAddToAssistantContext, onMove, pointerDrag]);
 
   const sourcePane = draggingKey
     ? layout.leftTabs.some((surface) => surfaceKey(surface) === draggingKey) ? 'left' : 'right'
@@ -195,7 +237,13 @@ export function WorkspaceTabsBar({
   const sourceIndex = draggingKey ? sourceTabs.findIndex((surface) => surfaceKey(surface) === draggingKey) : -1;
 
   return (
-    <div className={cn('tabsbar workspace-tabsbar', split && 'is-split', dragActive && 'is-tab-dragging')}>
+    <div className={cn(
+      'tabsbar workspace-tabsbar',
+      split && 'is-split',
+      pairRelationLabel && 'has-pair-status',
+      dragActive && 'is-tab-dragging',
+      dragActive && pointerDrag && isAssistantContextSurface(pointerDrag.surface) && 'is-assistant-context-dragging'
+    )}>
       <div className={cn('workspace-tabsbar-panes', split && 'is-split')}>
         <TabPane
           active={layout.left}
@@ -204,6 +252,9 @@ export function WorkspaceTabsBar({
           pane="left"
           tabs={layout.leftTabs}
           onClose={onClose}
+          onCloseOthers={onCloseOthers}
+          onClosePane={onClosePane}
+          onMove={onMove}
           dropIndex={dropTarget?.pane === 'left' ? dropTarget.index : null}
           draggingKey={draggingKey}
           dragSource={{ index: sourceIndex, pane: sourcePane }}
@@ -220,6 +271,9 @@ export function WorkspaceTabsBar({
             pane="right"
             tabs={layout.rightTabs}
             onClose={onClose}
+            onCloseOthers={onCloseOthers}
+            onClosePane={onClosePane}
+            onMove={onMove}
             dropIndex={dropTarget?.pane === 'right' ? dropTarget.index : null}
             draggingKey={draggingKey}
             dragSource={{ index: sourceIndex, pane: sourcePane }}
@@ -231,6 +285,17 @@ export function WorkspaceTabsBar({
       </div>
       {split ? (
         <div className="workspace-tabsbar-actions">
+          {pairRelationLabel ? (
+            <span
+              aria-label={pairRelationLabel}
+              className="workspace-tabsbar-pair-status"
+              role="status"
+              title={pairRelationLabel}
+            >
+              <Link2 size={12} aria-hidden="true" />
+              联动
+            </span>
+          ) : null}
           <Button
             aria-label="交换左右分屏"
             size="icon-xs"
@@ -243,19 +308,18 @@ export function WorkspaceTabsBar({
           </Button>
         </div>
       ) : null}
+      {!split && dragActive ? (
+        <div
+          className={cn('workspace-tabsbar-split-drop-target', dropTarget?.pane === 'right' && 'is-drop-target')}
+          data-workspace-split-drop-target="true"
+        >
+          <PanelRight size={14} aria-hidden="true" />
+          <span>新建右侧分屏</span>
+        </div>
+      ) : null}
       {dragActive && pointerDrag && dragCursor && dragVisualRef.current && typeof document !== 'undefined'
         ? createPortal(
           <div aria-hidden="true" className="workspace-tab-drag-layer">
-            {!split ? (
-              <div
-                className="workspace-tabsbar-side-drop-target workspace-tabsbar-global-drop-target"
-                data-workspace-drop-pane="right"
-                data-workspace-tab-count="0"
-              >
-                <PanelRight size={16} />
-                <span>拖到右侧分屏</span>
-              </div>
-            ) : null}
             <div
               className="workspace-tab-drag-preview"
               style={{
@@ -264,7 +328,7 @@ export function WorkspaceTabsBar({
                 width: dragVisualRef.current.rect.width
               }}
             >
-              <span className="truncate">{surfaceLabel(pointerDrag.surface, entries)}</span>
+              <span className="truncate">{workspaceSurfaceLabel(pointerDrag.surface, entries)}</span>
             </div>
           </div>,
           document.body
@@ -281,6 +345,9 @@ function TabPane({
   pane,
   tabs,
   onClose,
+  onCloseOthers,
+  onClosePane,
+  onMove,
   dropIndex,
   draggingKey,
   dragSource,
@@ -294,6 +361,9 @@ function TabPane({
   pane: WorkspacePaneId;
   tabs: WorkspaceSurface[];
   onClose: (pane: WorkspacePaneId, surface: WorkspaceSurface) => void;
+  onCloseOthers: (pane: WorkspacePaneId, surface: WorkspaceSurface) => void;
+  onClosePane: (pane: WorkspacePaneId) => void;
+  onMove: (surface: WorkspaceSurface, pane: WorkspacePaneId, targetIndex?: number) => void;
   dropIndex: number | null;
   draggingKey: string | null;
   dragSource: { index: number; pane: WorkspacePaneId | null };
@@ -328,6 +398,8 @@ function TabPane({
             target: dragTarget
           });
           return (
+        <ContextMenu key={surfaceKey(surface)}>
+        <ContextMenuTrigger asChild>
         <div
           className={cn(
             'workspace-surface-tab',
@@ -336,7 +408,6 @@ function TabPane({
             dropIndex === index && 'is-drop-target'
           )}
           data-workspace-tab-index={index}
-          key={surfaceKey(surface)}
           style={transform ? { transform } : undefined}
           onPointerDown={(event) => onPointerDragStart(surface, event)}
           onAuxClick={(event) => {
@@ -349,13 +420,13 @@ function TabPane({
           <Tooltip>
             <TooltipTrigger asChild>
               <button type="button" onClick={() => onSelect(pane, surface)}>
-                <span className="truncate">{surfaceLabel(surface, entries)}</span>
+                <span className="truncate">{workspaceSurfaceLabel(surface, entries)}</span>
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>{surfaceLabel(surface, entries)}</TooltipContent>
+            <TooltipContent side="bottom" sideOffset={6}>{workspaceSurfaceLabel(surface, entries)}</TooltipContent>
           </Tooltip>
           <button
-            aria-label={`关闭${surfaceLabel(surface, entries)}`}
+            aria-label={`关闭${workspaceSurfaceLabel(surface, entries)}`}
             data-tab-close="true"
             type="button"
             onClick={() => onClose(pane, surface)}
@@ -363,6 +434,18 @@ function TabPane({
             <X size={13} aria-hidden="true" />
           </button>
         </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem disabled={pane === 'left'} onSelect={() => onMove(surface, 'left')}>移到左侧</ContextMenuItem>
+          <ContextMenuItem disabled={pane === 'right'} onSelect={() => onMove(surface, 'right')}>移到右侧分屏</ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => onClose(pane, surface)}>关闭</ContextMenuItem>
+          <ContextMenuItem onSelect={() => onCloseOthers(pane, surface)}>关闭其他</ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem disabled={pane === 'left'} onSelect={() => onClosePane('left')}>关闭左侧</ContextMenuItem>
+          <ContextMenuItem disabled={pane === 'right'} onSelect={() => onClosePane('right')}>关闭右侧</ContextMenuItem>
+        </ContextMenuContent>
+        </ContextMenu>
           );
         })()
       ))}
@@ -376,7 +459,7 @@ function TabPane({
           <DropdownMenuContent align="end" className="w-72">
             {hidden.map((surface) => (
               <DropdownMenuItem key={surfaceKey(surface)} onSelect={() => onSelect(pane, surface)}>
-                <span className="truncate">{surfaceLabel(surface, entries)}</span>
+                <span className="truncate">{workspaceSurfaceLabel(surface, entries)}</span>
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -384,6 +467,13 @@ function TabPane({
       ) : null}
     </div>
   );
+}
+
+function isAssistantContextSurface(surface: WorkspaceSurface) {
+  return surface.kind === 'entry-overview' ||
+    surface.kind === 'pdf' ||
+    surface.kind === 'reflow' ||
+    surface.kind === 'note';
 }
 
 function tabDragTransform({
@@ -434,21 +524,4 @@ function useElementWidth(ref: RefObject<HTMLDivElement | null>) {
     return () => observer.disconnect();
   }, [ref]);
   return width;
-}
-
-function surfaceLabel(surface: WorkspaceSurface, entries: Array<{ id: string; title: string }>) {
-  const title = 'entryId' in surface ? entries.find((entry) => entry.id === surface.entryId)?.title ?? '条目' : '';
-  switch (surface.kind) {
-    case 'library': return '条目库';
-    case 'settings': return '设置';
-    case 'create-entry': return '新建条目';
-    case 'tag-editor': return '标签管理';
-    case 'entry-overview': return `${title} · 概览`;
-    case 'pdf': return `${title} · PDF`;
-    case 'reflow': return `${title} · 重排版`;
-    case 'note': return `${title} · 笔记`;
-    case 'segment-notes': case 'annotations': return `${title} · 片段记录`;
-    case 'source-links': return `${title} · 来源链接`;
-    case 'entry-trash': return `${title} · 回收站`;
-  }
 }

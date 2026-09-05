@@ -4,13 +4,13 @@ export type WorkspaceSurface =
   | { kind: 'library' }
   | { kind: 'settings' }
   | { kind: 'create-entry' }
+  | { kind: 'mineru-client-guide' }
   | { kind: 'tag-editor' }
   | { kind: 'entry-overview'; entryId: string }
   | { kind: 'pdf'; entryId: string }
   | { kind: 'reflow'; entryId: string }
   | { kind: 'note'; entryId: string; noteId: string }
   | { kind: 'segment-notes'; entryId: string; segmentUid?: string; mode?: 'note' | 'annotation' }
-  | { kind: 'annotations'; entryId: string; segmentUid?: string }
   | { kind: 'source-links'; entryId: string }
   | { kind: 'entry-trash'; entryId: string };
 
@@ -35,8 +35,11 @@ export type WorkspaceSurfaceAction =
   | { type: 'focus'; pane: WorkspacePaneId }
   | { type: 'open'; pane?: WorkspacePaneId; surface: WorkspaceSurface }
   | { type: 'close'; pane: WorkspacePaneId; key: string }
+  | { type: 'closeOthers'; pane: WorkspacePaneId; key: string }
+  | { type: 'closePane'; pane: WorkspacePaneId }
   | { type: 'move'; key: string; pane: WorkspacePaneId; targetIndex?: number }
   | { type: 'removeEntry'; entryId: string }
+  | { type: 'removeNote'; entryId: string; noteId: string }
   | { type: 'closeRight' }
   | { type: 'swap' };
 
@@ -162,6 +165,41 @@ export function workspaceSurfaceReducer(
         rightTabs
       };
     }
+    case 'closeOthers': {
+      const tabs = action.pane === 'left' ? state.leftTabs : state.rightTabs;
+      const surface = tabs.find((tab) => surfaceKey(tab) === action.key);
+      if (!surface) return state;
+      return action.pane === 'left'
+        ? { ...state, focusedPane: 'left', left: surface, leftTabs: [surface] }
+        : { ...state, focusedPane: 'right', right: surface, rightTabs: [surface] };
+    }
+    case 'closePane':
+      return action.pane === 'right'
+        ? { ...state, focusedPane: 'left', right: null, rightTabs: [] }
+        : { ...state, focusedPane: 'left', left: { kind: 'library' }, leftTabs: [{ kind: 'library' }] };
+    case 'removeNote': {
+      const isDeletedNote = (surface: WorkspaceSurface) =>
+        surface.kind === 'note' && surface.entryId === action.entryId && surface.noteId === action.noteId;
+      const remainingLeftTabs = state.leftTabs.filter((surface) => !isDeletedNote(surface));
+      const leftTabs = remainingLeftTabs.length > 0
+        ? remainingLeftTabs
+        : [{ kind: 'library' } as WorkspaceSurface];
+      const left = isDeletedNote(state.left) ? leftTabs[leftTabs.length - 1] : state.left;
+      const rightTabs = state.rightTabs.filter((surface) => !isDeletedNote(surface));
+      const right = rightTabs.length === 0
+        ? null
+        : state.right && !isDeletedNote(state.right)
+          ? state.right
+          : rightTabs[rightTabs.length - 1];
+      return {
+        ...state,
+        focusedPane: state.focusedPane === 'right' && !right ? 'left' : state.focusedPane,
+        left,
+        leftTabs,
+        right,
+        rightTabs
+      };
+    }
     case 'closeRight':
       return { ...state, focusedPane: 'left', right: null, rightTabs: [] };
     case 'swap':
@@ -195,8 +233,8 @@ function insertSurface(tabs: WorkspaceSurface[], surface: WorkspaceSurface, inde
 export function surfaceKey(surface: WorkspaceSurface) {
   switch (surface.kind) {
     case 'note': return `note:${surface.entryId}:${surface.noteId}`;
-    case 'segment-notes': case 'annotations': return `segment-records:${surface.entryId}`;
-    case 'library': case 'settings': case 'create-entry': case 'tag-editor': return surface.kind;
+    case 'segment-notes': return `segment-records:${surface.entryId}`;
+    case 'library': case 'settings': case 'create-entry': case 'mineru-client-guide': case 'tag-editor': return surface.kind;
     default: return `${surface.kind}:${surface.entryId}`;
   }
 }
@@ -206,7 +244,6 @@ export function entryContentSurface(entryId: string, contentId: string): Workspa
   if (contentId === 'reflow') return { kind: 'reflow', entryId };
   if (contentId === 'overview') return { kind: 'entry-overview', entryId };
   if (contentId === 'segment-notes') return { kind: 'segment-notes', entryId };
-  if (contentId === 'annotations') return { kind: 'annotations', entryId };
   if (contentId === 'source-links') return { kind: 'source-links', entryId };
   if (contentId === 'entry-trash') return { kind: 'entry-trash', entryId };
   if (contentId.startsWith('note:')) return { kind: 'note', entryId, noteId: contentId.slice(5) };
@@ -219,10 +256,32 @@ export function entryContentId(surface: WorkspaceSurface) {
     case 'reflow': return 'reflow';
     case 'entry-overview': return 'overview';
     case 'segment-notes': return 'segment-notes';
-    case 'annotations': return 'annotations';
     case 'source-links': return 'source-links';
     case 'entry-trash': return 'entry-trash';
     case 'note': return `note:${surface.noteId}`;
     default: return null;
+  }
+}
+
+export function workspaceSurfaceLabel(
+  surface: WorkspaceSurface,
+  entries: Array<{ id: string; title: string }>
+) {
+  const title = 'entryId' in surface
+    ? entries.find((entry) => entry.id === surface.entryId)?.title ?? '条目'
+    : '';
+  switch (surface.kind) {
+    case 'library': return '条目库';
+    case 'settings': return '设置';
+    case 'create-entry': return '新建条目';
+    case 'mineru-client-guide': return 'MinerU 客户端教程';
+    case 'tag-editor': return '标签管理';
+    case 'entry-overview': return `${title} · 概览`;
+    case 'pdf': return `${title} · PDF`;
+    case 'reflow': return `${title} · 重排视图`;
+    case 'note': return `${title} · 笔记`;
+    case 'segment-notes': return `${title} · 片段记录`;
+    case 'source-links': return `${title} · 来源链接`;
+    case 'entry-trash': return `${title} · 回收站`;
   }
 }

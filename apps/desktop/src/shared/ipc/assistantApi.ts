@@ -15,6 +15,14 @@ import type {
 import type { AgentRuntimeSettings, SkillPackage } from '../types/agentRuntime';
 import type { SearchMode, SearchResults } from './workspaceApi';
 
+export type LlmApiProtocol = 'openai_compatible' | 'anthropic' | 'google';
+
+export function resolveLlmApiProtocol(
+  protocol: LlmApiProtocol | null | undefined
+): LlmApiProtocol {
+  return protocol ?? 'openai_compatible';
+}
+
 export type LlmSettings = {
   base_url: string;
   model: string;
@@ -24,6 +32,7 @@ export type LlmSettings = {
   temperature: number | null;
   top_p: number | null;
   max_output_tokens: number | null;
+  api_protocol: LlmApiProtocol;
 };
 
 export type LlmProfile = {
@@ -36,6 +45,7 @@ export type LlmProfile = {
   temperature: number | null;
   top_p: number | null;
   max_output_tokens: number | null;
+  api_protocol: LlmApiProtocol;
 };
 
 export type LlmSettingsState = {
@@ -70,13 +80,72 @@ export type ScopeSnapshot = {
   entry_titles: string[];
 };
 
-export type ConversationSourceLink = {
+export type LocalConversationSourceLink = {
+  provider?: 'local';
   entry_id: EntryId;
   entry_title: string;
   segment_uid: string;
   page_idx: number;
   quote: string;
 };
+
+export type SciverseConversationSourceLink = {
+  provider: 'sciverse';
+  doc_id: string;
+  chunk_id?: string | null;
+  title: string;
+  quote: string;
+  offset?: number | null;
+  page_no?: number | null;
+  score?: number | null;
+  abstract?: string | null;
+  authors?: string[];
+  publication_year?: number | null;
+  venue?: string | null;
+  citation_count?: number | null;
+  primary_topic?: string | null;
+  doi?: string | null;
+  access_is_oa?: boolean | null;
+  access_oa_url?: string | null;
+  access_license?: string | null;
+  source_type?: string | null;
+  resource_file_name?: string | null;
+};
+
+export type SciverseLibraryImportResult = {
+  entryId: string;
+  message: string;
+  pdfPath?: string;
+  remoteContentNoteTitle?: string;
+  resourceAttempts?: string[];
+  status:
+    | 'already_exists'
+    | 'created_metadata_only'
+    | 'created_with_pdf'
+    | 'created_with_remote_content';
+};
+
+export type ConversationSourceLink =
+  | LocalConversationSourceLink
+  | SciverseConversationSourceLink;
+
+export function isSciverseConversationSource(
+  source: ConversationSourceLink
+): source is SciverseConversationSourceLink {
+  return source.provider === 'sciverse';
+}
+
+export function isLocalConversationSource(
+  source: ConversationSourceLink
+): source is LocalConversationSourceLink {
+  return !isSciverseConversationSource(source);
+}
+
+export function conversationSourceKey(source: ConversationSourceLink) {
+  return isSciverseConversationSource(source)
+    ? `sciverse:${source.doc_id}:${source.chunk_id ?? ''}:${source.offset ?? ''}`
+    : `local:${source.entry_id}:${source.segment_uid}`;
+}
 
 export type ConversationRole = 'user' | 'assistant';
 
@@ -91,6 +160,8 @@ export type AssistantToolTraceEvent = {
 };
 
 export type AssistantConversationMemory = {
+  decisions: string[];
+  entities: string[];
   last_user_goal: string | null;
   message_count: number;
   open_items: string[];
@@ -98,10 +169,12 @@ export type AssistantConversationMemory = {
   source_count: number;
   summary: string;
   updated_at: string;
+  user_preferences: string[];
 };
 
 export type AssistantMessagePart =
   | { type: 'text'; markdown: string }
+  | { type: 'reasoning'; text: string }
   | { type: 'context'; items: AssistantContextItem[] }
   | {
       composer?: AssistantComposerSnapshot | null;
@@ -300,6 +373,7 @@ export async function getLlmSettings(): Promise<LlmSettingsState> {
 
 export async function saveLlmSettings(settings: {
   apiKey?: string;
+  apiProtocol?: LlmApiProtocol;
   baseUrl: string;
   maxContextLength?: number;
   maxOutputTokens?: number;
@@ -319,7 +393,8 @@ export async function saveLlmSettings(settings: {
       max_context_length: settings.maxContextLength ?? null,
       temperature: settings.temperature ?? null,
       top_p: settings.topP ?? null,
-      max_output_tokens: settings.maxOutputTokens ?? null
+      max_output_tokens: settings.maxOutputTokens ?? null,
+      api_protocol: resolveLlmApiProtocol(settings.apiProtocol)
     }
   });
   publishLlmSettings(nextSettings);

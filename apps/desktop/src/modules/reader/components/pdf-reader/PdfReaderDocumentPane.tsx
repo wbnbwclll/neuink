@@ -1,9 +1,10 @@
-import { Loader2 } from 'lucide-react';
+import { ExternalLink, FolderOpen, Loader2, RotateCcw } from 'lucide-react';
 import type {
   MouseEvent as ReactMouseEvent,
   RefObject,
   WheelEvent as ReactWheelEvent
 } from 'react';
+import { useEffect } from 'react';
 
 import type {
   Annotation,
@@ -14,19 +15,25 @@ import type {
 } from '@/shared/types/domain';
 import type { TranslatedSegment } from '@/shared/ipc/workspaceApi';
 import type { TranslationStatus } from '@/shared/ipc/workspaceApi';
+import type { PdfHoverPreviewFontSize, PdfHoverPreviewSize } from '@/shared/lib/readerPreferences';
+import { Button } from '@/components/ui/button';
 
 import type { LibraryEntry } from '../../../library/components/LibrarySidebar';
 import type { SourceBacklink, SourceBacklinksBySegmentUid } from '../../types';
 import { PdfSourcePage } from './PdfSourcePage';
 import { ReaderMessage } from './ReaderMessage';
 import type { PdfLoadState } from './usePdfDocument';
-import type { PdfBytesLoadState } from './usePdfBytes';
+import type { RetryablePdfBytesLoadState } from './usePdfBytes';
 import type { PageSegments } from './types';
 import { useVisiblePdfPages } from './useVisiblePdfPages';
+import { PDF_SPREAD_GAP } from './readerConstants';
+import { centeredPdfScrollLeft } from './pdfViewportLayout';
 
 export function PdfReaderDocumentPane({
+  activeAnnotationId,
   autoTranslateTextSelection = false,
   entry,
+  activeSearchPageIdx,
   flashSegmentUid,
   hoveredSegmentUid,
   annotationsBySegmentUid,
@@ -34,14 +41,19 @@ export function PdfReaderDocumentPane({
   pageWidth,
   leftInset = 0,
   hoverPreviewEnabled,
+  hoverPreviewFontSize,
+  hoverPreviewSize,
   hoverPreviewShowRegion,
   hoverPreviewShowOriginal,
   hoverPreviewShowNote,
   hoverPreviewShowAnnotation,
   hoverPreviewShowTranslation,
-  pages,
+  rows,
+  searchMatchCountsByPage,
+  searchQuery,
   pdfAvailable,
   pdfBytesState,
+  bindPdfScrollElement,
   pdfScrollRef,
   pdfState,
   showRegions,
@@ -54,6 +66,8 @@ export function PdfReaderDocumentPane({
   translationVisible,
   workspaceRoot,
   onCtrlWheelZoom,
+  onOpenPdf,
+  onRevealPdf,
   onAddSourceLink,
   onCopyContent,
   onCopySourceLink,
@@ -67,10 +81,14 @@ export function PdfReaderDocumentPane({
   onCloseSegmentOverlay,
   onCreateTextSelectionAnnotation,
   onTranslateTextSelection,
-  onToggleSegment
+  onToggleSegment,
+  onVisiblePageIndexesChange,
+  altClickOpensNote = false
 }: {
+  activeAnnotationId?: string | null;
   autoTranslateTextSelection?: boolean;
   entry: LibraryEntry;
+  activeSearchPageIdx?: number | null;
   flashSegmentUid: string | null;
   hoveredSegmentUid: string | null;
   annotationsBySegmentUid: Map<string, Annotation[]>;
@@ -78,14 +96,19 @@ export function PdfReaderDocumentPane({
   pageWidth: number;
   leftInset?: number;
   hoverPreviewEnabled: boolean;
+  hoverPreviewFontSize: PdfHoverPreviewFontSize;
+  hoverPreviewSize: PdfHoverPreviewSize;
   hoverPreviewShowRegion: boolean;
   hoverPreviewShowOriginal: boolean;
   hoverPreviewShowNote: boolean;
   hoverPreviewShowAnnotation: boolean;
   hoverPreviewShowTranslation: boolean;
-  pages: PageSegments[];
+  rows: PageSegments[][];
+  searchMatchCountsByPage?: Map<number, number>;
+  searchQuery?: string;
   pdfAvailable: boolean;
-  pdfBytesState: PdfBytesLoadState;
+  pdfBytesState: RetryablePdfBytesLoadState;
+  bindPdfScrollElement: (element: HTMLDivElement | null) => void;
   pdfScrollRef: RefObject<HTMLDivElement>;
   pdfState: PdfLoadState;
   showRegions: boolean;
@@ -103,6 +126,8 @@ export function PdfReaderDocumentPane({
     container: HTMLDivElement;
     direction: 1 | -1;
   }) => void;
+  onOpenPdf?: () => void;
+  onRevealPdf?: () => void;
   onAddSourceLink?: (segment: SourceSegment) => void;
   onCopyContent?: (segment: SourceSegment) => void;
   onCopySourceLink?: (segment: SourceSegment) => void;
@@ -122,11 +147,32 @@ export function PdfReaderDocumentPane({
   }) => Promise<void> | void;
   onTranslateTextSelection?: (input: { segment: SourceSegment; text: string }) => Promise<string>;
   onToggleSegment: (segment: SourceSegment) => void;
+  onVisiblePageIndexesChange?: (pageIndexes: number[]) => void;
+  altClickOpensNote?: boolean;
 }) {
+  const pageCount = rows.reduce((sum, row) => sum + row.length, 0);
   const { renderPageIndexes, visiblePageIndexes } = useVisiblePdfPages({
-    pageCount: pages.length,
+    pageCount,
     scrollRef: pdfScrollRef
   });
+  useEffect(() => {
+    onVisiblePageIndexesChange?.([...visiblePageIndexes].sort((left, right) => left - right));
+  }, [onVisiblePageIndexesChange, visiblePageIndexes]);
+  useEffect(() => {
+    const element = pdfScrollRef.current;
+    if (!element) return undefined;
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      const nextScrollLeft = centeredPdfScrollLeft(
+        element.scrollWidth,
+        element.clientWidth
+      );
+      if (element.scrollLeft !== nextScrollLeft) {
+        element.scrollLeft = nextScrollLeft;
+      }
+    });
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [pageWidth, pdfScrollRef]);
   const handleWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     if (!event.ctrlKey || event.deltaY === 0) {
       return;
@@ -155,68 +201,84 @@ export function PdfReaderDocumentPane({
 
   return (
     <div
-      ref={pdfScrollRef}
-      className="h-full min-h-0 min-w-0 overflow-auto px-3 py-2"
+      ref={bindPdfScrollElement}
+      className="pdf-document-scroll h-full w-full min-h-0 min-w-0 max-w-full overflow-auto px-3 py-2"
       onClick={handleClick}
       onWheel={handleWheel}
     >
       {pdfState.status === 'ready' ? (
         <div
-          className="grid justify-items-center gap-3"
           style={{
             marginLeft: leftInset,
-            minWidth: `calc(100% - ${leftInset}px)`
+            width: `calc(100% - ${leftInset}px)`
           }}
         >
-          {pages.map((page) => {
-            const renderEnabled = renderPageIndexes.has(page.pageIdx);
-            const visible = visiblePageIndexes.has(page.pageIdx);
-            return (
-              <PdfSourcePage
-                autoTranslateTextSelection={autoTranslateTextSelection}
-                annotationsBySegmentUid={annotationsBySegmentUid}
-                flashSegmentUid={flashSegmentUid}
-                hoveredSegmentUid={hoveredSegmentUid}
-                hoverPreviewEnabled={hoverPreviewEnabled}
-                hoverPreviewShowRegion={hoverPreviewShowRegion}
-                hoverPreviewShowOriginal={hoverPreviewShowOriginal}
-                hoverPreviewShowNote={hoverPreviewShowNote}
-                hoverPreviewShowAnnotation={hoverPreviewShowAnnotation}
-                hoverPreviewShowTranslation={hoverPreviewShowTranslation}
-                key={page.pageIdx}
-                notesBySegmentUid={notesBySegmentUid}
-                page={page}
-                pageWidth={pageWidth}
-                pdfDocument={pdfState.document}
-                renderPriority={visible ? 'visible' : 'preload'}
-                renderEnabled={renderEnabled}
-                showRegions={showRegions}
-                sourceEntryId={entry.id}
-                sourceBacklinksBySegmentUid={sourceBacklinksBySegmentUid}
-                sourceLinkHint={sourceLinkHint}
-                suppressRegions={suppressRegions || !visible}
-                translationBySegmentUid={translationBySegmentUid}
-                translationStatus={translationStatus}
-                translationMode={translationMode}
-                translationVisible={translationVisible}
-                workspaceRoot={workspaceRoot}
-                onAddSourceLink={onAddSourceLink}
-                onCopyContent={onCopyContent}
-                onCopySourceLink={onCopySourceLink}
-                onInsertSegmentImage={onInsertSegmentImage}
-                onTranslateSegment={onTranslateSegment}
-                onOpenSegmentAnnotation={onOpenSegmentAnnotation}
-                onOpenSegmentNote={onOpenSegmentNote}
-                onOpenSegmentWorkspace={onOpenSegmentWorkspace}
-                onOpenSourceBacklink={onOpenSourceBacklink}
-                onAddAssistantContext={onAddAssistantContext}
-                onCloseSegmentOverlay={onCloseSegmentOverlay}
-                onCreateTextSelectionAnnotation={onCreateTextSelectionAnnotation}
-                onTranslateTextSelection={onTranslateTextSelection}
-                onToggleSegment={onToggleSegment}
-              />
-            );
-          })}
+          {rows.map((row) => (
+            <div
+              key={row[0].pageIdx}
+              className="flex w-max min-w-full justify-center"
+              style={{ gap: PDF_SPREAD_GAP }}
+            >
+              {row.map((page) => {
+                const renderEnabled = renderPageIndexes.has(page.pageIdx);
+                const visible = visiblePageIndexes.has(page.pageIdx);
+                return (
+                  <PdfSourcePage
+                    activeAnnotationId={activeAnnotationId}
+                    searchActive={activeSearchPageIdx === page.pageIdx}
+                    searchMatchCount={searchMatchCountsByPage?.get(page.pageIdx) ?? 0}
+                    searchQuery={searchQuery}
+                    autoTranslateTextSelection={autoTranslateTextSelection}
+                    annotationsBySegmentUid={annotationsBySegmentUid}
+                    flashSegmentUid={flashSegmentUid}
+                    hoveredSegmentUid={hoveredSegmentUid}
+                    hoverPreviewEnabled={hoverPreviewEnabled}
+                    hoverPreviewFontSize={hoverPreviewFontSize}
+                    hoverPreviewSize={hoverPreviewSize}
+                    hoverPreviewShowRegion={hoverPreviewShowRegion}
+                    hoverPreviewShowOriginal={hoverPreviewShowOriginal}
+                    hoverPreviewShowNote={hoverPreviewShowNote}
+                    hoverPreviewShowAnnotation={hoverPreviewShowAnnotation}
+                    hoverPreviewShowTranslation={hoverPreviewShowTranslation}
+                    key={page.pageIdx}
+                    notesBySegmentUid={notesBySegmentUid}
+                    page={page}
+                    pageWidth={pageWidth}
+                    pdfDocument={pdfState.document}
+                    renderPriority={visible ? 'visible' : 'preload'}
+                    renderEnabled={renderEnabled}
+                    showRegions={showRegions}
+                    sourceEntryId={entry.id}
+                    sourceBacklinksBySegmentUid={sourceBacklinksBySegmentUid}
+                    sourceLinkHint={sourceLinkHint}
+                    // A page in the render window must remain interactive even
+                    // while IntersectionObserver catches up after a smooth scroll.
+                    suppressRegions={suppressRegions || !renderEnabled}
+                    translationBySegmentUid={translationBySegmentUid}
+                    translationStatus={translationStatus}
+                    translationMode={translationMode}
+                    translationVisible={translationVisible}
+                    workspaceRoot={workspaceRoot}
+                    onAddSourceLink={onAddSourceLink}
+                    onCopyContent={onCopyContent}
+                    onCopySourceLink={onCopySourceLink}
+                    onInsertSegmentImage={onInsertSegmentImage}
+                    onTranslateSegment={onTranslateSegment}
+                    onOpenSegmentAnnotation={onOpenSegmentAnnotation}
+                    onOpenSegmentNote={onOpenSegmentNote}
+                    onOpenSegmentWorkspace={onOpenSegmentWorkspace}
+                    onOpenSourceBacklink={onOpenSourceBacklink}
+                    onAddAssistantContext={onAddAssistantContext}
+                    onCloseSegmentOverlay={onCloseSegmentOverlay}
+                    onCreateTextSelectionAnnotation={onCreateTextSelectionAnnotation}
+                    onTranslateTextSelection={onTranslateTextSelection}
+                    onToggleSegment={onToggleSegment}
+                    altClickOpensNote={altClickOpensNote}
+                  />
+                );
+              })}
+            </div>
+          ))}
         </div>
       ) : pdfBytesState.status === 'loading' || pdfState.status === 'loading' ? (
         <ReaderMessage
@@ -235,12 +297,26 @@ export function PdfReaderDocumentPane({
           title="PDF 读取失败"
           description={pdfBytesState.error}
           tone="danger"
+          action={
+            <PdfRecoveryActions
+              onOpenPdf={onOpenPdf}
+              onRetry={pdfBytesState.retry}
+              onRevealPdf={onRevealPdf}
+            />
+          }
         />
       ) : pdfState.status === 'error' ? (
         <ReaderMessage
           title="PDF 渲染失败"
           description={pdfState.error}
           tone="danger"
+          action={
+            <PdfRecoveryActions
+              onOpenPdf={onOpenPdf}
+              onRetry={pdfBytesState.retry}
+              onRevealPdf={onRevealPdf}
+            />
+          }
         />
       ) : (
         <ReaderMessage
@@ -251,6 +327,38 @@ export function PdfReaderDocumentPane({
     </div>
   );
 }
+
+export function PdfRecoveryActions({
+  onOpenPdf,
+  onRetry,
+  onRevealPdf
+}: {
+  onOpenPdf?: () => void;
+  onRetry: () => void;
+  onRevealPdf?: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap justify-center gap-2">
+      <Button size="sm" type="button" variant="outline" onClick={onRetry}>
+        <RotateCcw size={14} aria-hidden="true" />
+        重新加载
+      </Button>
+      {onOpenPdf ? (
+        <Button size="sm" type="button" variant="outline" onClick={onOpenPdf}>
+          <ExternalLink size={14} aria-hidden="true" />
+          系统打开
+        </Button>
+      ) : null}
+      {onRevealPdf ? (
+        <Button size="sm" type="button" variant="outline" onClick={onRevealPdf}>
+          <FolderOpen size={14} aria-hidden="true" />
+          显示文件
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 
 function hasActiveTextSelection() {
   const selection = window.getSelection();

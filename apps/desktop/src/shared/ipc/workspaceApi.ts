@@ -7,11 +7,13 @@ import type {
   AnnotationImportance,
   AnnotationTextSelection,
   EntryMeta,
+  EntryReadingState,
   NoteDocument,
   NoteId,
   SegmentBlockNote,
   SourceLink,
   SourceSegment,
+  ReadingStateUpdate,
   TrashItem,
   TagId,
   TagMeta
@@ -251,6 +253,31 @@ export async function listTrashedEntries(root: string): Promise<EntryMeta[]> {
   });
 }
 
+export async function listReadingStates(root: string): Promise<EntryReadingState[]> {
+  return invoke<EntryReadingState[]>('list_reading_states', {
+    request: { root }
+  });
+}
+
+export async function readReadingState(
+  root: string,
+  entryId: EntryId
+): Promise<EntryReadingState> {
+  return invoke<EntryReadingState>('read_reading_state', {
+    request: { root, entry_id: entryId }
+  });
+}
+
+export async function updateReadingState(
+  root: string,
+  entryId: EntryId,
+  update: ReadingStateUpdate
+): Promise<EntryReadingState> {
+  return invoke<EntryReadingState>('update_reading_state', {
+    request: { root, entry_id: entryId, ...update }
+  });
+}
+
 export async function updateEntryMeta(
   root: string,
   entryId: EntryId,
@@ -312,6 +339,23 @@ export async function deleteEntry(root: string, entryId: EntryId): Promise<void>
   });
 }
 
+export type EntryDeletionImpact = {
+  has_pdf: boolean;
+  parsed_block_count: number;
+  note_count: number;
+  annotation_count: number;
+  incoming_source_link_count: number;
+};
+
+export async function getEntryDeletionImpact(
+  root: string,
+  entryId: EntryId
+): Promise<EntryDeletionImpact> {
+  return invoke<EntryDeletionImpact>('get_entry_deletion_impact', {
+    request: { root, entry_id: entryId }
+  });
+}
+
 export async function restoreEntry(root: string, entryId: EntryId): Promise<EntryMeta> {
   return invoke<EntryMeta>('restore_entry', {
     request: {
@@ -365,7 +409,9 @@ export async function updateNote(
   entryId: EntryId,
   noteId: NoteId,
   title: string,
-  markdown: string
+  markdown: string,
+  links?: SourceLink[] | null,
+  expectedRevision?: string | null
 ): Promise<NoteDocument> {
   return invoke<NoteDocument>('update_note', {
     request: {
@@ -373,7 +419,9 @@ export async function updateNote(
       entry_id: entryId,
       note_id: noteId,
       title,
-      markdown
+      markdown,
+      links: links ?? null,
+      expected_revision: expectedRevision ?? null
     }
   });
 }
@@ -637,7 +685,7 @@ export type AnnotationCatalogRecord = {
   entry_tag_ids: TagId[];
   entry_title: string;
   segment: AnnotationCatalogSegment | null;
-  segment_status: 'current' | 'orphaned' | 'missing';
+  segment_status: 'current' | 'page_anchored' | 'orphaned' | 'missing';
 };
 
 export type TranslationStatus = 'idle' | 'running' | 'succeeded' | 'failed' | 'partial';
@@ -704,6 +752,12 @@ export type JobKind =
 
 export type JobStatus = 'queued' | 'processing' | 'succeeded' | 'failed' | 'canceled';
 
+// Rust 侧 JobScope 用内部标签 + 扁平字段序列化：
+// {"kind":"entry","root":...,"entry_id":...} / {"kind":"workspace","root":...}
+export type JobScope =
+  | { kind: 'entry'; root: string; entry_id: string }
+  | { kind: 'workspace'; root: string };
+
 export type JobProgress = {
   current: number;
   total: number;
@@ -717,7 +771,7 @@ export type Job = {
   kind: JobKind;
   message: string | null;
   progress: JobProgress;
-  scope: unknown | null;
+  scope: JobScope | null;
   status: JobStatus;
   updated_at: string;
 };
@@ -763,6 +817,24 @@ export async function queuePdfParse(
       entry_id: entryId,
       pdf_path: pdfPath
     }
+  });
+}
+
+export async function importMineruClientResult(
+  root: string,
+  entryId: EntryId,
+  zipPath: string
+): Promise<ImportAndParsePdfResponse> {
+  return invoke<ImportAndParsePdfResponse>('import_mineru_client_result', {
+    request: { root, entry_id: entryId, zip_path: zipPath }
+  });
+}
+
+export async function createFromMineruClientResult(
+  root: string, title: string, fields: Record<string, string>, tags: string[], zipPath: string
+): Promise<ImportAndParsePdfResponse> {
+  return invoke<ImportAndParsePdfResponse>('create_from_mineru_client_result', {
+    request: { root, title, fields, tags, zip_path: zipPath }
   });
 }
 
@@ -825,6 +897,22 @@ export async function readPdfReader(root: string, entryId: EntryId): Promise<Pdf
 
 export async function readPdfBytes(pdfPath: string): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>('read_pdf_bytes', {
+    request: {
+      pdf_path: pdfPath
+    }
+  });
+}
+
+export async function openPdfFile(pdfPath: string): Promise<void> {
+  return invoke<void>('open_pdf_file', {
+    request: {
+      pdf_path: pdfPath
+    }
+  });
+}
+
+export async function revealPdfFile(pdfPath: string): Promise<void> {
+  return invoke<void>('reveal_pdf_file', {
     request: {
       pdf_path: pdfPath
     }

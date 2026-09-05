@@ -11,8 +11,6 @@ pub enum ParserError {
     InvalidResponse(String),
     #[error("parser endpoint returned non-JSON response for {url}: content-type {content_type}")]
     NonJsonResponse { url: String, content_type: String },
-    #[error("parser configuration is invalid: {0}")]
-    InvalidConfig(String),
     #[error("parser endpoint returned HTTP {status} for {url}{body}")]
     HttpStatus {
         status: StatusCode,

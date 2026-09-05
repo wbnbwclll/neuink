@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { analyzeEntryTags, type TagRecommendation } from "@/shared/ipc/assistantApi";
+import {
+  analyzeEntryTags,
+  getLlmSettings,
+  subscribeLlmSettings,
+  type TagRecommendation,
+} from "@/shared/ipc/assistantApi";
 import { useToast } from "@/shared/hooks/useToast";
 import type { SourceSegment } from "@/shared/types/domain";
 
@@ -19,6 +24,7 @@ type UseEntryTagSuggestionsOptions = {
   ) => Promise<unknown> | unknown;
   segments: SourceSegment[];
   workspaceRoot: string | null;
+  autoRun?: boolean;
 };
 
 export function useEntryTagSuggestions({
@@ -26,11 +32,15 @@ export function useEntryTagSuggestions({
   onApplyEntryTagPaths,
   segments,
   workspaceRoot,
+  autoRun = true,
 }: UseEntryTagSuggestionsOptions) {
   const { notify } = useToast();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [recommendations, setRecommendations] = useState<TagRecommendation[]>([]);
+  const [assistantProfileId, setAssistantProfileId] = useState<
+    string | null | undefined
+  >(undefined);
   const [dismissedKey, setDismissedKey] = useState<string | null>(() =>
     readDismissedTagSuggestionKey(),
   );
@@ -50,18 +60,39 @@ export function useEntryTagSuggestions({
   const accepted = acceptedEntryKeys.has(entryKey);
 
   useEffect(() => {
+    let cancelled = false;
+    const applySettings = (settings: Awaited<ReturnType<typeof getLlmSettings>>) => {
+      if (!cancelled) {
+        setAssistantProfileId(settings.assistant_profile_id);
+      }
+    };
+    const unsubscribe = subscribeLlmSettings(applySettings);
+    void getLlmSettings().then(applySettings).catch(() => {
+      if (!cancelled) {
+        setAssistantProfileId(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
     setSelectedPaths(new Set(recommendations.map((tag) => tag.path)));
   }, [recommendations]);
 
   useEffect(() => {
     setRecommendations([]);
-    if (
+    if (!autoRun ||
+      (
       entry.status !== "Parsed" ||
       !workspaceRoot ||
       segments.length === 0 ||
+      !assistantProfileId ||
       accepted ||
       dismissedKey === suggestionKey
-    ) {
+      )) {
       return;
     }
 
@@ -96,6 +127,7 @@ export function useEntryTagSuggestions({
     };
   }, [
     accepted,
+    assistantProfileId,
     dismissedKey,
     entry.id,
     entry.status,
@@ -103,7 +135,22 @@ export function useEntryTagSuggestions({
     segments.length,
     suggestionKey,
     workspaceRoot,
+    autoRun,
   ]);
+
+  const generate = async (segmentOverride?: SourceSegment[]) => {
+    const availableSegments = segmentOverride ?? segments;
+    if (busy || !workspaceRoot || !assistantProfileId || availableSegments.length === 0) return;
+    setBusy(true);
+    try {
+      const response = await analyzeEntryTags({ entryId: entry.id, instruction: 'Suggest useful tags for this paper.', root: workspaceRoot });
+      setRecommendations(response.recommendations);
+    } catch (caught) {
+      notify({ tone: 'danger', title: '标签分析失败', description: caught instanceof Error ? caught.message : String(caught) });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const toggleRecommendation = (tag: TagRecommendation) => {
     setSelectedPaths((current) => {
@@ -161,6 +208,7 @@ export function useEntryTagSuggestions({
   return {
     apply,
     busy,
+    generate,
     dismiss,
     open,
     recommendations: accepted || dismissedKey === suggestionKey ? [] : recommendations,

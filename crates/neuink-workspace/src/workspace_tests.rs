@@ -1,11 +1,12 @@
 use std::{
     fs,
+    sync::{Arc, Barrier},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::json;
 
-use super::Workspace;
+use super::{Workspace, WorkspaceError};
 
 #[test]
 fn creates_and_lists_entries() {
@@ -149,9 +150,239 @@ fn updates_note_title_and_markdown() {
 
     assert_eq!(note.title, "Renamed note");
     assert!(note.markdown.contains("## Claim"));
+    assert_eq!(note.revision.len(), 64);
     let entry = workspace.read_entry(&entry.id).unwrap();
     let neuink_domain::ContentItem::Note { title, .. } = &entry.contents[0];
     assert_eq!(title, "Renamed note");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rejects_stale_note_revision_without_overwriting_newer_content() {
+    let root = std::env::temp_dir().join(format!("neuink_workspace_{}", unique_suffix()));
+    let workspace = Workspace::create(&root).unwrap();
+    let entry = workspace.create_entry("A paper").unwrap();
+    let updated = workspace.create_note(&entry.id, "Reading note").unwrap();
+    let neuink_domain::ContentItem::Note { note_id, .. } = &updated.contents[0];
+    let opened = workspace.read_note(&entry.id, note_id).unwrap();
+
+    let newer = workspace
+        .update_note_if_revision(
+            &entry.id,
+            note_id,
+            "Newer title",
+            "newer content",
+            Some(&opened.revision),
+        )
+        .unwrap();
+    assert_ne!(newer.revision, opened.revision);
+
+    let error = workspace
+        .update_note_if_revision(
+            &entry.id,
+            note_id,
+            "Stale title",
+            "stale content",
+            Some(&opened.revision),
+        )
+        .unwrap_err();
+    assert!(matches!(error, WorkspaceError::NoteRevisionConflict(_)));
+
+    let persisted = workspace.read_note(&entry.id, note_id).unwrap();
+    assert_eq!(persisted.title, "Newer title");
+    assert_eq!(persisted.markdown, "newer content");
+    assert_eq!(persisted.revision, newer.revision);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn aggregate_note_save_tracks_and_prunes_referenced_source_links() {
+    let root = std::env::temp_dir().join(format!("neuink_workspace_{}", unique_suffix()));
+    let workspace = Workspace::create(&root).unwrap();
+    let entry = workspace.create_entry("A paper").unwrap();
+    let updated = workspace.create_note(&entry.id, "Reading note").unwrap();
+    let neuink_domain::ContentItem::Note { note_id, .. } = &updated.contents[0];
+    let opened = workspace.read_note(&entry.id, note_id).unwrap();
+    let link = neuink_domain::SourceLink::note(
+        entry.id.clone(),
+        note_id.clone(),
+        "sl-test".to_string(),
+        neuink_domain::SegmentRef {
+            entry_id: entry.id.clone(),
+            segment_uid: neuink_domain::SegmentUid::from_string("segment-test"),
+            page: 1,
+            bbox: None,
+            segment_type: None,
+            snapshot_text: "Source text".to_string(),
+            snapshot_asset_path: None,
+            quote_hash: "hash".to_string(),
+        },
+        "p.1".to_string(),
+    );
+
+    let linked = workspace
+        .update_note_document_if_revision(
+            &entry.id,
+            note_id,
+            "Reading note",
+            "Claim [^sl-test]",
+            std::slice::from_ref(&link),
+            Some(&opened.revision),
+        )
+        .unwrap();
+    assert_eq!(linked.links.len(), 1);
+
+    let mut externally_changed_link = link.clone();
+    externally_changed_link.display_text = "changed externally".to_string();
+    workspace
+        .replace_note_source_links(
+            &entry.id,
+            note_id,
+            std::slice::from_ref(&externally_changed_link),
+        )
+        .unwrap();
+    let externally_changed = workspace.read_note(&entry.id, note_id).unwrap();
+    assert_ne!(externally_changed.revision, linked.revision);
+
+    let error = workspace
+        .update_note_document_if_revision(
+            &entry.id,
+            note_id,
+            "Reading note",
+            "Stale edit [^sl-test]",
+            std::slice::from_ref(&link),
+            Some(&linked.revision),
+        )
+        .unwrap_err();
+    assert!(matches!(error, WorkspaceError::NoteRevisionConflict(_)));
+
+    let pruned = workspace
+        .update_note_document_if_revision(
+            &entry.id,
+            note_id,
+            "Reading note",
+            "Claim without a source marker",
+            std::slice::from_ref(&externally_changed_link),
+            Some(&externally_changed.revision),
+        )
+        .unwrap();
+    assert!(pruned.links.is_empty());
+    let persisted_links: Vec<neuink_domain::SourceLink> = serde_json::from_slice(
+        &fs::read(workspace.layout.entry_note_links_file(&entry.id, note_id)).unwrap(),
+    )
+    .unwrap();
+    assert!(persisted_links.is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn quarantines_stale_unreferenced_note_assets_and_restores_references() {
+    let root = std::env::temp_dir().join(format!("neuink_workspace_{}", unique_suffix()));
+    let workspace = Workspace::create(&root).unwrap();
+    let entry = workspace.create_entry("A paper").unwrap();
+    let updated = workspace.create_note(&entry.id, "Reading note").unwrap();
+    let neuink_domain::ContentItem::Note { note_id, .. } = &updated.contents[0];
+    let asset_dir = workspace.layout.entry_note_assets_dir(&entry.id, note_id);
+    let file_name = "figure-0123456789ab.png";
+    let active_path = asset_dir.join(file_name);
+    fs::create_dir_all(&asset_dir).unwrap();
+    fs::write(&active_path, b"image bytes").unwrap();
+
+    let opened = workspace.read_note(&entry.id, note_id).unwrap();
+    workspace
+        .update_note_if_revision(
+            &entry.id,
+            note_id,
+            "Reading note",
+            "No image yet",
+            Some(&opened.revision),
+        )
+        .unwrap();
+    let manifest_path = asset_dir.join(".orphaned-assets.json");
+    assert!(active_path.exists());
+    assert!(manifest_path.exists());
+
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec(&json!({
+            "unreferenced_since": { (file_name): 0 }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let before_quarantine = workspace.read_note(&entry.id, note_id).unwrap();
+    workspace
+        .update_note_if_revision(
+            &entry.id,
+            note_id,
+            "Reading note",
+            "Still no image",
+            Some(&before_quarantine.revision),
+        )
+        .unwrap();
+    let quarantined_path = asset_dir.join(".orphaned").join(file_name);
+    assert!(!active_path.exists());
+    assert!(quarantined_path.exists());
+
+    let before_restore = workspace.read_note(&entry.id, note_id).unwrap();
+    let markdown = format!(
+        r#"<img src="./{}.assets/{}" alt="figure" />"#,
+        note_id.as_str(),
+        file_name
+    );
+    workspace
+        .update_note_if_revision(
+            &entry.id,
+            note_id,
+            "Reading note",
+            markdown,
+            Some(&before_restore.revision),
+        )
+        .unwrap();
+    assert!(active_path.exists());
+    assert!(!quarantined_path.exists());
+    assert!(!manifest_path.exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn serializes_concurrent_note_updates_with_the_same_revision() {
+    let root = std::env::temp_dir().join(format!("neuink_workspace_{}", unique_suffix()));
+    let workspace = Workspace::create(&root).unwrap();
+    let entry = workspace.create_entry("A paper").unwrap();
+    let updated = workspace.create_note(&entry.id, "Reading note").unwrap();
+    let neuink_domain::ContentItem::Note { note_id, .. } = &updated.contents[0];
+    let opened = workspace.read_note(&entry.id, note_id).unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+
+    let handles = ["first", "second"].map(|markdown| {
+        let workspace = workspace.clone();
+        let entry_id = entry.id.clone();
+        let note_id = note_id.clone();
+        let revision = opened.revision.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            workspace.update_note_if_revision(
+                &entry_id,
+                &note_id,
+                "Reading note",
+                markdown,
+                Some(&revision),
+            )
+        })
+    });
+    barrier.wait();
+
+    let results = handles.map(|handle| handle.join().unwrap());
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(WorkspaceError::NoteRevisionConflict(_))))
+            .count(),
+        1
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -189,15 +420,19 @@ fn creates_note_source_link_sidecar() {
     let segment_uid = segment.uid.clone();
     workspace.write_segments(&entry.id, &[segment]).unwrap();
 
+    let links_path = workspace.layout.entry_note_links_file(&entry.id, note_id);
+    let prepared = workspace
+        .build_note_source_link(&entry.id, note_id, &entry.id, segment_uid.clone())
+        .unwrap();
+    assert_eq!(prepared.sources.len(), 1);
+    assert!(!links_path.exists());
+
     let link = workspace
         .create_note_source_link(&entry.id, note_id, &entry.id, segment_uid)
         .unwrap();
 
     assert_eq!(link.sources.len(), 1);
-    assert!(workspace
-        .layout
-        .entry_note_links_file(&entry.id, note_id)
-        .exists());
+    assert!(links_path.exists());
     fs::remove_file(source_pdf).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
@@ -529,6 +764,127 @@ fn creates_updates_and_deletes_annotations() {
 }
 
 #[test]
+fn persists_pdf_text_selection_across_workspace_reopen_and_annotation_edit() {
+    let root = std::env::temp_dir().join(format!("neuink_workspace_{}", unique_suffix()));
+    let source_pdf = root.with_extension("pdf");
+    fs::write(&source_pdf, b"%PDF-1.7").unwrap();
+    let workspace = Workspace::create(&root).unwrap();
+    let entry = create_parsed_entry_with_segment(&workspace, &source_pdf);
+    let segment_uid = workspace.read_segments(&entry.id).unwrap()[0].uid.clone();
+    let selection = neuink_domain::AnnotationTextSelection {
+        color: "blue".to_string(),
+        page_idx: 0,
+        rects: vec![[120.0, 220.0, 640.0, 270.0]],
+        text: "Grounded claim".to_string(),
+    };
+
+    let created = workspace
+        .create_annotation_with_text_selection(
+            &entry.id,
+            segment_uid,
+            "highlight".to_string(),
+            "Initial note".to_string(),
+            neuink_domain::AnnotationImportance::Important,
+            Some(selection.clone()),
+        )
+        .unwrap();
+    let annotation_id = created[0].annotation_id.clone();
+    drop(workspace);
+
+    let reopened = Workspace::open(&root).unwrap();
+    let persisted = reopened.read_annotations(&entry.id).unwrap();
+    assert_eq!(persisted[0].text_selection.as_ref(), Some(&selection));
+
+    let updated = reopened
+        .update_annotation(
+            &entry.id,
+            &annotation_id,
+            "highlight".to_string(),
+            "Edited note".to_string(),
+            neuink_domain::AnnotationImportance::Core,
+        )
+        .unwrap();
+    assert_eq!(updated[0].text_selection.as_ref(), Some(&selection));
+
+    fs::remove_file(source_pdf).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn persists_page_anchored_annotation_before_and_after_parse_failure() {
+    let root = std::env::temp_dir().join(format!("neuink_workspace_{}", unique_suffix()));
+    let source_pdf = root.with_extension("pdf");
+    fs::write(&source_pdf, b"%PDF-1.7").unwrap();
+    let workspace = Workspace::create(&root).unwrap();
+    let entry = workspace.create_entry("Unparsed paper").unwrap();
+    workspace.import_pdf(&entry.id, &source_pdf).unwrap();
+    let selection = neuink_domain::AnnotationTextSelection {
+        color: "green".to_string(),
+        page_idx: 3,
+        rects: vec![[120.0, 220.0, 640.0, 270.0]],
+        text: "Available before parsing".to_string(),
+    };
+    let segment_uid = neuink_domain::pdf_page_annotation_segment_uid(selection.page_idx);
+
+    let created = workspace
+        .create_annotation_with_text_selection(
+            &entry.id,
+            segment_uid.clone(),
+            "highlight".to_string(),
+            "Saved against the PDF page".to_string(),
+            neuink_domain::AnnotationImportance::Important,
+            Some(selection.clone()),
+        )
+        .unwrap();
+    let annotation_id = created[0].annotation_id.clone();
+    assert_eq!(
+        created[0].anchor_kind,
+        neuink_domain::AnnotationAnchorKind::PdfPage
+    );
+    assert_eq!(created[0].segment_uid, segment_uid);
+
+    workspace
+        .set_pdf_parse_state(&entry.id, neuink_domain::PdfParseStatus::Queued, None)
+        .unwrap();
+    workspace
+        .set_pdf_parse_state(&entry.id, neuink_domain::PdfParseStatus::Uploading, None)
+        .unwrap();
+    workspace
+        .set_pdf_parse_state(
+            &entry.id,
+            neuink_domain::PdfParseStatus::Failed,
+            Some("parser unavailable".to_string()),
+        )
+        .unwrap();
+
+    let updated = workspace
+        .update_annotation(
+            &entry.id,
+            &annotation_id,
+            "highlight".to_string(),
+            "Still editable".to_string(),
+            neuink_domain::AnnotationImportance::Core,
+        )
+        .unwrap();
+    assert_eq!(updated[0].content, "Still editable");
+    assert_eq!(updated[0].text_selection.as_ref(), Some(&selection));
+
+    let records = workspace.list_annotations().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].segment_status,
+        crate::AnnotationSegmentStatus::PageAnchored
+    );
+    assert_eq!(
+        records[0].segment.as_ref().map(|segment| segment.page_idx),
+        Some(3)
+    );
+
+    fs::remove_file(source_pdf).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn lists_annotations_for_parsed_entries() {
     let root = std::env::temp_dir().join(format!("neuink_workspace_{}", unique_suffix()));
     let source_pdf = root.with_extension("pdf");
@@ -776,6 +1132,43 @@ fn stores_real_segment_uid_for_group_targeted_segment_note() {
         .unwrap();
 
     assert_eq!(notes[0].segment_uid, actual_uid);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rejects_segment_note_over_limit_before_writing() {
+    let root = std::env::temp_dir().join(format!("neuink_workspace_{}", unique_suffix()));
+    let workspace = Workspace::create(&root).unwrap();
+    let entry = workspace.create_entry("A paper").unwrap();
+    let segment = neuink_domain::SourceSegment::new(
+        neuink_domain::SegmentType::Paragraph,
+        0,
+        None,
+        "Segment".to_string(),
+    );
+    let segment_uid = segment.uid.clone();
+    workspace.write_segments(&entry.id, &[segment]).unwrap();
+    workspace
+        .upsert_segment_note(&entry.id, segment_uid.clone(), "valid".to_string())
+        .unwrap();
+
+    let max = neuink_domain::segment_note::MAX_SEGMENT_NOTE_CHARACTERS;
+    let error = workspace
+        .upsert_segment_note(&entry.id, segment_uid, "x".repeat(max + 1))
+        .expect_err("over-limit segment note should fail");
+
+    assert!(matches!(
+        error,
+        crate::WorkspaceError::Domain(neuink_domain::DomainError::SegmentNoteTooLong {
+            actual,
+            max: actual_max
+        }) if actual == max + 1 && actual_max == max
+    ));
+    assert_eq!(
+        workspace.read_segment_notes(&entry.id).unwrap()[0].text,
+        "valid"
+    );
+
     fs::remove_dir_all(root).unwrap();
 }
 

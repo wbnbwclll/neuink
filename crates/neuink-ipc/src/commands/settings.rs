@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
 use chrono::Utc;
-use neuink_config::{AppSettings, LlmProfile, LlmSettings};
+use neuink_config::{AppSettings, LlmApiProtocol, LlmProfile, LlmSettings};
 use neuink_workspace::atomic_write_json;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager, Runtime};
@@ -23,6 +23,8 @@ pub struct SaveLlmSettingsRequest {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub api_protocol: LlmApiProtocol,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +83,7 @@ pub fn save_llm_settings<R: Runtime>(
         temperature: request.temperature,
         top_p: request.top_p,
         max_output_tokens: request.max_output_tokens,
+        api_protocol: request.api_protocol,
     };
 
     if profile.base_url.is_empty() {
@@ -181,7 +184,7 @@ pub fn set_task_llm_profile<R: Runtime>(
     Ok(settings_state(&settings))
 }
 
-fn read_settings<R: Runtime>(app: &AppHandle<R>) -> Result<AppSettings, String> {
+pub(crate) fn read_settings<R: Runtime>(app: &AppHandle<R>) -> Result<AppSettings, String> {
     let path = settings_path(app)?;
     if !path.exists() {
         return Ok(AppSettings::default());
@@ -210,7 +213,10 @@ pub(crate) fn read_assistant_profile<R: Runtime>(
     Ok(profile)
 }
 
-fn write_settings<R: Runtime>(app: &AppHandle<R>, settings: &AppSettings) -> Result<(), String> {
+pub(crate) fn write_settings<R: Runtime>(
+    app: &AppHandle<R>,
+    settings: &AppSettings,
+) -> Result<(), String> {
     let path = settings_path(app)?;
     atomic_write_json(path, settings).map_err(|error| error.to_string())
 }
@@ -237,6 +243,7 @@ fn ensure_legacy_profile(settings: &mut AppSettings) {
                 temperature: llm.temperature,
                 top_p: llm.top_p,
                 max_output_tokens: llm.max_output_tokens,
+                api_protocol: llm.api_protocol,
             };
             settings.active_llm_profile_id = Some(profile.id.clone());
             settings.llm_profiles.push(profile);
@@ -316,6 +323,7 @@ fn legacy_settings(profile: &LlmProfile) -> LlmSettings {
         temperature: profile.temperature,
         top_p: profile.top_p,
         max_output_tokens: profile.max_output_tokens,
+        api_protocol: profile.api_protocol,
     }
 }
 
@@ -348,7 +356,7 @@ fn new_profile_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::{ensure_legacy_profile, task_profile};
-    use neuink_config::{AppSettings, LlmProfile};
+    use neuink_config::{AppSettings, LlmApiProtocol, LlmProfile};
 
     #[test]
     fn migrates_legacy_default_into_explicit_task_assignments() {
@@ -384,6 +392,42 @@ mod tests {
             temperature: Some(0.2),
             top_p: None,
             max_output_tokens: Some(1_024),
+            api_protocol: LlmApiProtocol::OpenaiCompatible,
         }
+    }
+
+    #[test]
+    fn api_protocol_defaults_to_openai_compatible_when_missing() {
+        let json = r#"{
+            "id": "p", "name": "P", "base_url": "https://example.test/v1", "model": "m"
+        }"#;
+        let profile: LlmProfile = serde_json::from_str(json).unwrap();
+        assert_eq!(profile.api_protocol, LlmApiProtocol::OpenaiCompatible);
+    }
+
+    #[test]
+    fn api_protocol_round_trips_non_default_values() {
+        let mut original = profile("anthropic-profile");
+        original.api_protocol = LlmApiProtocol::Anthropic;
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("\"anthropic\""));
+        let parsed: LlmProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.api_protocol, LlmApiProtocol::Anthropic);
+
+        let mut google = profile("google-profile");
+        google.api_protocol = LlmApiProtocol::Google;
+        let parsed: LlmProfile = serde_json::from_str(&serde_json::to_string(&google).unwrap())
+            .unwrap();
+        assert_eq!(parsed.api_protocol, LlmApiProtocol::Google);
+    }
+
+    #[test]
+    fn unknown_api_protocol_falls_back_to_openai_compatible() {
+        let json = r#"{
+            "id": "p", "name": "P", "base_url": "https://example.test/v1", "model": "m",
+            "api_protocol": "something-new"
+        }"#;
+        let profile: LlmProfile = serde_json::from_str(json).unwrap();
+        assert_eq!(profile.api_protocol, LlmApiProtocol::OpenaiCompatible);
     }
 }

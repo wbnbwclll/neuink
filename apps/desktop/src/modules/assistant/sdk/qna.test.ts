@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { readNote } from '@/shared/ipc/workspaceApi';
+import { isLocalConversationSource } from '@/shared/ipc/assistantApi';
 import type { AssistantContext } from '@/shared/types/assistant';
 
 import { buildSelectedMarkdownContext, uniqueContextDocumentItems } from './qna';
@@ -22,6 +23,7 @@ describe('buildSelectedMarkdownContext', () => {
       }] : [],
       markdown: noteId === 'note-1' ? 'Claim [^sl-1]' : 'Second note body',
       note_id: noteId,
+      revision: `revision-${noteId}`,
       title: noteId
     }));
 
@@ -34,7 +36,8 @@ describe('buildSelectedMarkdownContext', () => {
     expect(readNote).toHaveBeenCalledTimes(2);
     expect(result.text).toContain('Claim [S3]');
     expect(result.text).toContain('Second note body');
-    expect(result.sourceByMarker.get(3)?.segment_uid).toBe('segment-1');
+    const source = result.sourceByMarker.get(3);
+    expect(source && isLocalConversationSource(source) ? source.segment_uid : null).toBe('segment-1');
   });
 });
 

@@ -1,14 +1,18 @@
 use std::{
     collections::BTreeMap,
+    fs,
+    io::Cursor,
     path::{Component, Path, PathBuf},
     process::Command,
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
-use neuink_domain::{EntryId, EntryMeta, NoteId, PdfParseStatus, SegmentUid, SourceLink, TagId};
+use neuink_domain::{
+    ContentItem, EntryId, EntryMeta, NoteId, PdfParseStatus, SegmentUid, SourceLink, TagId,
+};
 use neuink_parser::{
-    CustomEndpointParserProvider, MineruQiniuParserProvider, ParseTask, ParseTaskState,
+    normalize_mineru_zip, CustomEndpointParserProvider, ParseTask, ParseTaskState,
 };
 use neuink_workspace::note::NoteDocument;
 use neuink_workspace::TrashItem;
@@ -65,6 +69,21 @@ pub struct ApplyEntryMetaProposalRequest {
 pub struct DeleteEntryRequest {
     pub root: PathBuf,
     pub entry_id: EntryId,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EntryDeletionImpactRequest {
+    pub root: PathBuf,
+    pub entry_id: EntryId,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EntryDeletionImpact {
+    pub has_pdf: bool,
+    pub parsed_block_count: usize,
+    pub note_count: usize,
+    pub annotation_count: usize,
+    pub incoming_source_link_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +145,10 @@ pub struct UpdateNoteRequest {
     pub note_id: NoteId,
     pub title: String,
     pub markdown: String,
+    #[serde(default)]
+    pub links: Option<Vec<SourceLink>>,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -197,6 +220,24 @@ pub struct QueuePdfParseRequest {
     pub root: PathBuf,
     pub entry_id: EntryId,
     pub pdf_path: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportMineruClientResultRequest {
+    pub root: PathBuf,
+    pub entry_id: EntryId,
+    pub zip_path: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateFromMineruClientResultRequest {
+    pub root: PathBuf,
+    pub title: String,
+    #[serde(default)]
+    pub fields: BTreeMap<String, String>,
+    #[serde(default)]
+    pub tags: Vec<TagId>,
+    pub zip_path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,6 +351,56 @@ pub fn delete_entry(request: DeleteEntryRequest) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn get_entry_deletion_impact(
+    request: EntryDeletionImpactRequest,
+) -> Result<EntryDeletionImpact, String> {
+    let workspace =
+        neuink_workspace::Workspace::open(request.root).map_err(|error| error.to_string())?;
+    let entry = workspace
+        .read_entry(&request.entry_id)
+        .map_err(|error| error.to_string())?;
+    let mut incoming_source_link_count = 0;
+
+    for candidate in workspace
+        .list_entries()
+        .map_err(|error| error.to_string())?
+    {
+        for content in &candidate.contents {
+            let ContentItem::Note { note_id, .. } = content;
+            let links = workspace
+                .read_note_source_links(&candidate.id, note_id)
+                .map_err(|error| error.to_string())?;
+            incoming_source_link_count += links
+                .iter()
+                .filter(|link| {
+                    link.sources
+                        .iter()
+                        .any(|source| source.entry_id == request.entry_id)
+                })
+                .count();
+        }
+    }
+
+    Ok(EntryDeletionImpact {
+        has_pdf: entry.pdf.is_some(),
+        parsed_block_count: workspace
+            .read_segments(&request.entry_id)
+            .map_err(|error| error.to_string())?
+            .len(),
+        note_count: entry
+            .contents
+            .iter()
+            .filter(|content| matches!(content, ContentItem::Note { .. }))
+            .count(),
+        annotation_count: workspace
+            .read_annotations(&request.entry_id)
+            .map_err(|error| error.to_string())?
+            .len(),
+        incoming_source_link_count,
+    })
+}
+
+#[tauri::command]
 pub fn restore_entry(request: RestoreEntryRequest) -> Result<EntryMeta, String> {
     let workspace =
         neuink_workspace::Workspace::open(request.root).map_err(|error| error.to_string())?;
@@ -394,16 +485,34 @@ pub fn delete_note(request: DeleteNoteRequest) -> Result<EntryMeta, String> {
 
 #[tauri::command]
 pub fn update_note(request: UpdateNoteRequest) -> Result<NoteDocument, String> {
-    let workspace =
-        neuink_workspace::Workspace::open(request.root).map_err(|error| error.to_string())?;
-    workspace
-        .update_note(
-            &request.entry_id,
-            &request.note_id,
-            request.title,
-            request.markdown,
-        )
-        .map_err(|error| error.to_string())
+    let UpdateNoteRequest {
+        root,
+        entry_id,
+        note_id,
+        title,
+        markdown,
+        links,
+        expected_revision,
+    } = request;
+    let workspace = neuink_workspace::Workspace::open(root).map_err(|error| error.to_string())?;
+    match links {
+        Some(links) => workspace.update_note_document_if_revision(
+            &entry_id,
+            &note_id,
+            title,
+            markdown,
+            &links,
+            expected_revision.as_deref(),
+        ),
+        None => workspace.update_note_if_revision(
+            &entry_id,
+            &note_id,
+            title,
+            markdown,
+            expected_revision.as_deref(),
+        ),
+    }
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -601,7 +710,7 @@ fn note_file_path(request: NoteFileRequest) -> Result<PathBuf, String> {
         .entry_note_file(&request.entry_id, &request.note_id))
 }
 
-fn open_path_with_system(path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn open_path_with_system(path: &std::path::Path) -> Result<(), String> {
     let path = std::fs::canonicalize(path)
         .map_err(|error| format!("unable to open path {}: {error}", path.to_string_lossy()))?;
     if !path.is_file() {
@@ -637,7 +746,7 @@ fn open_path_with_system(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
-fn reveal_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn reveal_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     let path = std::fs::canonicalize(path)
         .map_err(|error| format!("unable to reveal path {}: {error}", path.to_string_lossy()))?;
     if !path.exists() {
@@ -824,6 +933,123 @@ pub fn queue_pdf_parse(request: QueuePdfParseRequest) -> Result<EntryMeta, Strin
 }
 
 #[tauri::command]
+pub fn import_mineru_client_result(
+    request: ImportMineruClientResultRequest,
+) -> Result<ImportAndParsePdfResponse, String> {
+    let workspace =
+        neuink_workspace::Workspace::open(&request.root).map_err(|error| error.to_string())?;
+    let entry = workspace
+        .read_entry(&request.entry_id)
+        .map_err(|error| error.to_string())?;
+    if entry.pdf.is_none() {
+        return Err("请先为条目上传对应的 PDF，再导入 MinerU 客户端结果。".to_string());
+    }
+    if request
+        .zip_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("zip"))
+        != Some(true)
+    {
+        return Err("请选择 MinerU 客户端导出的 ZIP 压缩包；不支持 RAR 或 7Z。".to_string());
+    }
+    let zip_bytes = fs::read(&request.zip_path).map_err(|error| error.to_string())?;
+    let mut archive = zip::ZipArchive::new(Cursor::new(&zip_bytes))
+        .map_err(|error| format!("无法读取 MinerU 客户端 ZIP：{error}"))?;
+    let has_images = (0..archive.len()).any(|index| {
+        archive
+            .by_index(index)
+            .map(|file| {
+                let name = file.name().replace('\\', "/");
+                name.starts_with("images/") || name.contains("/images/")
+            })
+            .unwrap_or(false)
+    });
+    if !has_images {
+        return Err("MinerU 客户端 ZIP 必须包含 images/ 文件夹。".to_string());
+    }
+    let document = normalize_mineru_zip(&zip_bytes).map_err(|error| error.to_string())?;
+    if document.segments.is_empty() {
+        return Err("压缩包未包含可导入的 MinerU content_list 结果。".to_string());
+    }
+    workspace
+        .write_mineru_output_zip(&request.entry_id, &zip_bytes)
+        .map_err(|error| error.to_string())?;
+    workspace
+        .write_segments(&request.entry_id, &document.segments)
+        .map_err(|error| error.to_string())?;
+    let entry = mark_mineru_client_import_succeeded(
+        &workspace,
+        &request.entry_id,
+        document.segments.len(),
+    )?;
+    Ok(ImportAndParsePdfResponse {
+        entry,
+        segment_count: document.segments.len(),
+        task_id: None,
+    })
+}
+
+#[tauri::command]
+pub fn create_from_mineru_client_result(
+    request: CreateFromMineruClientResultRequest,
+) -> Result<ImportAndParsePdfResponse, String> {
+    let workspace =
+        neuink_workspace::Workspace::open(&request.root).map_err(|error| error.to_string())?;
+    let zip_bytes = fs::read(&request.zip_path).map_err(|error| error.to_string())?;
+    let mut archive = zip::ZipArchive::new(Cursor::new(&zip_bytes))
+        .map_err(|error| format!("无法读取 MinerU 客户端 ZIP：{error}"))?;
+    let names = (0..archive.len())
+        .filter_map(|index| {
+            archive
+                .by_index(index)
+                .ok()
+                .map(|file| file.name().replace('\\', "/"))
+        })
+        .collect::<Vec<_>>();
+    if !names
+        .iter()
+        .any(|name| name.starts_with("images/") || name.contains("/images/"))
+    {
+        return Err("MinerU 客户端 ZIP 必须包含 images/ 文件夹。".to_string());
+    }
+    let origin_pdf = names
+        .iter()
+        .find(|name| name.to_ascii_lowercase().ends_with("_origin.pdf"))
+        .or_else(|| {
+            names
+                .iter()
+                .find(|name| name.to_ascii_lowercase().ends_with(".pdf"))
+        })
+        .ok_or_else(|| "MinerU 客户端 ZIP 未包含 *_origin.pdf。".to_string())?
+        .clone();
+    let document = normalize_mineru_zip(&zip_bytes).map_err(|error| error.to_string())?;
+    let entry = workspace
+        .create_entry_with_meta(request.title, request.fields, request.tags)
+        .map_err(|error| error.to_string())?;
+    workspace
+        .write_mineru_output_zip(&entry.id, &zip_bytes)
+        .map_err(|error| error.to_string())?;
+    let extracted_pdf = workspace
+        .layout()
+        .entry_mineru_output_dir(&entry.id)
+        .join(origin_pdf);
+    workspace
+        .import_pdf(&entry.id, &extracted_pdf)
+        .map_err(|error| error.to_string())?;
+    workspace
+        .write_segments(&entry.id, &document.segments)
+        .map_err(|error| error.to_string())?;
+    let entry =
+        mark_mineru_client_import_succeeded(&workspace, &entry.id, document.segments.len())?;
+    Ok(ImportAndParsePdfResponse {
+        entry,
+        segment_count: document.segments.len(),
+        task_id: None,
+    })
+}
+
+#[tauri::command]
 pub async fn submit_queued_pdf_parse(
     request: SubmitQueuedPdfParseRequest,
 ) -> Result<ImportAndParsePdfResponse, String> {
@@ -858,8 +1084,8 @@ pub async fn retry_pdf_parse(
     let Some(pdf) = entry.pdf else {
         return Err("entry has no PDF to parse".to_string());
     };
-    if pdf.parse.status != PdfParseStatus::Failed {
-        return Err("only failed PDF parse tasks can be retried".to_string());
+    if !matches!(pdf.parse.status, PdfParseStatus::Failed | PdfParseStatus::Succeeded) {
+        return Err("只有解析失败或已完成的 PDF 可以重新解析".to_string());
     }
 
     workspace
@@ -889,9 +1115,6 @@ async fn submit_pdf_parse_task(
     let pdf_path = workspace
         .entry_pdf_path(entry_id)
         .map_err(|error| error.to_string())?;
-    if is_mineru_qiniu_endpoint(&endpoint) {
-        return submit_mineru_qiniu_parse_task(workspace, entry_id, &pdf_path).await;
-    }
     let provider = match CustomEndpointParserProvider::with_api_key(endpoint.clone(), api_key) {
         Ok(provider) => provider,
         Err(error) => {
@@ -932,54 +1155,6 @@ async fn submit_pdf_parse_task(
     }
 }
 
-async fn submit_mineru_qiniu_parse_task(
-    workspace: &neuink_workspace::Workspace,
-    entry_id: &EntryId,
-    pdf_path: &std::path::Path,
-) -> Result<ImportAndParsePdfResponse, String> {
-    let provider = match MineruQiniuParserProvider::from_env() {
-        Ok(provider) => provider,
-        Err(error) => {
-            return parser_submit_failed_response(
-                workspace,
-                entry_id,
-                error.to_string(),
-                Some("mineru-cloud".to_string()),
-            );
-        }
-    };
-
-    match provider.submit_pdf_task(pdf_path, entry_id.as_str()).await {
-        Ok(task) => {
-            set_parse_state(
-                workspace,
-                entry_id,
-                PdfParseStatus::Uploaded,
-                Some(task_status_message(&task)),
-            )?;
-            let entry = set_parse_state_with_task(
-                workspace,
-                entry_id,
-                PdfParseStatus::Parsing,
-                Some(task_status_message(&task)),
-                Some(task.task_id.clone()),
-                Some("mineru-cloud".to_string()),
-            )?;
-            Ok(ImportAndParsePdfResponse {
-                entry,
-                segment_count: 0,
-                task_id: Some(task.task_id),
-            })
-        }
-        Err(error) => parser_submit_failed_response(
-            workspace,
-            entry_id,
-            error.to_string(),
-            Some("mineru-cloud".to_string()),
-        ),
-    }
-}
-
 #[tauri::command]
 pub async fn refresh_parse_status<R: Runtime>(
     app: AppHandle<R>,
@@ -1005,11 +1180,6 @@ pub async fn refresh_parse_status<R: Runtime>(
         .filter(|value| !value.trim().is_empty())
         .or(parse.endpoint.clone())
         .ok_or_else(|| "parser endpoint is required".to_string())?;
-
-    if is_mineru_qiniu_endpoint(&endpoint) {
-        return refresh_mineru_qiniu_status(&app, &workspace, request.root, &request.entry_id)
-            .await;
-    }
 
     let provider = CustomEndpointParserProvider::with_api_key(endpoint.clone(), request.api_key)
         .map_err(|error| error.to_string())?;
@@ -1117,103 +1287,6 @@ pub async fn refresh_parse_status<R: Runtime>(
     }
 }
 
-async fn refresh_mineru_qiniu_status(
-    app: &AppHandle<impl Runtime>,
-    workspace: &neuink_workspace::Workspace,
-    root: PathBuf,
-    entry_id: &EntryId,
-) -> Result<RefreshParseStatusResponse, String> {
-    let entry = workspace
-        .read_entry(entry_id)
-        .map_err(|error| error.to_string())?;
-    let task_id = entry
-        .pdf
-        .as_ref()
-        .and_then(|pdf| pdf.parse.task_id.clone())
-        .ok_or_else(|| "selected PDF has no parser task id".to_string())?;
-    let provider = MineruQiniuParserProvider::from_env().map_err(|error| error.to_string())?;
-    let task = provider
-        .fetch_task_status(&task_id)
-        .await
-        .map_err(|error| error.to_string())?;
-
-    match task.state {
-        ParseTaskState::Succeeded => {
-            let result = provider
-                .fetch_task_result(&task.task_id)
-                .await
-                .map_err(|error| error.to_string())?;
-            workspace
-                .write_mineru_output_zip(entry_id, &result.zip_bytes)
-                .map_err(|error| error.to_string())?;
-            workspace
-                .write_segments(entry_id, &result.document.segments)
-                .map_err(|error| error.to_string())?;
-            let entry = set_parse_state_with_task(
-                workspace,
-                entry_id,
-                PdfParseStatus::Succeeded,
-                Some(format!(
-                    "Parsed {} segments; saved MinerU outputs from {}",
-                    result.document.segments.len(),
-                    result.full_zip_url
-                )),
-                Some(task.task_id),
-                Some("mineru-cloud".to_string()),
-            )?;
-            let _ = start_configured_auto_translation(app, root, entry_id).await;
-            Ok(RefreshParseStatusResponse {
-                entry,
-                segment_count: Some(result.document.segments.len()),
-            })
-        }
-        ParseTaskState::Failed => {
-            let entry = set_parse_state_with_task(
-                workspace,
-                entry_id,
-                PdfParseStatus::Failed,
-                task.message,
-                Some(task.task_id),
-                Some("mineru-cloud".to_string()),
-            )?;
-            Ok(RefreshParseStatusResponse {
-                entry,
-                segment_count: None,
-            })
-        }
-        ParseTaskState::Canceled => {
-            let entry = set_parse_state_with_task(
-                workspace,
-                entry_id,
-                PdfParseStatus::Canceled,
-                task.message,
-                Some(task.task_id),
-                Some("mineru-cloud".to_string()),
-            )?;
-            Ok(RefreshParseStatusResponse {
-                entry,
-                segment_count: None,
-            })
-        }
-        ParseTaskState::Queued | ParseTaskState::Parsing | ParseTaskState::Unknown => {
-            let entry = set_parse_state_with_task(
-                workspace,
-                entry_id,
-                PdfParseStatus::Parsing,
-                task.message
-                    .clone()
-                    .or_else(|| Some(task_status_message(&task))),
-                Some(task.task_id),
-                Some("mineru-cloud".to_string()),
-            )?;
-            Ok(RefreshParseStatusResponse {
-                entry,
-                segment_count: None,
-            })
-        }
-    }
-}
-
 async fn start_configured_auto_translation<R: Runtime>(
     app: &AppHandle<R>,
     root: PathBuf,
@@ -1258,6 +1331,30 @@ fn set_parse_state_with_task(
         .map_err(|error| error.to_string())
 }
 
+fn mark_mineru_client_import_succeeded(
+    workspace: &neuink_workspace::Workspace,
+    entry_id: &EntryId,
+    segment_count: usize,
+) -> Result<EntryMeta, String> {
+    set_parse_state(workspace, entry_id, PdfParseStatus::Queued, None)?;
+    set_parse_state(workspace, entry_id, PdfParseStatus::Uploading, None)?;
+    set_parse_state(workspace, entry_id, PdfParseStatus::Uploaded, None)?;
+    set_parse_state(
+        workspace,
+        entry_id,
+        PdfParseStatus::Parsing,
+        Some("正在写入 MinerU 客户端导入结果。".to_string()),
+    )?;
+    set_parse_state_with_task(
+        workspace,
+        entry_id,
+        PdfParseStatus::Succeeded,
+        Some(format!("已从 MinerU 客户端导入 {segment_count} 个解析片段")),
+        None,
+        Some("mineru-client-import".to_string()),
+    )
+}
+
 fn parser_submit_failed_response(
     workspace: &neuink_workspace::Workspace,
     entry_id: &EntryId,
@@ -1277,13 +1374,6 @@ fn parser_submit_failed_response(
         segment_count: 0,
         task_id: None,
     })
-}
-
-fn is_mineru_qiniu_endpoint(endpoint: &str) -> bool {
-    matches!(
-        endpoint.trim().to_ascii_lowercase().as_str(),
-        "mineru-cloud" | "mineru-qiniu" | "qiniu-mineru"
-    )
 }
 
 fn task_status_message(task: &ParseTask) -> String {

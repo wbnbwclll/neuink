@@ -14,14 +14,26 @@ neuink-domain = { path = "../neuink-domain" }
 neuink-job = { path = "../neuink-job" }
 neuink-parser = { path = "../neuink-parser" }
 neuink-search = { path = "../neuink-search" }
+neuink-sciverse = { path = "../neuink-sciverse" }
 neuink-workspace = { path = "../neuink-workspace" }
+futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+tokio-stream.workspace = true
 zip.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["crypto-rust", "linux-native-sync-persistent"] }
 
 [features]
 default = ["local-embedding"]

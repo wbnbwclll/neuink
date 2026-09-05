@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SegmentRegion, buildPreviewLayout } from './SegmentRegion';
@@ -19,7 +19,7 @@ describe('PDF segment preview layout', () => {
     vi.restoreAllMocks();
   });
 
-  it('shows only the translation matching the hovered list item', () => {
+  it('shows only the translation matching the hovered list item', async () => {
     render(
       <SegmentRegion
         active
@@ -30,7 +30,7 @@ describe('PDF segment preview layout', () => {
         isContinuation={false}
         listItemIndex={1}
         pageIdx={0}
-        previewPosition={{ x: 120, y: 120 }}
+        previewPosition={{ x: 120, segmentTop: 120, segmentBottom: 120 }}
         previewShowOriginal={false}
         previewShowNote={false}
         previewShowAnnotation={false}
@@ -76,11 +76,13 @@ describe('PDF segment preview layout', () => {
       />,
     );
 
-    expect(document.body.textContent).toContain('第二项译文');
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('第二项译文');
+    });
     expect(document.body.textContent).not.toContain('第一项译文');
   });
 
-  it('shows the saved note and annotations when their preview sections are enabled', () => {
+  it('shows the saved note and annotations when their preview sections are enabled', async () => {
     render(
       <SegmentRegion
         active
@@ -102,7 +104,7 @@ describe('PDF segment preview layout', () => {
           }
         ]}
         previewNote="Saved segment note preview content"
-        previewPosition={{ x: 120, y: 120 }}
+        previewPosition={{ x: 120, segmentTop: 120, segmentBottom: 120 }}
         previewShowAnnotation
         previewShowNote
         previewShowOriginal={false}
@@ -131,7 +133,9 @@ describe('PDF segment preview layout', () => {
       />
     );
 
-    expect(document.body.textContent).toContain('Saved segment note preview content');
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('Saved segment note preview content');
+    });
     expect(document.body.textContent).toContain('Note and annotation preview content');
   });
 
@@ -179,20 +183,65 @@ describe('PDF segment preview layout', () => {
 
     expect(document.querySelector('[title="片段笔记"]')?.className).toContain('-translate-x-full');
     expect(document.querySelector('[title="批注"]')?.className).toContain('translate-x-full');
-    expect(document.querySelector('[title="1 source backlinks"]')?.className).toContain('-translate-x-full');
-    expect(document.querySelector('[title="Add source link"]')?.className).toContain('translate-x-[calc(100%+0.5rem)]');
+    expect(document.querySelector('[title="1 个来源链接"]')?.className).toContain('-translate-x-full');
+  });
+
+  it('uses a single click only to select the segment', () => {
+    const onToggleSegment = vi.fn();
+    const { container } = render(
+      <SegmentRegion
+        active={false}
+        flashed={false}
+        hasAnnotation={false}
+        hasNote={false}
+        hovered={false}
+        isContinuation={false}
+        pageIdx={0}
+        previewAnnotations={[]}
+        previewNote={null}
+        previewPosition={null}
+        previewShowAnnotation={false}
+        previewShowNote={false}
+        previewShowOriginal={false}
+        previewShowRegion={false}
+        previewShowTranslation={false}
+        regionBbox={[100, 320, 900, 500]}
+        regionId="double-click-segment"
+        relatedImagePath={null}
+        segment={{
+          bbox: [100, 320, 900, 500],
+          markdown: 'Source paragraph',
+          page_idx: 0,
+          segment_type: 'paragraph',
+          text: 'Source paragraph',
+          uid: 'double-click-segment'
+        }}
+        showRegions={true}
+        sourceBacklinkCount={0}
+        sourceEntryId="entry-1"
+        translatedSegment={null}
+        translationMode="hover"
+        translationStatus={null}
+        translationVisible={false}
+        workspaceRoot={null}
+        onToggleSegment={onToggleSegment}
+      />
+    );
+
+    fireEvent.click(container.querySelector('[data-segment-uid="double-click-segment"]')!);
+    expect(onToggleSegment).toHaveBeenCalledWith(expect.objectContaining({ uid: 'double-click-segment' }));
   });
 
   it('tracks pointer movement while there is room beside it', () => {
     const first = buildPreviewLayout({
       hasFooter: false,
-      position: { x: 80, y: 80 },
+      position: { x: 80, segmentTop: 80, segmentBottom: 80 },
       preferScrollable: true,
       text: 'short list item',
     });
     const moved = buildPreviewLayout({
       hasFooter: false,
-      position: { x: 120, y: 110 },
+      position: { x: 120, segmentTop: 110, segmentBottom: 110 },
       preferScrollable: true,
       text: 'short list item',
     });
@@ -204,12 +253,36 @@ describe('PDF segment preview layout', () => {
   it('flips to the near side of the pointer at the viewport edges', () => {
     const layout = buildPreviewLayout({
       hasFooter: false,
-      position: { x: 920, y: 720 },
+      position: { x: 920, segmentTop: 720, segmentBottom: 720 },
       preferScrollable: true,
       text: 'short list item',
     });
 
-    expect(layout.left + layout.width).toBe(906);
+    expect(layout.left + layout.width).toBe(912);
     expect(layout.top).toBeLessThan(720);
+  });
+
+  it('applies independent font and card size preferences', () => {
+    const compact = buildPreviewLayout({
+      fontSize: 'small',
+      hasFooter: false,
+      position: { x: 80, segmentTop: 80, segmentBottom: 80 },
+      preferScrollable: true,
+      size: 'compact',
+      text: 'preview text'
+    });
+    const large = buildPreviewLayout({
+      fontSize: 'large',
+      hasFooter: false,
+      position: { x: 80, segmentTop: 80, segmentBottom: 80 },
+      preferScrollable: true,
+      size: 'large',
+      text: 'preview text'
+    });
+
+    expect(compact.width).toBeLessThan(large.width);
+    expect(Number(compact.contentStyle.fontSize)).toBeLessThan(
+      Number(large.contentStyle.fontSize)
+    );
   });
 });

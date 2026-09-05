@@ -34,7 +34,7 @@ import {
 } from '../../translation/translationExport';
 import { ReaderMessage } from '../pdf-reader/ReaderMessage';
 import { SegmentAnnotationEditor } from '../../../annotations/components/SegmentAnnotationEditor';
-import { hasNoteText } from '../pdf-reader/readerUtils';
+import { hasNoteText, logicalSegmentUid } from '../pdf-reader/readerUtils';
 import { SegmentNoteEditor } from '../pdf-reader/SegmentNoteEditor';
 import { FloatingSegmentPanel } from '../pdf-reader/FloatingSegmentPanel';
 import { HoverPreviewControls } from '../pdf-reader/ReaderToolbar';
@@ -44,6 +44,8 @@ import { usePdfDocument } from '../pdf-reader/usePdfDocument';
 import { usePdfReaderData } from '../pdf-reader/usePdfReaderData';
 import { useSegmentNoteDraft } from '../pdf-reader/useSegmentNoteDraft';
 import { ReflowReader } from './ReflowReader';
+import { ReflowAppearanceControls } from './ReflowAppearanceControls';
+import { ReflowComponentControls } from './ReflowComponentControls';
 import { useGuardedSegmentAction } from '../useGuardedSegmentAction';
 import { TranslationTaskDialog } from '../../translation/TranslationTaskDialog';
 import { UnsavedSegmentChangesDialog } from '../pdf-reader/UnsavedSegmentChangesDialog';
@@ -74,7 +76,11 @@ export function ReflowEntryReader({
   onReadPdfReader,
   onSaveSegmentNote,
   onOpenSegmentNotesSurface,
-  onOpenAnnotationsSurface
+  onOpenAnnotationsSurface,
+  syncSegmentUid,
+  syncRequestKey,
+  onSegmentClick
+  , suppressClickOverlay = false
 }: {
   entry: LibraryEntry;
   editorScopeKey: string;
@@ -101,6 +107,10 @@ export function ReflowEntryReader({
   onSaveSegmentNote: (entryId: string, segmentUid: string, text: string) => Promise<SegmentBlockNote[]>;
   onOpenSegmentNotesSurface: (segmentUid: string) => void;
   onOpenAnnotationsSurface: (segmentUid: string) => void;
+  syncSegmentUid?: string | null;
+  syncRequestKey?: number;
+  onSegmentClick?: (segment: SourceSegment) => void;
+  suppressClickOverlay?: boolean;
 }) {
   const { notify } = useToast();
   const { annotations, loadState, segmentNotes, setAnnotations, setSegmentNotes } = usePdfReaderData({
@@ -141,15 +151,20 @@ export function ReflowEntryReader({
   const pdfPath = loadState.status === 'ready' ? loadState.data.pdf_path : null;
   const pdfBytesState = usePdfBytes(pdfDocumentRequested ? pdfPath : null);
   const pdfState = usePdfDocument(pdfBytesState.status === 'ready' ? pdfBytesState.bytes : null);
-  const notesBySegmentUid = useMemo(
-    () =>
-      new Map(
-        segmentNotes
-          .filter((note) => hasNoteText(note.text))
-          .map((note) => [note.segment_uid, note])
-      ),
-    [segmentNotes]
-  );
+  const notesBySegmentUid = useMemo(() => {
+    const next = new Map<string, SegmentBlockNote>();
+    for (const note of segmentNotes) {
+      if (!hasNoteText(note.text)) {
+        continue;
+      }
+      next.set(note.segment_uid, note);
+      const segment = segments.find((candidate) => candidate.uid === note.segment_uid);
+      if (segment) {
+        next.set(logicalSegmentUid(segment), note);
+      }
+    }
+    return next;
+  }, [segmentNotes, segments]);
   const annotationCountBySegmentUid = useMemo(() => {
     const counts = new Map<string, number>();
     for (const annotation of annotations) {
@@ -193,7 +208,6 @@ export function ReflowEntryReader({
     () => segments.filter((segment) => hiddenSegmentUids.has(segment.uid)),
     [hiddenSegmentUids, segments]
   );
-  const hasRetryableFailures = !translationBusy && (translation?.progress.failed ?? 0) > 0;
   const hasExportableTranslation = Boolean(
     translation?.segments.some((segment) => segment.status === 'translated' && segment.translated_text)
   );
@@ -385,21 +399,28 @@ export function ReflowEntryReader({
     }
   };
 
-  const retryFailedTranslation = async () => {
-    await startTranslation('resume');
-  };
-
   const updateReflowTranslationMode = (mode: ReaderPreferences['reflowTranslationMode']) => {
     onReaderPreferencesChange({ ...readerPreferences, reflowTranslationMode: mode });
   };
   const activateSegmentFromClick = useGuardedSegmentAction((segment) => {
     if (!activateSegment(segment)) return;
-    if (readerPreferences.leftClickOpensNotePane) {
+    onSegmentClick?.(segment);
+    if (readerPreferences.segmentNoteOpenGesture === 'single' && !suppressClickOverlay) {
       setSegmentOverlayMode('segment');
       setNotePopoverSegmentUid(segment.uid);
       setSegmentOverlayOpen(true);
     }
   });
+
+  useEffect(() => {
+    if (!syncSegmentUid) return;
+    const segment = segments.find((item) => item.uid === syncSegmentUid || item.continuation_group_id === syncSegmentUid);
+    if (!segment) return;
+    setSelectedSegmentUid(segment.uid);
+    setFlashSegmentUid(segment.uid);
+    const timer = window.setTimeout(() => setFlashSegmentUid(null), SEGMENT_FLASH_DURATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [segments, syncRequestKey, syncSegmentUid]);
 
   const addSourceLink = async (segment: SourceSegment) => {
     if (!pairedMarkdownNoteTarget || sourceLinkBusySegmentUid) return;
@@ -527,6 +548,16 @@ export function ReflowEntryReader({
       <EntryContentHeader className="gap-2" contentTitle="重排视图" entryTitle={entry.title}>
         <span className="min-w-0 flex-1" />
 
+        <ReflowAppearanceControls
+          preferences={readerPreferences}
+          onChange={onReaderPreferencesChange}
+        />
+
+        <ReflowComponentControls
+          preferences={readerPreferences}
+          onChange={onReaderPreferencesChange}
+        />
+
         <HoverPreviewControls
           mode="reflow"
           preferences={readerPreferences}
@@ -536,12 +567,6 @@ export function ReflowEntryReader({
         {translationBusy ? (
           <Button size="sm" type="button" variant="outline" onClick={() => void pauseTranslation()}>
             暂停
-          </Button>
-        ) : null}
-
-        {!translationBusy && hasRetryableFailures ? (
-          <Button size="sm" type="button" variant="outline" onClick={() => void retryFailedTranslation()}>
-            重试失败
           </Button>
         ) : null}
 
@@ -598,14 +623,22 @@ export function ReflowEntryReader({
           hoverPreviewShowAnnotation={readerPreferences.hoverPreviewShowAnnotation}
           notesBySegmentUid={notesBySegmentUid}
           pdfDocument={pdfState.status === 'ready' ? pdfState.document : null}
+          reflowBackgroundColor={readerPreferences.reflowBackgroundColor}
+          reflowComponents={readerPreferences.reflowComponents}
+          reflowFontSize={readerPreferences.reflowFontSize}
           reflowTranslationMode={readerPreferences.reflowTranslationMode}
           hiddenSegmentUids={hiddenSegmentUids}
           segments={segments}
           sourceLinkCountBySegmentUid={sourceLinkCountBySegmentUid}
           sourceBacklinksBySegmentUid={sourceBacklinksBySegmentUid}
+          scrollRequestKey={syncRequestKey}
+          scrollToSegmentUid={syncSegmentUid}
           translationBySegmentUid={translationBySegmentUid}
           workspaceRoot={workspaceRoot}
           onActivateSegment={activateSegmentFromClick}
+          altClickOpensNote={
+            readerPreferences.segmentNoteOpenGesture === 'modifier' && !suppressClickOverlay
+          }
           onOpenSegmentAnnotation={(segment) => {
             setPdfDocumentRequested(true);
             if (!activateSegment(segment)) return;

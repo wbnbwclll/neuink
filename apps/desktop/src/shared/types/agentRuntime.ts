@@ -3,6 +3,8 @@ export type AgentToolId =
   | 'search_segments'
   | 'read_segment_content'
   | 'read_entry_assistant_context'
+  | 'search_sciverse_evidence'
+  | 'read_sciverse_content'
   | 'read_current_note'
   | 'read_note'
   | 'note.propose_create'
@@ -132,7 +134,11 @@ export type MainAssistantProfile = AgentBaseProfile & {
   kind: 'main_assistant';
 };
 
-export type SubagentOutputKind = 'evidence' | 'patch_plan' | 'skill_selection';
+export type SubagentOutputKind =
+  | 'evidence'
+  | 'memory'
+  | 'patch_plan'
+  | 'task_contract';
 
 export type SubagentProfile = AgentBaseProfile & {
   enabled: boolean;
