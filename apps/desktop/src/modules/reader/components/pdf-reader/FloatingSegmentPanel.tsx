@@ -41,6 +41,7 @@ export function FloatingSegmentPanel({
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<Frame | null>(null);
+  const interactionCleanupRef = useRef<(() => void) | null>(null);
   const [bounds, setBounds] = useState<Bounds | null>(null);
   const [frame, setFrame] = useState<Frame | null>(null);
 
@@ -94,6 +95,14 @@ export function FloatingSegmentPanel({
     return () => observer.disconnect();
   }, [storageKey, updateFrame]);
 
+  useLayoutEffect(
+    () => () => {
+      interactionCleanupRef.current?.();
+      interactionCleanupRef.current = null;
+    },
+    [],
+  );
+
   const resetFrame = useCallback(() => {
     if (!bounds) {
       return;
@@ -110,10 +119,29 @@ export function FloatingSegmentPanel({
       }
 
       event.preventDefault();
+      interactionCleanupRef.current?.();
       const origin = frameRef.current;
       const startX = event.clientX;
       const startY = event.clientY;
+      const pointerId = event.pointerId;
+      const handle = event.currentTarget;
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
+      let active = false;
       const handleMove = (pointerEvent: PointerEvent) => {
+        if (pointerEvent.pointerId !== pointerId) {
+          return;
+        }
+        if (!active) {
+          if (Math.hypot(pointerEvent.clientX - startX, pointerEvent.clientY - startY) < 4) {
+            return;
+          }
+          active = true;
+          document.body.classList.add("is-segment-panel-interacting");
+          document.body.style.cursor = "move";
+          document.body.style.userSelect = "none";
+        }
+        pointerEvent.preventDefault();
         updateFrame(
           clampFrame(
             {
@@ -125,20 +153,57 @@ export function FloatingSegmentPanel({
           ),
         );
       };
-      const finish = () => {
+      const cleanup = () => {
+        window.removeEventListener("pointermove", handleMove);
+        window.removeEventListener("pointerup", handlePointerUp);
+        window.removeEventListener("pointercancel", handlePointerCancel);
+        window.removeEventListener("keydown", handleKeyDown);
+        window.removeEventListener("blur", handleWindowBlur);
+        document.body.classList.remove("is-segment-panel-interacting");
+        document.body.style.cursor = previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+        try {
+          if (handle.hasPointerCapture(pointerId)) {
+            handle.releasePointerCapture(pointerId);
+          }
+        } catch {
+          // Capture may already be gone when the panel closes.
+        }
+      };
+      const finish = (commit: boolean, finishedPointerId?: number) => {
+        if (finishedPointerId !== undefined && finishedPointerId !== pointerId) {
+          return;
+        }
+        interactionCleanupRef.current = null;
+        cleanup();
+        if (!active || !commit) {
+          updateFrame(origin);
+          return;
+        }
         const next = snapFrame(frameRef.current ?? origin, bounds);
         updateFrame(next);
         persistFrame(next);
-        releasePointerListeners(handleMove, finish);
       };
+      const handlePointerUp = (pointerEvent: PointerEvent) => finish(true, pointerEvent.pointerId);
+      const handlePointerCancel = (pointerEvent: PointerEvent) => finish(false, pointerEvent.pointerId);
+      const handleKeyDown = (keyboardEvent: KeyboardEvent) => {
+        if (keyboardEvent.key === "Escape") {
+          keyboardEvent.preventDefault();
+          finish(false);
+        }
+      };
+      const handleWindowBlur = () => finish(false);
 
-      capturePointer(event.currentTarget, event.pointerId);
-      document.body.classList.add("is-segment-panel-interacting");
-      document.body.style.cursor = "move";
-      document.body.style.userSelect = "none";
+      capturePointer(handle, pointerId);
       window.addEventListener("pointermove", handleMove);
-      window.addEventListener("pointerup", finish, { once: true });
-      window.addEventListener("pointercancel", finish, { once: true });
+      window.addEventListener("pointerup", handlePointerUp);
+      window.addEventListener("pointercancel", handlePointerCancel);
+      window.addEventListener("keydown", handleKeyDown);
+      window.addEventListener("blur", handleWindowBlur);
+      interactionCleanupRef.current = () => {
+        cleanup();
+        updateFrame(origin);
+      };
     },
     [bounds, persistFrame, updateFrame],
   );
@@ -153,12 +218,31 @@ export function FloatingSegmentPanel({
       }
 
       event.preventDefault();
+      interactionCleanupRef.current?.();
       const origin = frameRef.current;
       const startX = event.clientX;
       const startY = event.clientY;
+      const pointerId = event.pointerId;
+      const handle = event.currentTarget;
       const anchorX = corner === "bottom-left" ? origin.left + origin.width : origin.left;
       const anchorTop = origin.top;
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
+      let active = false;
       const handleMove = (pointerEvent: PointerEvent) => {
+        if (pointerEvent.pointerId !== pointerId) {
+          return;
+        }
+        if (!active) {
+          if (Math.hypot(pointerEvent.clientX - startX, pointerEvent.clientY - startY) < 4) {
+            return;
+          }
+          active = true;
+          document.body.classList.add("is-segment-panel-interacting");
+          document.body.style.cursor = corner === "bottom-left" ? "nesw-resize" : "nwse-resize";
+          document.body.style.userSelect = "none";
+        }
+        pointerEvent.preventDefault();
         updateFrame(
           corner === "bottom-left"
             ? resizeFrameFromBottomLeft(
@@ -179,20 +263,57 @@ export function FloatingSegmentPanel({
               ),
         );
       };
-      const finish = () => {
+      const cleanup = () => {
+        window.removeEventListener("pointermove", handleMove);
+        window.removeEventListener("pointerup", handlePointerUp);
+        window.removeEventListener("pointercancel", handlePointerCancel);
+        window.removeEventListener("keydown", handleKeyDown);
+        window.removeEventListener("blur", handleWindowBlur);
+        document.body.classList.remove("is-segment-panel-interacting");
+        document.body.style.cursor = previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+        try {
+          if (handle.hasPointerCapture(pointerId)) {
+            handle.releasePointerCapture(pointerId);
+          }
+        } catch {
+          // Capture may already be gone when the panel closes.
+        }
+      };
+      const finish = (commit: boolean, finishedPointerId?: number) => {
+        if (finishedPointerId !== undefined && finishedPointerId !== pointerId) {
+          return;
+        }
+        interactionCleanupRef.current = null;
+        cleanup();
+        if (!active || !commit) {
+          updateFrame(origin);
+          return;
+        }
         const next = clampFrame(frameRef.current ?? origin, bounds);
         updateFrame(next);
         persistFrame(next);
-        releasePointerListeners(handleMove, finish);
       };
+      const handlePointerUp = (pointerEvent: PointerEvent) => finish(true, pointerEvent.pointerId);
+      const handlePointerCancel = (pointerEvent: PointerEvent) => finish(false, pointerEvent.pointerId);
+      const handleKeyDown = (keyboardEvent: KeyboardEvent) => {
+        if (keyboardEvent.key === "Escape") {
+          keyboardEvent.preventDefault();
+          finish(false);
+        }
+      };
+      const handleWindowBlur = () => finish(false);
 
-      capturePointer(event.currentTarget, event.pointerId);
-      document.body.classList.add("is-segment-panel-interacting");
-      document.body.style.cursor = corner === "bottom-left" ? "nesw-resize" : "nwse-resize";
-      document.body.style.userSelect = "none";
+      capturePointer(handle, pointerId);
       window.addEventListener("pointermove", handleMove);
-      window.addEventListener("pointerup", finish, { once: true });
-      window.addEventListener("pointercancel", finish, { once: true });
+      window.addEventListener("pointerup", handlePointerUp);
+      window.addEventListener("pointercancel", handlePointerCancel);
+      window.addEventListener("keydown", handleKeyDown);
+      window.addEventListener("blur", handleWindowBlur);
+      interactionCleanupRef.current = () => {
+        cleanup();
+        updateFrame(origin);
+      };
     },
     [bounds, persistFrame, updateFrame],
   );
@@ -388,14 +509,9 @@ function clamp(value: number, min: number, max: number) {
 }
 
 function capturePointer(element: HTMLElement, pointerId: number) {
-  element.setPointerCapture?.(pointerId);
-}
-
-function releasePointerListeners(handleMove: (event: PointerEvent) => void, finish: () => void) {
-  window.removeEventListener("pointermove", handleMove);
-  window.removeEventListener("pointerup", finish);
-  window.removeEventListener("pointercancel", finish);
-  document.body.classList.remove("is-segment-panel-interacting");
-  document.body.style.cursor = "";
-  document.body.style.userSelect = "";
+  try {
+    element.setPointerCapture?.(pointerId);
+  } catch {
+    // Window listeners remain the fallback when pointer capture is unavailable.
+  }
 }

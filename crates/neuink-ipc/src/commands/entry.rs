@@ -145,6 +145,10 @@ pub struct UpdateNoteRequest {
     pub note_id: NoteId,
     pub title: String,
     pub markdown: String,
+    #[serde(default)]
+    pub links: Option<Vec<SourceLink>>,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -481,16 +485,34 @@ pub fn delete_note(request: DeleteNoteRequest) -> Result<EntryMeta, String> {
 
 #[tauri::command]
 pub fn update_note(request: UpdateNoteRequest) -> Result<NoteDocument, String> {
-    let workspace =
-        neuink_workspace::Workspace::open(request.root).map_err(|error| error.to_string())?;
-    workspace
-        .update_note(
-            &request.entry_id,
-            &request.note_id,
-            request.title,
-            request.markdown,
-        )
-        .map_err(|error| error.to_string())
+    let UpdateNoteRequest {
+        root,
+        entry_id,
+        note_id,
+        title,
+        markdown,
+        links,
+        expected_revision,
+    } = request;
+    let workspace = neuink_workspace::Workspace::open(root).map_err(|error| error.to_string())?;
+    match links {
+        Some(links) => workspace.update_note_document_if_revision(
+            &entry_id,
+            &note_id,
+            title,
+            markdown,
+            &links,
+            expected_revision.as_deref(),
+        ),
+        None => workspace.update_note_if_revision(
+            &entry_id,
+            &note_id,
+            title,
+            markdown,
+            expected_revision.as_deref(),
+        ),
+    }
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -688,7 +710,7 @@ fn note_file_path(request: NoteFileRequest) -> Result<PathBuf, String> {
         .entry_note_file(&request.entry_id, &request.note_id))
 }
 
-fn open_path_with_system(path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn open_path_with_system(path: &std::path::Path) -> Result<(), String> {
     let path = std::fs::canonicalize(path)
         .map_err(|error| format!("unable to open path {}: {error}", path.to_string_lossy()))?;
     if !path.is_file() {
@@ -724,7 +746,7 @@ fn open_path_with_system(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
-fn reveal_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn reveal_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     let path = std::fs::canonicalize(path)
         .map_err(|error| format!("unable to reveal path {}: {error}", path.to_string_lossy()))?;
     if !path.exists() {

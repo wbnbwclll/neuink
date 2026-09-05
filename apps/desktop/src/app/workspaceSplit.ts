@@ -1,12 +1,63 @@
+import type { WorkspaceSurface } from './workspaceSurface';
+
 export const WORKSPACE_SPLIT_DIVIDER_WIDTH = 10;
-export const WORKSPACE_SPLIT_MIN_LEFT_WIDTH = 320;
-export const WORKSPACE_SPLIT_MIN_RIGHT_WIDTH = 320;
+export const WORKSPACE_SPLIT_STANDARD_MIN_WIDTH = 320;
+export const WORKSPACE_SPLIT_NOTE_MIN_WIDTH = 224;
 
-export function clampWorkspaceSplitLeftWidth(value: number, containerWidth: number) {
-  const maxLeftWidth = Math.max(
-    WORKSPACE_SPLIT_MIN_LEFT_WIDTH,
-    Math.round(containerWidth) - WORKSPACE_SPLIT_DIVIDER_WIDTH - WORKSPACE_SPLIT_MIN_RIGHT_WIDTH
-  );
+export type WorkspaceSplitMinimums = {
+  left: number;
+  right: number;
+};
 
-  return Math.min(maxLeftWidth, Math.max(WORKSPACE_SPLIT_MIN_LEFT_WIDTH, Math.round(value)));
+export function getWorkspaceSplitMinimums(
+  left: WorkspaceSurface,
+  right: WorkspaceSurface
+): WorkspaceSplitMinimums {
+  return {
+    left: getWorkspaceSurfaceMinimumWidth(left),
+    right: getWorkspaceSurfaceMinimumWidth(right)
+  };
+}
+
+export function getWorkspaceSplitWidthBounds(
+  containerWidth: number,
+  minimums: WorkspaceSplitMinimums = {
+    left: WORKSPACE_SPLIT_STANDARD_MIN_WIDTH,
+    right: WORKSPACE_SPLIT_STANDARD_MIN_WIDTH
+  }
+) {
+  const availableWidth = Math.max(0, Math.round(containerWidth) - WORKSPACE_SPLIT_DIVIDER_WIDTH);
+  const requestedLeft = Math.max(0, Math.round(minimums.left));
+  const requestedRight = Math.max(0, Math.round(minimums.right));
+  const requestedTotal = requestedLeft + requestedRight;
+
+  if (requestedTotal <= availableWidth) {
+    return {
+      minLeftWidth: requestedLeft,
+      maxLeftWidth: availableWidth - requestedRight
+    };
+  }
+
+  if (requestedTotal === 0) {
+    return { minLeftWidth: 0, maxLeftWidth: availableWidth };
+  }
+
+  // Preserve the requested proportion when even the two minimums cannot fit.
+  const minLeftWidth = Math.floor(availableWidth * (requestedLeft / requestedTotal));
+  return { minLeftWidth, maxLeftWidth: minLeftWidth };
+}
+
+export function clampWorkspaceSplitLeftWidth(
+  value: number,
+  containerWidth: number,
+  minimums?: WorkspaceSplitMinimums
+) {
+  const { minLeftWidth, maxLeftWidth } = getWorkspaceSplitWidthBounds(containerWidth, minimums);
+  return Math.min(maxLeftWidth, Math.max(minLeftWidth, Math.round(value)));
+}
+
+function getWorkspaceSurfaceMinimumWidth(surface: WorkspaceSurface) {
+  return surface.kind === 'note'
+    ? WORKSPACE_SPLIT_NOTE_MIN_WIDTH
+    : WORKSPACE_SPLIT_STANDARD_MIN_WIDTH;
 }

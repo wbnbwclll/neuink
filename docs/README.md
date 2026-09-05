@@ -8,6 +8,7 @@
 - [系统架构](architecture/system-architecture.md)：当前真实模块、数据、搜索、Assistant 与写盘边界。
 - [开发计划](development/dev-plan.md)：当前完成度、剩余工作和近期顺序。
 - [工程规范](development/engineering-guidelines.md)：当前仓库实际执行的约束。
+- [UI 设计与交互规范](development/ui-design-system.md)：桌面界面的视觉层级、组件复用、滚动、拖动、编辑器和验收标准。
 - [P0 回归清单](development/p0-regression-checklist.md)：高风险用户闭环验收。
 - [打包与发行](deployment/packaging-and-distribution.md)：当前可执行的构建方式和未完成发行项。
 - [MinerU 输出参考](references/ref-mineru-output-files.md)：解析结果格式参考。

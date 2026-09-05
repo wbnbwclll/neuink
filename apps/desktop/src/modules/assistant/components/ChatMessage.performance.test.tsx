@@ -47,6 +47,25 @@ describe('ChatMessage performance boundaries', () => {
     expect(container.textContent).not.toContain('**Markdown**');
   });
 
+  it('shows model reasoning as an expandable live stream', () => {
+    const message = createMessage();
+    message.parts = [{ type: 'reasoning', text: '先确认当前上下文，再选择需要调用的工具。' }];
+
+    const { getByRole, getByText } = render(
+      <ChatMessage
+        message={message}
+        streaming
+        onOpenSource={() => undefined}
+      />,
+    );
+
+    expect(getByRole('button', { name: /正在思考/ }).getAttribute('aria-expanded')).toBe('true');
+    expect(getByText('先确认当前上下文，再选择需要调用的工具。')).toBeTruthy();
+
+    fireEvent.click(getByRole('button', { name: /正在思考/ }));
+    expect(getByRole('button', { name: /正在思考/ }).getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('shows an Apply error and allows retrying the proposal', () => {
     const message = createMessage();
     message.parts = [{

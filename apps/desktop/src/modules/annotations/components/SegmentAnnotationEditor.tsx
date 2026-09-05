@@ -67,6 +67,7 @@ export function SegmentAnnotationEditor({
   onDelete,
   onModeChange,
   onSave,
+  onSelectAnnotation,
   pdfDocument,
   relatedSegmentUids,
   selectedAnnotationId: focusedAnnotationId,
@@ -91,6 +92,7 @@ export function SegmentAnnotationEditor({
     kind: string;
     segmentUid: string;
   }) => Promise<unknown> | unknown;
+  onSelectAnnotation?: (annotation: Annotation) => void;
   pdfDocument?: PDFDocumentProxy | null;
   relatedSegmentUids?: string[];
   selectedAnnotationId?: AnnotationId | null;
@@ -433,9 +435,10 @@ export function SegmentAnnotationEditor({
                           selected={isSelected}
                           onDelete={() => setDeleteTarget(annotation)}
                           onEdit={() => startEditAnnotation(annotation)}
-                          onSelect={() =>
-                            setSelectedAnnotationId(annotation.annotation_id)
-                          }
+                          onSelect={() => {
+                            setSelectedAnnotationId(annotation.annotation_id);
+                            onSelectAnnotation?.(annotation);
+                          }}
                         />
                       );
                     })}
@@ -537,13 +540,21 @@ function AnnotationCard({
   onSelect: () => void;
 }) {
   return (
-    <button
+    <div
+      aria-pressed={selected}
       className={cn(
-        "grid w-full gap-2 rounded-md border bg-white px-3 py-3 text-left transition-colors hover:border-primary/30 hover:bg-primary/5",
+        "grid w-full gap-2 rounded-md border bg-white px-3 py-3 text-left transition-colors hover:border-primary/30 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         selected && "border-primary/35 bg-primary/5",
       )}
-      type="button"
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onSelect();
+      }}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -589,7 +600,7 @@ function AnnotationCard({
       <div className="text-[11px] text-muted-foreground">
         {formatUpdatedAt(annotation.updated_at)}
       </div>
-    </button>
+    </div>
   );
 }
 

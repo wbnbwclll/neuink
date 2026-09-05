@@ -1,0 +1,1245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NeuInk · 标签平行阅读预览</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fa;
+      --panel: #ffffff;
+      --panel-soft: #f8fafc;
+      --panel-blue: #f5f8ff;
+      --line: #e2e8f0;
+      --line-strong: #cbd5e1;
+      --text: #182230;
+      --muted: #667085;
+      --faint: #98a2b3;
+      --blue: #2563eb;
+      --blue-dark: #1d4ed8;
+      --blue-soft: #eaf1ff;
+      --green: #15803d;
+      --green-soft: #edf9f0;
+      --amber: #b45309;
+      --amber-soft: #fff7e8;
+      --purple: #7c3aed;
+      --purple-soft: #f4f0ff;
+      --shadow: 0 10px 30px rgba(15, 23, 42, .07);
+      --radius: 9px;
+      font-family: Geist, Inter, "SF Pro Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 1080px;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    button, textarea { font: inherit; }
+    button { color: inherit; }
+
+    .app {
+      display: grid;
+      grid-template-rows: 46px minmax(0, 1fr);
+      height: 100vh;
+    }
+
+    .titlebar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.94);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      width: 236px;
+      font-weight: 700;
+      letter-spacing: -.02em;
+    }
+
+    .brandmark {
+      display: grid;
+      place-items: center;
+      width: 27px;
+      height: 27px;
+      border-radius: 7px;
+      background: #172033;
+      color: #fff;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
+    }
+
+    .titlebar-path { color: var(--muted); }
+    .titlebar-path b { color: var(--text); font-weight: 600; }
+    .titlebar-spacer { flex: 1; }
+
+    .icon-button, .avatar {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+    }
+
+    .avatar {
+      border: 0;
+      border-radius: 50%;
+      background: #e9eef7;
+      color: #344054;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .body-grid {
+      display: grid;
+      grid-template-columns: 250px minmax(0, 1fr);
+      min-height: 0;
+    }
+
+    .sidebar {
+      min-height: 0;
+      overflow: auto;
+      padding: 12px 10px;
+      border-right: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .new-entry {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      width: 100%;
+      height: 34px;
+      margin-bottom: 12px;
+      border: 1px solid #1e293b;
+      border-radius: 7px;
+      background: #1e293b;
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .side-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 31px;
+      padding: 0 9px;
+      border-radius: 6px;
+      color: #475467;
+    }
+
+    .side-item:hover { background: #f1f5f9; }
+    .side-item .count { margin-left: auto; color: var(--faint); font-size: 11px; }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 15px 8px 7px;
+      color: #7a8699;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .tree, .tree ul { margin: 0; padding: 0; list-style: none; }
+    .tree ul { position: relative; margin-left: 15px; padding-left: 12px; }
+    .tree ul::before {
+      content: "";
+      position: absolute;
+      left: 3px;
+      top: -3px;
+      bottom: 15px;
+      width: 1px;
+      background: #cbd5e1;
+    }
+
+    .tree li { position: relative; }
+    .tree ul > li::before {
+      content: "";
+      position: absolute;
+      left: -9px;
+      top: 16px;
+      width: 10px;
+      height: 1px;
+      background: #cbd5e1;
+    }
+
+    .tag-row {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 32px;
+      padding: 4px 8px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      color: #475467;
+      cursor: default;
+    }
+
+    .tag-row.selected {
+      border-color: #bfd0f7;
+      background: var(--blue-soft);
+      color: #1d4ed8;
+      font-weight: 600;
+    }
+
+    .tag-dot { width: 7px; height: 7px; border-radius: 50%; background: #94a3b8; }
+    .selected .tag-dot { background: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+    .tag-count { margin-left: auto; color: var(--faint); font-size: 10px; font-weight: 500; }
+    .reading-count { color: var(--blue); }
+
+    main {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .context-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 22px;
+      padding: 14px 18px 13px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .breadcrumb {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .tag-title-row { display: flex; align-items: center; gap: 10px; }
+    h1 { margin: 0; font-size: 20px; letter-spacing: -.025em; }
+
+    .live-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 7px;
+      border: 1px solid #c8dafd;
+      border-radius: 999px;
+      background: var(--panel-blue);
+      color: var(--blue-dark);
+      font-size: 10px;
+      font-weight: 650;
+    }
+
+    .header-hint { margin-top: 5px; color: var(--muted); font-size: 11px; }
+    .header-hint b { color: #344054; }
+
+    .progress-block { display: grid; align-content: center; min-width: 225px; }
+    .progress-copy { display: flex; justify-content: space-between; margin-bottom: 7px; font-size: 11px; }
+    .progress-copy b { font-size: 12px; }
+    .progress-track { height: 6px; overflow: hidden; border-radius: 999px; background: #e9eef5; }
+    .progress-fill { width: 37.5%; height: 100%; border-radius: inherit; background: var(--blue); transition: width .25s ease; }
+    .progress-meta { margin-top: 6px; color: var(--faint); font-size: 10px; text-align: right; }
+
+    .workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 44px minmax(0, 1fr);
+      padding: 10px;
+      gap: 8px;
+    }
+
+    .workspace-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 6px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      box-shadow: 0 2px 8px rgba(15,23,42,.03);
+    }
+
+    .restore-status {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 8px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .restore-status::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #22c55e;
+      box-shadow: 0 0 0 3px #dcfce7;
+    }
+
+    .toolbar-spacer { flex: 1; }
+
+    .segmented {
+      display: flex;
+      gap: 2px;
+      padding: 2px;
+      border-radius: 7px;
+      background: #f1f5f9;
+    }
+
+    .mode-button {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 29px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    .mode-button.active { background: #fff; color: var(--text); box-shadow: 0 1px 4px rgba(15,23,42,.1); font-weight: 600; }
+
+    .secondary-button, .primary-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 30px;
+      padding: 0 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .secondary-button { border: 1px solid var(--line-strong); background: #fff; color: #344054; }
+    .primary-button { border: 1px solid var(--blue); background: var(--blue); color: #fff; }
+    .primary-button:hover { background: var(--blue-dark); }
+
+    .reading-grid {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 250px minmax(420px, 1fr) 315px;
+      gap: 8px;
+      transition: grid-template-columns .2s ease;
+    }
+
+    .reading-grid.compare-mode { grid-template-columns: 220px minmax(720px, 1fr) 280px; }
+    .reading-grid.synthesis-mode { grid-template-columns: 230px minmax(390px, .85fr) minmax(430px, 1.15fr); }
+
+    .panel {
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 3px 12px rgba(15,23,42,.035);
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 45px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: #fcfdfe;
+    }
+
+    .panel-title { font-size: 12px; font-weight: 700; }
+    .panel-subtitle { color: var(--faint); font-size: 10px; }
+
+    .paper-list { height: calc(100% - 45px); overflow: auto; padding: 7px; }
+
+    .queue-summary {
+      margin: 2px 2px 7px;
+      padding: 9px 10px;
+      border: 1px solid #d7e3fd;
+      border-radius: 7px;
+      background: var(--panel-blue);
+      color: #344054;
+      font-size: 10px;
+      line-height: 1.5;
+    }
+
+    .queue-summary b { color: var(--blue-dark); }
+
+    .paper-item {
+      position: relative;
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      gap: 7px;
+      padding: 9px 8px;
+      margin-bottom: 4px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      cursor: pointer;
+    }
+
+    .paper-item:hover { background: #f8fafc; }
+    .paper-item.active { border-color: #bcd0fb; background: #f3f7ff; }
+    .paper-item.comparing { border-color: #d7c8ff; background: var(--purple-soft); }
+
+    .paper-index {
+      display: grid;
+      place-items: center;
+      width: 21px;
+      height: 21px;
+      border: 1px solid var(--line-strong);
+      border-radius: 50%;
+      background: #fff;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 700;
+    }
+
+    .paper-item.done .paper-index { border-color: #b8e1c2; background: var(--green-soft); color: var(--green); }
+    .paper-item.active .paper-index { border-color: var(--blue); background: var(--blue); color: #fff; }
+    .paper-name { display: -webkit-box; overflow: hidden; color: #344054; font-size: 11px; font-weight: 600; line-height: 1.38; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .paper-meta { display: flex; align-items: center; gap: 5px; margin-top: 5px; color: var(--faint); font-size: 9px; }
+    .status-pill { padding: 1px 5px; border-radius: 999px; background: #eef2f6; }
+    .active .status-pill { background: #dce8ff; color: var(--blue-dark); }
+    .done .status-pill { background: var(--green-soft); color: var(--green); }
+    .comparing .status-pill { background: #ebe3ff; color: var(--purple); }
+
+    .reader-panel { display: grid; grid-template-rows: 45px minmax(0,1fr) 47px; }
+
+    .reader-heading { min-width: 0; }
+    .reader-heading strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+    .reader-heading span { color: var(--faint); font-size: 9px; }
+    .reader-actions { display: flex; gap: 5px; }
+
+    .reader-body {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      background: #eef1f5;
+    }
+
+    .reader-body.dual { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
+    .document-wrap { min-width: 0; overflow: auto; padding: 16px; }
+    .document-wrap + .document-wrap { border-left: 1px solid #cfd6df; }
+
+    .paper-page {
+      width: min(100%, 650px);
+      min-height: 720px;
+      margin: 0 auto;
+      padding: 42px 48px 56px;
+      background: #fff;
+      box-shadow: 0 3px 16px rgba(15,23,42,.13);
+      color: #263244;
+      font-family: Georgia, "Times New Roman", serif;
+    }
+
+    .paper-page h2 { margin: 0 0 7px; font-size: 20px; line-height: 1.25; }
+    .paper-page .authors { margin-bottom: 22px; color: #667085; font-family: Geist, sans-serif; font-size: 9px; }
+    .paper-page h3 { margin: 20px 0 8px; font-size: 13px; }
+    .paper-page p { margin: 0 0 10px; font-size: 11px; line-height: 1.62; text-align: justify; }
+
+    mark {
+      padding: 1px 2px;
+      border-radius: 2px;
+      background: #fff2a8;
+      color: inherit;
+    }
+
+    .figure-box {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 7px;
+      margin: 14px 0 7px;
+      padding: 12px;
+      border: 1px solid #d8dee8;
+      background: #fbfcfd;
+    }
+
+    .figure-node {
+      position: relative;
+      display: grid;
+      place-items: center;
+      height: 52px;
+      border: 1px solid #bbc8da;
+      border-radius: 5px;
+      background: #fff;
+      color: #475467;
+      font-family: Geist, sans-serif;
+      font-size: 9px;
+      font-weight: 600;
+    }
+
+    .figure-node:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      right: -15px;
+      z-index: 1;
+      color: var(--blue);
+      font-size: 13px;
+    }
+
+    .figure-caption { color: #667085; font-size: 9px !important; text-align: center !important; }
+
+    .reader-footer {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-top: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .page-status { color: var(--muted); font-size: 10px; }
+    .reader-footer .primary-button { margin-left: auto; }
+
+    .notes-panel { display: grid; grid-template-rows: 45px auto minmax(0,1fr) auto; }
+
+    .question-box {
+      margin: 10px 10px 0;
+      padding: 9px 10px;
+      border: 1px solid #ead7ad;
+      border-radius: 7px;
+      background: var(--amber-soft);
+    }
+
+    .question-label { margin-bottom: 4px; color: var(--amber); font-size: 9px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+    .question-text { color: #5f4a28; font-size: 11px; font-weight: 600; line-height: 1.45; }
+
+    .notes-scroll { overflow: auto; padding: 10px; }
+
+    .note-card {
+      margin-bottom: 8px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+    }
+
+    .note-source { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; color: var(--blue-dark); font-size: 9px; font-weight: 650; }
+    .note-source.purple { color: var(--purple); }
+    .note-card p { margin: 0; color: #475467; font-size: 10px; line-height: 1.5; }
+
+    .synthesis-editor {
+      min-height: 190px;
+      padding: 12px;
+      outline: none;
+      color: #344054;
+      font-size: 11px;
+      line-height: 1.65;
+    }
+
+    .synthesis-editor h3 { margin: 0 0 8px; color: #182230; font-size: 13px; }
+    .synthesis-editor ul { margin: 5px 0 0; padding-left: 17px; }
+    .synthesis-editor li { margin-bottom: 5px; }
+
+    .note-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-top: 1px solid var(--line);
+      background: #fcfdfe;
+      color: var(--faint);
+      font-size: 9px;
+    }
+
+    .toast {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 13px;
+      border: 1px solid #b8e1c2;
+      border-radius: 8px;
+      background: #f5fff7;
+      color: #166534;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: .2s ease;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 1280px) {
+      .reading-grid { grid-template-columns: 220px minmax(420px, 1fr) 280px; }
+      .body-grid { grid-template-columns: 225px minmax(0,1fr); }
+      .brand { width: 211px; }
+    }
+
+    /* 镜头式平行阅读工作台 */
+    .reading-grid {
+      grid-template-columns: 244px minmax(0, 1fr) !important;
+      transition: grid-template-columns .24s ease;
+    }
+
+    .reading-grid.queue-collapsed { grid-template-columns: 48px minmax(0, 1fr) !important; }
+    .queue-panel { transition: width .24s ease; }
+    .queue-panel .queue-collapsed-label { display: none; }
+    .queue-panel.collapsed .panel-header { height: 100%; padding: 9px 0; flex-direction: column; justify-content: flex-start; gap: 10px; }
+    .queue-panel.collapsed .panel-header > div:first-child,
+    .queue-panel.collapsed .paper-list { display: none; }
+    .queue-panel.collapsed .queue-collapsed-label {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .16em;
+      writing-mode: vertical-rl;
+    }
+
+    .camera-shell {
+      display: grid;
+      grid-template-rows: 45px auto minmax(0, 1fr) 34px;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .camera-title { display: flex; align-items: center; gap: 8px; }
+    .camera-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: #172033;
+      color: #fff;
+      font-size: 9px;
+      font-weight: 700;
+    }
+
+    .camera-dots { display: flex; align-items: center; gap: 5px; }
+    .camera-dot { width: 5px; height: 5px; border-radius: 50%; background: #cbd5e1; transition: .2s ease; }
+    .camera-dot.active { width: 17px; border-radius: 999px; background: var(--blue); }
+
+    .view-dock {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 35px;
+      padding: 5px 10px;
+      overflow: hidden;
+      border-bottom: 1px solid var(--line);
+      background: #fafbfd;
+      transition: min-height .2s ease, padding .2s ease;
+    }
+
+    .view-switch-label { margin-right: 2px; color: var(--faint); font-size: 9px; font-weight: 650; }
+    .view-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 25px;
+      padding: 0 8px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 9px;
+    }
+
+    .view-toggle::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #cbd5e1; }
+    .view-toggle.active { border-color: #b8cbf7; background: var(--blue-soft); color: var(--blue-dark); font-weight: 700; }
+    .view-toggle.active::before { background: var(--blue); box-shadow: 0 0 0 2px rgba(37,99,235,.12); }
+    .view-toggle.closed { border-style: dashed; color: var(--faint); }
+    .view-toggle.closed::after { content: "已关闭"; margin-left: 2px; color: var(--faint); font-size: 8px; }
+
+    .camera-stage {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      padding: 8px 0;
+      background:
+        linear-gradient(#eef2f6 1px, transparent 1px) 0 0 / 100% 22px,
+        #e9edf2;
+    }
+
+    .camera-viewport { position: relative; width: 100%; height: 100%; overflow: hidden; }
+    .camera-track {
+      display: flex;
+      gap: 10px;
+      height: 100%;
+      padding: 0;
+      will-change: transform;
+      transition: transform .46s cubic-bezier(.22,.82,.22,1);
+    }
+
+    .shot-card {
+      flex: 0 0 var(--shot-width, 480px);
+      display: grid;
+      grid-template-rows: 43px minmax(0, 1fr) 42px;
+      min-width: 0;
+      height: 100%;
+      overflow: hidden;
+      border: 1px solid #cbd4df;
+      border-radius: 9px;
+      background: #fff;
+      box-shadow: 0 7px 22px rgba(15,23,42,.12);
+      transition: flex-basis .28s ease, opacity .2s ease, box-shadow .2s ease;
+    }
+
+    .shot-card.is-near { box-shadow: 0 10px 28px rgba(15,23,42,.16); }
+    .shot-card.closed { display: none; }
+    .shot-card.collapsed { display: none; }
+
+    .shot-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 9px 0 11px;
+      border-bottom: 1px solid var(--line);
+      background: #fcfdfe;
+    }
+
+    .shot-kind {
+      flex: none;
+      padding: 3px 6px;
+      border-radius: 4px;
+      background: #edf3ff;
+      color: var(--blue-dark);
+      font-size: 8px;
+      font-weight: 800;
+      letter-spacing: .05em;
+    }
+
+    .shot-kind.note { background: #f0eaff; color: var(--purple); }
+    .shot-title-copy { min-width: 0; flex: 1; }
+    .shot-title-copy strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+    .shot-title-copy span { color: var(--faint); font-size: 8px; }
+    .shot-controls { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+
+    .shot-control {
+      display: grid;
+      place-items: center;
+      width: 25px;
+      height: 25px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .shot-control:hover { background: #eef2f6; color: #182230; }
+    .shot-content { min-height: 0; overflow: auto; background: #eef1f5; padding: 12px; }
+    .shot-content .paper-page { width: 100%; min-height: 670px; padding: 34px 34px 45px; }
+    .shot-footer {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 9px;
+      border-top: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      font-size: 9px;
+    }
+
+    .shot-footer .primary-button { margin-left: auto; }
+    .notes-shot .shot-content { display: grid; grid-template-rows: auto auto minmax(180px,1fr); gap: 8px; background: #fff; padding: 10px; }
+    .notes-shot .question-box { margin: 0; }
+    .notes-shot .synthesis-editor { min-height: 240px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+
+    .edge-handle {
+      position: absolute;
+      z-index: 5;
+      top: 50%;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 76px;
+      padding: 0 8px;
+      border: 1px solid #b9c6d5;
+      background: rgba(255,255,255,.96);
+      color: #344054;
+      box-shadow: 0 5px 18px rgba(15,23,42,.15);
+      cursor: pointer;
+      transform: translateY(-50%);
+      transition: opacity .2s ease, transform .2s ease;
+      font-size: 9px;
+      font-weight: 700;
+      writing-mode: vertical-rl;
+    }
+
+    .edge-handle:hover { color: var(--blue); }
+    .edge-handle.prev { left: 0; border-left: 0; border-radius: 0 7px 7px 0; }
+    .edge-handle.next { right: 0; border-right: 0; border-radius: 7px 0 0 7px; }
+    .edge-handle[hidden] { display: none; }
+
+    .camera-footer {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 10px;
+      border-top: 1px solid var(--line);
+      background: #fbfcfd;
+      color: var(--faint);
+      font-size: 9px;
+    }
+
+    .camera-rail { position: relative; flex: 1; height: 4px; border-radius: 999px; background: #e2e8f0; }
+    .camera-thumb { position: absolute; top: 0; left: 50%; width: 50%; height: 100%; border-radius: inherit; background: #64748b; transition: left .35s ease; }
+    .camera-footer strong { color: #475467; font-weight: 650; }
+
+    @media (max-width: 1260px) {
+      .reading-grid { grid-template-columns: 220px minmax(0, 1fr) !important; }
+      .reading-grid.queue-collapsed { grid-template-columns: 48px minmax(0, 1fr) !important; }
+      .shot-content .paper-page { padding-inline: 26px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="titlebar">
+      <div class="brand">
+        <div class="brandmark" aria-hidden="true">N</div>
+        <span>NeuInk</span>
+      </div>
+      <div class="titlebar-path">文献库&nbsp; / &nbsp;<b>平行阅读</b></div>
+      <div class="titlebar-spacer"></div>
+      <button class="icon-button" aria-label="搜索">⌕</button>
+      <button class="icon-button" aria-label="更多">⋯</button>
+      <div class="avatar">SU</div>
+    </header>
+
+    <div class="body-grid">
+      <aside class="sidebar">
+        <button class="new-entry"><span>＋</span> 创建条目</button>
+        <div class="side-item">▤ <span>全部条目</span><span class="count">24</span></div>
+        <div class="side-item">◷ <span>最近阅读</span><span class="count">6</span></div>
+        <div class="side-item">⌁ <span>解析任务</span><span class="count">1</span></div>
+
+        <div class="section-title"><span>标签</span><span>＋</span></div>
+        <ul class="tree">
+          <li>
+            <div class="tag-row"><span>⌄</span><span class="tag-dot"></span><span>研究主题</span><span class="tag-count">18</span></div>
+            <ul>
+              <li>
+                <div class="tag-row"><span>⌄</span><span class="tag-dot"></span><span>可视化理解</span><span class="tag-count">11</span></div>
+                <ul>
+                  <li><div class="tag-row selected"><span class="tag-dot"></span><span>多模态解释</span><span class="tag-count reading-count">3/8</span></div></li>
+                  <li><div class="tag-row"><span class="tag-dot"></span><span>图表问答</span><span class="tag-count">5</span></div></li>
+                </ul>
+              </li>
+              <li><div class="tag-row"><span>›</span><span class="tag-dot"></span><span>论文阅读工具</span><span class="tag-count">7</span></div></li>
+            </ul>
+          </li>
+          <li><div class="tag-row"><span>›</span><span class="tag-dot"></span><span>方法论</span><span class="tag-count">9</span></div></li>
+          <li><div class="tag-row"><span class="tag-dot"></span><span>待整理</span><span class="tag-count">4</span></div></li>
+        </ul>
+
+        <div class="section-title"><span>工作区状态</span></div>
+        <div class="side-item">● <span>正在进行</span><span class="count">2</span></div>
+        <div class="side-item">✓ <span>已经完成</span><span class="count">5</span></div>
+      </aside>
+
+      <main>
+        <section class="context-header">
+          <div>
+            <div class="breadcrumb">标签 <span>›</span> 研究主题 <span>›</span> 可视化理解 <span>›</span> 多模态解释</div>
+            <div class="tag-title-row">
+              <h1>多模态解释</h1>
+              <span class="live-badge">● 标签平行阅读</span>
+            </div>
+            <div class="header-hint">工作区由标签自动维护 · 当前包含 <b>8 篇论文</b>，含 2 个子标签 · 新增论文会自动进入待读队列</div>
+          </div>
+          <div class="progress-block">
+            <div class="progress-copy"><span>阅读进度</span><b id="progressText">3 / 8</b></div>
+            <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+            <div class="progress-meta">上次阅读：今天 14:32 · 已自动恢复</div>
+          </div>
+        </section>
+
+        <section class="workspace">
+          <div class="workspace-toolbar">
+            <div class="restore-status">已恢复上次镜头：对照论文 + 综合笔记</div>
+            <div class="toolbar-spacer"></div>
+            <div class="segmented" aria-label="阅读视角">
+              <button class="mode-button active">⌖ 镜头视角</button>
+              <button class="mode-button" id="centerCurrentButton">▣ 聚焦当前论文</button>
+            </div>
+            <button class="secondary-button" id="restoreAllButton">＋ 打开视图</button>
+            <button class="secondary-button">⋯ 工作区设置</button>
+          </div>
+
+          <div class="reading-grid" id="readingGrid">
+            <section class="panel queue-panel" id="queuePanel">
+              <div class="panel-header">
+                <div><div class="panel-title">标签论文</div><div class="panel-subtitle">点击论文送入当前镜头</div></div>
+                <button class="shot-control" id="toggleQueueButton" title="折叠论文队列">‹</button>
+                <span class="queue-collapsed-label">标签论文</span>
+              </div>
+              <div class="paper-list" id="paperList">
+                <div class="queue-summary"><b>镜头内只完整显示两个视图。</b><br>相邻视图会在边缘露出，点击边缘即可横向移动。</div>
+                <div class="paper-item done" data-id="1" data-title="ChartQA: A Benchmark for Question Answering about Charts" data-page="12 / 12">
+                  <div class="paper-index">✓</div><div><div class="paper-name">ChartQA: A Benchmark for Question Answering about Charts</div><div class="paper-meta"><span class="status-pill">已读</span><span>12 页</span></div></div>
+                </div>
+                <div class="paper-item done" data-id="2" data-title="VL-InterpreT: An Interactive Visualization Tool for Interpreting Vision-Language Transformers" data-page="9 / 9">
+                  <div class="paper-index">✓</div><div><div class="paper-name">VL-InterpreT: Interpreting Vision-Language Transformers</div><div class="paper-meta"><span class="status-pill">已读</span><span>9 页</span></div></div>
+                </div>
+                <div class="paper-item done" data-id="3" data-title="Multimodal Explanations: Justifying Decisions and Pointing to the Evidence" data-page="14 / 14">
+                  <div class="paper-index">✓</div><div><div class="paper-name">Multimodal Explanations: Justifying Decisions and Pointing to Evidence</div><div class="paper-meta"><span class="status-pill">已读</span><span>14 页</span></div></div>
+                </div>
+                <div class="paper-item active" data-id="4" data-title="Towards Faithful Visual Explanations for Multimodal Models" data-page="6 / 11">
+                  <div class="paper-index">4</div><div><div class="paper-name">Towards Faithful Visual Explanations for Multimodal Models</div><div class="paper-meta"><span class="status-pill">镜头 1 · 55%</span><span>第 6 页</span></div></div>
+                </div>
+                <div class="paper-item comparing" data-id="5" data-title="What Makes a Good Explanation? A Human-Centered Evaluation" data-page="7 / 10">
+                  <div class="paper-index">5</div><div><div class="paper-name">What Makes a Good Explanation? A Human-Centered Evaluation</div><div class="paper-meta"><span class="status-pill">镜头 2</span><span>第 7 页</span></div></div>
+                </div>
+                <div class="paper-item" data-id="6" data-title="Evaluating Attribution Methods in Vision-Language Models" data-page="0 / 13">
+                  <div class="paper-index">6</div><div><div class="paper-name">Evaluating Attribution Methods in Vision-Language Models</div><div class="paper-meta"><span class="status-pill">未读</span><span>13 页</span></div></div>
+                </div>
+                <div class="paper-item" data-id="7" data-title="Human-AI Collaboration through Contrastive Explanations" data-page="0 / 8">
+                  <div class="paper-index">7</div><div><div class="paper-name">Human-AI Collaboration through Contrastive Explanations</div><div class="paper-meta"><span class="status-pill">未读</span><span>8 页</span></div></div>
+                </div>
+                <div class="paper-item" data-id="8" data-title="Visual Grounding for Explainable Multimodal Reasoning" data-page="0 / 12">
+                  <div class="paper-index">8</div><div><div class="paper-name">Visual Grounding for Explainable Multimodal Reasoning</div><div class="paper-meta"><span class="status-pill">未读</span><span>12 页</span></div></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel camera-shell">
+              <div class="panel-header">
+                <div class="camera-title">
+                  <span class="camera-badge">⌖ 镜头视角</span>
+                  <div><div class="panel-title" id="cameraTitle">正在查看：对照论文 + 综合笔记</div><div class="panel-subtitle">横向滚动，或点击两侧露出的视图边缘</div></div>
+                </div>
+                <div class="camera-dots" aria-label="镜头位置"><span class="camera-dot"></span><span class="camera-dot active"></span></div>
+              </div>
+              <div class="view-dock" id="viewDock" aria-label="视图显示开关">
+                <span class="view-switch-label">显示视图</span>
+                <button class="view-toggle active" data-target="shot-paper-a" data-label="论文 A">论文 A</button>
+                <button class="view-toggle active" data-target="shot-paper-b" data-label="对照论文">对照论文</button>
+                <button class="view-toggle active" data-target="shot-notes" data-label="综合笔记">综合笔记</button>
+              </div>
+
+              <div class="camera-stage">
+                <div class="camera-viewport" id="cameraViewport">
+                  <div class="camera-track" id="cameraTrack">
+                    <article class="shot-card" id="shot-paper-a" data-title="论文 A" data-rail-label="论文 A">
+                      <div class="shot-header">
+                        <span class="shot-kind">PDF</span>
+                        <div class="shot-title-copy"><strong id="shotATitle">Towards Faithful Visual Explanations</strong><span>论文 4 · 第 6 / 11 页</span></div>
+                        <div class="shot-controls"><button class="shot-control" data-action="collapse" title="折叠视图">▯</button><button class="shot-control" data-action="close" title="关闭视图">×</button></div>
+                      </div>
+                      <div class="shot-content">
+                        <article class="paper-page">
+                          <h2 id="paperPageTitle">Towards Faithful Visual Explanations for Multimodal Models</h2>
+                          <div class="authors">Y. Chen · M. Park · R. Singh · CHI 2026</div>
+                          <h3>3. Measuring Explanation Faithfulness</h3>
+                          <p>Visual explanations are often evaluated by how convincing they appear to people, but plausibility alone does not guarantee that highlighted evidence influenced the model's prediction.</p>
+                          <p><mark>We distinguish explanation plausibility from explanation faithfulness.</mark> The former reflects human expectations; the latter asks whether the explanation represents the model's internal decision process.</p>
+                          <div class="figure-box"><div class="figure-node">Input regions</div><div class="figure-node">Model evidence</div><div class="figure-node">Explanation</div></div>
+                          <p class="figure-caption">Figure 3. Evaluation pipeline for region-level faithfulness.</p>
+                          <h3>3.2 Cross-modal perturbation</h3>
+                          <p>Our evaluation removes visual and textual evidence independently. A faithful explanation should predict the resulting output change across both modalities.</p>
+                        </article>
+                      </div>
+                      <div class="shot-footer"><span>阅读位置自动保存 · 55%</span><button class="primary-button" id="completeButton">标记已读</button></div>
+                    </article>
+
+                    <article class="shot-card is-near" id="shot-paper-b" data-title="对照论文" data-rail-label="对照论文">
+                      <div class="shot-header">
+                        <span class="shot-kind">PDF</span>
+                        <div class="shot-title-copy"><strong>What Makes a Good Explanation?</strong><span>对照论文 · 第 7 / 10 页</span></div>
+                        <div class="shot-controls"><button class="shot-control" data-action="collapse" title="折叠视图">▯</button><button class="shot-control" data-action="close" title="关闭视图">×</button></div>
+                      </div>
+                      <div class="shot-content">
+                        <article class="paper-page">
+                          <h2>What Makes a Good Explanation? A Human-Centered Evaluation</h2>
+                          <div class="authors">A. Lopez · N. Kumar · UIST 2025</div>
+                          <h3>4. User Study</h3>
+                          <p>Participants preferred explanations that combined concise textual rationales with localized visual evidence. Confidence increased when both channels agreed.</p>
+                          <p><mark>Perceived usefulness was driven more strongly by clarity and actionability than by measured faithfulness.</mark> This gap complicates the design of explanation interfaces.</p>
+                          <div class="figure-box"><div class="figure-node">Clarity</div><div class="figure-node">Trust</div><div class="figure-node">Action</div></div>
+                          <p class="figure-caption">Figure 4. User-centered criteria observed in the study.</p>
+                          <h3>4.3 Design implications</h3>
+                          <p>Interfaces should expose uncertainty and let readers compare an explanation against alternative evidence.</p>
+                        </article>
+                      </div>
+                      <div class="shot-footer"><span>对照阅读 · 第 7 页</span><button class="secondary-button">摘录到综合笔记</button></div>
+                    </article>
+
+                    <article class="shot-card notes-shot is-near" id="shot-notes" data-title="综合笔记" data-rail-label="综合笔记">
+                      <div class="shot-header">
+                        <span class="shot-kind note">NOTE</span>
+                        <div class="shot-title-copy"><strong>多模态解释 · 跨论文综合</strong><span>归属于当前标签 · 自动保存</span></div>
+                        <div class="shot-controls"><button class="shot-control" data-action="collapse" title="折叠视图">▯</button><button class="shot-control" data-action="close" title="关闭视图">×</button></div>
+                      </div>
+                      <div class="shot-content">
+                        <div class="question-box"><div class="question-label">本轮阅读问题</div><div class="question-text">不同论文如何定义并验证“好的多模态解释”？</div></div>
+                        <div>
+                          <div class="note-card"><div class="note-source">▣ 论文 A · 第 6 页</div><p>Faithfulness 是解释是否反映模型真实决策依据，而不只是看起来合理。</p></div>
+                          <div class="note-card"><div class="note-source purple">▣ 对照论文 · 第 7 页</div><p>用户更在意清晰度和可操作性，与模型层面的 faithfulness 不总是一致。</p></div>
+                        </div>
+                        <div class="synthesis-editor" contenteditable="true" spellcheck="false">
+                          <h3>阶段性综合</h3>
+                          两条评价路径需要同时保留：
+                          <ul><li><b>模型视角：</b>因果扰动、证据归因、跨模态一致性。</li><li><b>用户视角：</b>清晰度、可信度、是否支持后续行动。</li><li>下一步：比较两类指标冲突时，各论文如何处理。</li></ul>
+                        </div>
+                      </div>
+                      <div class="shot-footer"><span style="color:#15803d">● 已自动保存</span><button class="secondary-button">打开完整笔记</button></div>
+                    </article>
+                  </div>
+
+                  <button class="edge-handle prev" id="cameraPrev" title="移动到左侧两个视图">‹ 点击查看左侧</button>
+                  <button class="edge-handle next" id="cameraNext" title="移动到右侧两个视图" hidden>点击查看右侧 ›</button>
+                </div>
+              </div>
+
+              <div class="camera-footer">
+                <span><strong>镜头 2 / 2</strong> · 当前完整显示第 2–3 个视图</span>
+                <div class="camera-rail"><span class="camera-thumb" id="cameraThumb"></span></div>
+                <span>触控板横滑 / Shift + 滚轮 / 点击边缘</span>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <div class="toast" id="toast">✓ 阅读状态已保存，已进入下一篇</div>
+
+  <script>
+    const grid = document.getElementById('readingGrid');
+    const queuePanel = document.getElementById('queuePanel');
+    const queueToggle = document.getElementById('toggleQueueButton');
+    const cameraViewport = document.getElementById('cameraViewport');
+    const cameraTrack = document.getElementById('cameraTrack');
+    const cameraPrev = document.getElementById('cameraPrev');
+    const cameraNext = document.getElementById('cameraNext');
+    const cameraTitle = document.getElementById('cameraTitle');
+    const cameraThumb = document.getElementById('cameraThumb');
+    const cameraFooterState = document.querySelector('.camera-footer > span:first-child');
+    const viewDock = document.getElementById('viewDock');
+    const shotA = document.getElementById('shot-paper-a');
+    const shotATitle = document.getElementById('shotATitle');
+    const paperPageTitle = document.getElementById('paperPageTitle');
+    const toast = document.getElementById('toast');
+    const progressText = document.getElementById('progressText');
+    const progressFill = document.getElementById('progressFill');
+    let completed = 3;
+    let activeId = '4';
+    let cameraIndex = 1;
+    let wheelLocked = false;
+    const gap = 10;
+    const peek = 88;
+
+    function openShots() {
+      return [...document.querySelectorAll('.shot-card:not(.closed):not(.collapsed)')];
+    }
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add('show');
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => toast.classList.remove('show'), 1800);
+    }
+
+    function layoutCamera() {
+      const shots = openShots();
+      const viewportWidth = cameraViewport.clientWidth;
+      const expandedWidth = shots.length <= 1
+        ? viewportWidth
+        : shots.length === 2
+          ? (viewportWidth - gap) / 2
+          : Math.max(320, (viewportWidth - peek - gap * 2) / 2);
+      cameraTrack.style.setProperty('--shot-width', `${expandedWidth}px`);
+
+      const maxIndex = Math.max(0, shots.length - 2);
+      cameraIndex = Math.max(0, Math.min(cameraIndex, maxIndex));
+      let precedingWidth = 0;
+      for (let index = 0; index < cameraIndex; index += 1) {
+        precedingWidth += expandedWidth;
+      }
+      const offset = cameraIndex === 0
+        ? 0
+        : precedingWidth + gap * Math.max(0, cameraIndex - 1) - peek;
+      cameraTrack.style.transform = `translate3d(${-offset}px, 0, 0)`;
+
+      cameraPrev.hidden = cameraIndex === 0;
+      cameraNext.hidden = cameraIndex >= maxIndex;
+      const visiblePair = shots.slice(cameraIndex, cameraIndex + 2);
+      shots.forEach((shot) => shot.classList.toggle('is-near', visiblePair.includes(shot)));
+      cameraTitle.textContent = visiblePair.length > 0
+        ? `正在查看：${visiblePair.map((shot) => shot.dataset.title).join(' + ')}`
+        : '当前没有打开的视图';
+
+      document.querySelectorAll('.camera-dot').forEach((dot, index) => {
+        dot.classList.toggle('active', index === cameraIndex);
+        dot.style.display = index <= maxIndex ? '' : 'none';
+      });
+      const steps = maxIndex + 1;
+      cameraThumb.style.width = `${100 / steps}%`;
+      cameraThumb.style.left = `${cameraIndex * (100 / steps)}%`;
+      cameraFooterState.innerHTML = shots.length > 0
+        ? `<strong>镜头 ${cameraIndex + 1} / ${steps}</strong> · 当前完整显示第 ${cameraIndex + 1}–${Math.min(cameraIndex + 2, shots.length)} 个视图`
+        : '<strong>镜头为空</strong> · 从“打开视图”恢复内容';
+      updateViewSwitches();
+    }
+
+    function updateViewSwitches() {
+      document.querySelectorAll('.view-toggle').forEach((toggle) => {
+        const shot = document.getElementById(toggle.dataset.target);
+        const visible = !shot.classList.contains('closed') && !shot.classList.contains('collapsed');
+        toggle.classList.toggle('active', visible);
+        toggle.classList.toggle('closed', shot.classList.contains('closed'));
+        toggle.textContent = toggle.dataset.label;
+        toggle.title = shot.classList.contains('closed')
+          ? `恢复${toggle.dataset.label}`
+          : visible
+            ? `隐藏${toggle.dataset.label}`
+            : `显示${toggle.dataset.label}`;
+      });
+    }
+
+    function moveCamera(direction) {
+      const maxIndex = Math.max(0, openShots().length - 2);
+      const nextIndex = Math.max(0, Math.min(cameraIndex + direction, maxIndex));
+      if (nextIndex !== cameraIndex) {
+        cameraIndex = nextIndex;
+        layoutCamera();
+      }
+    }
+
+    cameraPrev.addEventListener('click', () => moveCamera(-1));
+    cameraNext.addEventListener('click', () => moveCamera(1));
+
+    cameraViewport.addEventListener('wheel', (event) => {
+      const horizontalIntent = Math.abs(event.deltaX) > 10 || event.shiftKey;
+      if (!horizontalIntent || wheelLocked) return;
+      event.preventDefault();
+      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      moveCamera(delta > 0 ? 1 : -1);
+      wheelLocked = true;
+      window.setTimeout(() => { wheelLocked = false; }, 380);
+    }, { passive: false });
+
+    cameraTrack.addEventListener('click', (event) => {
+      const shot = event.target.closest('.shot-card');
+      if (!shot || event.target.closest('button')) return;
+      const shots = openShots();
+      const shotIndex = shots.indexOf(shot);
+      if (shotIndex < cameraIndex) {
+        cameraIndex = shotIndex;
+        layoutCamera();
+      } else if (shotIndex > cameraIndex + 1) {
+        cameraIndex = Math.max(0, shotIndex - 1);
+        layoutCamera();
+      }
+    });
+
+    document.querySelectorAll('.shot-control[data-action]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const shot = button.closest('.shot-card');
+        if (button.dataset.action === 'collapse') {
+          shot.classList.add('collapsed');
+          layoutCamera();
+          return;
+        }
+
+        shot.classList.add('closed');
+        shot.classList.remove('collapsed');
+        layoutCamera();
+      });
+    });
+
+    document.querySelectorAll('.view-toggle').forEach((toggle) => {
+      toggle.addEventListener('click', () => {
+        const shot = document.getElementById(toggle.dataset.target);
+        if (shot.classList.contains('closed')) {
+          shot.classList.remove('closed');
+        } else {
+          shot.classList.toggle('collapsed');
+        }
+        if (!shot.classList.contains('collapsed')) {
+          cameraIndex = Math.max(0, openShots().indexOf(shot) - 1);
+        }
+        layoutCamera();
+      });
+    });
+
+    queueToggle.addEventListener('click', () => {
+      const collapsed = queuePanel.classList.toggle('collapsed');
+      grid.classList.toggle('queue-collapsed', collapsed);
+      queueToggle.textContent = collapsed ? '›' : '‹';
+      queueToggle.title = collapsed ? '展开论文队列' : '折叠论文队列';
+      window.setTimeout(layoutCamera, 260);
+    });
+
+    document.getElementById('restoreAllButton').addEventListener('click', () => {
+      document.querySelectorAll('.shot-card').forEach((shot) => shot.classList.remove('closed', 'collapsed'));
+      cameraIndex = Math.min(1, Math.max(0, openShots().length - 2));
+      layoutCamera();
+      showToast('三个视图都已打开');
+    });
+
+    document.getElementById('centerCurrentButton').addEventListener('click', () => {
+      shotA.classList.remove('closed', 'collapsed');
+      cameraIndex = 0;
+      layoutCamera();
+      showToast('镜头已移动到当前论文');
+    });
+
+    document.querySelectorAll('.paper-item').forEach((item) => {
+      item.addEventListener('click', () => {
+        document.querySelectorAll('.paper-item').forEach((paper) => paper.classList.remove('active'));
+        item.classList.add('active');
+        activeId = item.dataset.id;
+        shotATitle.textContent = item.dataset.title;
+        paperPageTitle.textContent = item.dataset.title;
+        shotA.dataset.title = `论文 ${item.dataset.id}`;
+        shotA.classList.remove('closed', 'collapsed');
+        cameraIndex = 0;
+        layoutCamera();
+      });
+    });
+
+    document.getElementById('completeButton').addEventListener('click', () => {
+      const current = document.querySelector(`.paper-item[data-id="${activeId}"]`);
+      if (!current.classList.contains('done')) {
+        current.classList.add('done');
+        current.querySelector('.paper-index').textContent = '✓';
+        current.querySelector('.status-pill').textContent = '已读';
+        completed = Math.min(8, completed + 1);
+        progressText.textContent = `${completed} / 8`;
+        progressFill.style.width = `${completed / 8 * 100}%`;
+      }
+      const next = [...document.querySelectorAll('.paper-item')].find((paper) => !paper.classList.contains('done') && paper.dataset.id !== activeId);
+      if (next) next.click();
+      showToast('✓ 阅读状态已保存，下一篇已送入镜头');
+    });
+
+    window.addEventListener('resize', layoutCamera);
+    window.requestAnimationFrame(layoutCamera);
+  </script>
+</body>
+</html>

@@ -19,6 +19,7 @@ const note: NoteDocument = {
   note_id: 'note-1',
   title: 'Note',
   markdown: '',
+  revision: 'revision-1',
   links: [{
     link_id: 'link-1', anchor_id: 'anchor-1', display_text: 'Source', created_at: '',
     owner: { kind: 'note', entry_id: 'notes', note_id: 'note-1' },

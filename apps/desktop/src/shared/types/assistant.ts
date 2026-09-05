@@ -106,6 +106,7 @@ export type AssistantTaskIntent =
   | 'note_create'
   | 'note_update'
   | 'segment_note_update'
+  | 'entry_create'
   | 'entry_meta_update'
   | 'tag_attach'
   | 'tag_create'
@@ -118,13 +119,16 @@ export type AssistantTaskTargetKind =
   | 'chat_only'
   | 'entry_meta'
   | 'markdown_note'
-  | 'segment_note';
+  | 'new_entry'
+  | 'segment_note'
+  | 'tag';
 
 export type AssistantTaskCapability =
   | 'read_document'
   | 'read_note'
   | 'search_evidence'
   | 'synthesize'
+  | 'create_entry'
   | 'propose_note'
   | 'propose_entry_meta_change'
   | 'propose_tag_change';
@@ -134,6 +138,7 @@ export type AssistantTaskDeliverable =
   | 'note_create_proposal'
   | 'note_patch_proposal'
   | 'segment_note_proposal'
+  | 'entry_created'
   | 'entry_meta_change_proposal'
   | 'tag_change_proposal';
 
@@ -192,6 +197,7 @@ export type AssistantTaskPlan = {
     id: string;
     kind:
       | 'draft_note'
+      | 'create_entry'
       | 'propose_entry_meta_change'
       | 'propose_tag_change'
       | 'read_context'

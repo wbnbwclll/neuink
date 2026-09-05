@@ -160,6 +160,8 @@ export type AssistantToolTraceEvent = {
 };
 
 export type AssistantConversationMemory = {
+  decisions: string[];
+  entities: string[];
   last_user_goal: string | null;
   message_count: number;
   open_items: string[];
@@ -167,10 +169,12 @@ export type AssistantConversationMemory = {
   source_count: number;
   summary: string;
   updated_at: string;
+  user_preferences: string[];
 };
 
 export type AssistantMessagePart =
   | { type: 'text'; markdown: string }
+  | { type: 'reasoning'; text: string }
   | { type: 'context'; items: AssistantContextItem[] }
   | {
       composer?: AssistantComposerSnapshot | null;

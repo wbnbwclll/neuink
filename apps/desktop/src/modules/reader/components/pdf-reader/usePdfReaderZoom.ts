@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  MIN_PAGE_WIDTH,
   PDF_MAX_ZOOM,
   PDF_MIN_ZOOM,
   PDF_RAIL_WIDTH,
@@ -56,11 +55,7 @@ export function usePdfReaderZoom({
   );
 
   const pageWidth = useMemo(() => {
-    const available = viewportWidth - PDF_RAIL_WIDTH - PDF_VIEWPORT_PADDING;
-    if (pageDisplayMode === 'dual') {
-      return Math.max(MIN_PAGE_WIDTH, (available - PDF_SPREAD_GAP) / 2) * zoom;
-    }
-    return Math.max(MIN_PAGE_WIDTH, available) * zoom;
+    return resolvePdfPageWidth({ pageDisplayMode, viewportWidth, zoom });
   }, [viewportWidth, zoom, pageDisplayMode]);
 
   const beginZoomInteraction = useCallback(() => {
@@ -116,6 +111,22 @@ export function usePdfReaderZoom({
     zoom,
     zoomSuppressRegions,
   };
+}
+
+export function resolvePdfPageWidth({
+  pageDisplayMode,
+  viewportWidth,
+  zoom,
+}: {
+  pageDisplayMode: 'single' | 'dual';
+  viewportWidth: number;
+  zoom: number;
+}) {
+  const available = viewportWidth - PDF_RAIL_WIDTH - PDF_VIEWPORT_PADDING;
+  const fittedWidth = pageDisplayMode === 'dual'
+    ? (available - PDF_SPREAD_GAP) / 2
+    : available;
+  return Math.max(1, fittedWidth) * zoom;
 }
 
 function clampZoom(value: number) {

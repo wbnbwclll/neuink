@@ -420,7 +420,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(url, "https://example.test/v1/messages");
-        assert_eq!(headers.get("x-api-key").and_then(|v| v.to_str().ok()), Some("secret-key"));
+        assert_eq!(
+            headers.get("x-api-key").and_then(|v| v.to_str().ok()), Some("secret-key"));
         assert_eq!(
             headers.get("anthropic-version").and_then(|v| v.to_str().ok()),
             Some("2023-06-01")

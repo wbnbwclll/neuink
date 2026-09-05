@@ -172,16 +172,26 @@ export type SettingsPanelLayoutProps = {
   selectedSkillPackageId: string | null;
 };
 
-const SETTINGS_SECTIONS = [
-  { value: 'models' as const, icon: Bot, title: '大模型' },
-  { value: 'tasks' as const, icon: Server, title: '任务模型' },
-  { value: 'data' as const, icon: Database, title: '数据与解析' },
-  { value: 'appearance' as const, icon: Palette, title: '外观主题' },
-  { value: 'reader' as const, icon: BookOpen, title: '阅读' },
-  { value: 'external-tools' as const, icon: PlugZap, title: '外部工具' },
-  { value: 'main-agent' as const, icon: Bot, title: '主 Agent' },
-  { value: 'subagents' as const, icon: Workflow, title: '子 Agent' },
-  { value: 'skills' as const, icon: Archive, title: 'Skills' }
+const SETTINGS_GROUPS = [
+  {
+    title: '应用设置',
+    items: [
+      { value: 'models' as const, icon: Bot, title: '大模型' },
+      { value: 'tasks' as const, icon: Server, title: '任务模型' },
+      { value: 'data' as const, icon: Database, title: '数据与解析' },
+      { value: 'appearance' as const, icon: Palette, title: '外观主题' },
+      { value: 'reader' as const, icon: BookOpen, title: '阅读' },
+      { value: 'external-tools' as const, icon: PlugZap, title: '外部工具与 MCP' }
+    ]
+  },
+  {
+    title: 'Agent 系统',
+    items: [
+      { value: 'main-agent' as const, icon: Bot, title: '主 Agent' },
+      { value: 'subagents' as const, icon: Workflow, title: '子 Agent' },
+      { value: 'skills' as const, icon: Archive, title: 'Skills 技能库' }
+    ]
+  }
 ];
 
 export function SettingsPanelLayout(props: SettingsPanelLayoutProps) {
@@ -220,9 +230,10 @@ export function SettingsPanelLayout(props: SettingsPanelLayoutProps) {
         <div className="settings-panel-nav border-r border-border/70 bg-card">
           <div className="side-body overflow-auto">
             <div className="settings-panel-nav-body p-2">
-              <SettingsSidebarSection open title="设置分组">
+              {SETTINGS_GROUPS.map((group) => (
+              <SettingsSidebarSection key={group.title} open title={group.title}>
                 <div className="grid gap-1">
-                  {SETTINGS_SECTIONS.map((section) => {
+                  {group.items.map((section) => {
                     const Icon = section.icon;
                     const active = activeSettingsTab === section.value;
 
@@ -257,6 +268,7 @@ export function SettingsPanelLayout(props: SettingsPanelLayoutProps) {
                   })}
                 </div>
               </SettingsSidebarSection>
+              ))}
             </div>
           </div>
         </div>

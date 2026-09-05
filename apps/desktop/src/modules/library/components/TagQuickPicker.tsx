@@ -35,8 +35,8 @@ export function TagQuickPicker({
   }
 
   return (
-    <ScrollArea className="max-h-52 rounded-lg border bg-muted/20">
-      <div className="grid gap-1 p-2">
+    <ScrollArea className="max-h-64 rounded-lg border bg-muted/15">
+      <div className="grid gap-1.5 p-2">
         {tagTree.map((node) => (
           <QuickTagNode
             allowMultiple={allowMultiple}
@@ -71,7 +71,14 @@ function QuickTagNode({
   const hasChildren = node.children.length > 0;
 
   return (
-    <div>
+    <div
+      className={cn(
+        'relative',
+        node.depth === 0 && 'rounded-md bg-muted/35 px-1',
+        node.depth > 0 && 'before:absolute before:-left-4 before:top-4 before:w-4 before:border-t before:border-dashed before:border-primary/35'
+      )}
+      data-tag-depth={node.depth}
+    >
       <div className="grid min-h-8 grid-cols-[auto_minmax(0,1fr)] items-center gap-1">
         {hasChildren ? (
           <button
@@ -98,7 +105,6 @@ function QuickTagNode({
               : 'text-muted-foreground hover:bg-muted hover:text-foreground'
           )}
           disabled={disabled || blocked}
-          style={{ marginLeft: node.depth * 12 }}
           title={node.path}
           type="button"
           onClick={() => onTogglePath(node.path)}
@@ -111,7 +117,11 @@ function QuickTagNode({
         </button>
       </div>
       {hasChildren && open ? (
-        <div className="ml-7 border-l border-border pl-1">
+        <div
+          aria-label={`${node.name} 的子标签`}
+          className="relative ml-3 pl-4 before:absolute before:bottom-4 before:left-0 before:top-0 before:border-l before:border-dashed before:border-primary/35"
+          role="group"
+        >
           {node.children.map((child) => (
             <QuickTagNode
               allowMultiple={allowMultiple}

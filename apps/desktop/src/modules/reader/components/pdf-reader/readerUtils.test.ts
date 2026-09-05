@@ -4,7 +4,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { SourceSegment } from '@/shared/types/domain';
 
-import { groupSegmentsByPage, scrollToPage, scrollToSegment } from './readerUtils';
+import {
+  groupSegmentsByPage,
+  scrollToPage,
+  scrollToPdfRect,
+  scrollToSegment,
+} from './readerUtils';
 
 describe('groupSegmentsByPage', () => {
   it('creates independently hoverable regions for MinerU list items', () => {
@@ -229,10 +234,54 @@ describe('scrollToPage', () => {
     vi.spyOn(container, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 300, 200));
     vi.spyOn(activePage, 'getBoundingClientRect').mockReturnValue(new DOMRect(10, 600, 280, 500));
 
-    scrollToPage(4, container);
+    expect(scrollToPage(4, container)).toBe(true);
 
-    expect(scrollTo).toHaveBeenCalledWith({ behavior: 'smooth', left: 10, top: 588 });
+    expect(scrollTo).toHaveBeenCalledWith({ behavior: 'auto', top: 588 });
     container.remove();
     hiddenReader.remove();
+  });
+});
+
+describe('scrollToPdfRect', () => {
+  it('centers a persisted normalized selection inside the active PDF reader', () => {
+    const container = document.createElement('div');
+    const page = document.createElement('section');
+    const surface = document.createElement('div');
+    page.dataset.pdfPageIndex = '2';
+    surface.dataset.pdfPageSurface = 'true';
+    page.append(surface);
+    container.append(page);
+    document.body.append(container);
+    const scrollTo = vi.fn();
+    Object.defineProperties(container, {
+      clientHeight: { configurable: true, value: 200 },
+      clientWidth: { configurable: true, value: 300 },
+      scrollLeft: { configurable: true, value: 40 },
+      scrollTop: { configurable: true, value: 100 },
+      scrollTo: { configurable: true, value: scrollTo },
+    });
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue(
+      new DOMRect(0, 0, 300, 200),
+    );
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue(
+      new DOMRect(20, 500, 400, 600),
+    );
+
+    expect(scrollToPdfRect(2, [250, 400, 450, 500], container)).toBe(true);
+    expect(scrollTo).toHaveBeenCalledWith({
+      behavior: 'smooth',
+      left: 50,
+      top: 794,
+    });
+    container.remove();
+  });
+
+  it('does not scroll when the requested page is outside this reader', () => {
+    const container = document.createElement('div');
+    const scrollTo = vi.fn();
+    Object.defineProperty(container, 'scrollTo', { configurable: true, value: scrollTo });
+
+    expect(scrollToPdfRect(8, [100, 100, 200, 200], container)).toBe(false);
+    expect(scrollTo).not.toHaveBeenCalled();
   });
 });

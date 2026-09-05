@@ -47,6 +47,32 @@ export type PdfParseStatus =
   | 'failed'
   | 'canceled';
 
+export type ReadingMode = 'pdf' | 'reflow';
+
+export type EntryReadingState = {
+  entry_id: EntryId;
+  version: number;
+  document_hash: string | null;
+  mode: ReadingMode;
+  current_page_idx: number | null;
+  page_count: number;
+  visited_pages: number[];
+  total_active_ms: number;
+  session_count: number;
+  last_read_at: string | null;
+  daily_active_ms: Record<string, number>;
+};
+
+export type ReadingStateUpdate = {
+  mode: ReadingMode;
+  current_page_idx: number | null;
+  page_count: number;
+  visited_pages: number[];
+  active_ms_delta: number;
+  session_start: boolean;
+  local_date: string | null;
+};
+
 export type ContentItem = {
   kind: 'note';
   note_id: NoteId;
@@ -58,6 +84,7 @@ export type NoteDocument = {
   title: string;
   markdown: string;
   links: SourceLink[];
+  revision: string;
 };
 
 export type SourceLink = {
@@ -152,6 +179,7 @@ export type AnnotationSegmentSnapshot = {
 export type Annotation = {
   annotation_id: AnnotationId;
   segment_uid: string;
+  anchor_kind?: 'segment' | 'pdf_page';
   kind: string;
   content: string;
   importance: AnnotationImportance;

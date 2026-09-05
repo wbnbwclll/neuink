@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { isMineruImagePath } from "@/shared/components/SourceSnapshotPreview";
 import type { TranslatedSegment } from "@/shared/ipc/workspaceApi";
 import type { TranslationStatus } from "@/shared/ipc/workspaceApi";
+import type { PdfHoverPreviewFontSize, PdfHoverPreviewSize } from "@/shared/lib/readerPreferences";
 import type {
   Annotation,
   AnnotationImportance,
@@ -24,6 +25,7 @@ import {
   type PdfTextSelectionHighlight,
 } from "./PdfCanvasPage";
 import { hasPdfTextSelection } from "./pdfCanvasDom";
+import { resolvePdfSelectionAnchorSegment } from "./pdfPageAnnotations";
 import { notifyPdfInteraction } from "./pdfRenderQueue";
 import {
   PdfTextSelectionToolbar,
@@ -38,10 +40,13 @@ const PREVIEW_SUPPRESS_MS = 600;
 const EMPTY_ANNOTATIONS: Annotation[] = [];
 
 function PdfSourcePageImpl({
+  activeAnnotationId = null,
   autoTranslateTextSelection = false,
   flashSegmentUid,
   hoveredSegmentUid,
   hoverPreviewEnabled,
+  hoverPreviewFontSize = 'standard',
+  hoverPreviewSize = 'standard',
   hoverPreviewShowRegion,
   hoverPreviewShowOriginal,
   hoverPreviewShowNote,
@@ -54,6 +59,9 @@ function PdfSourcePageImpl({
   pdfDocument,
   renderPriority,
   renderEnabled,
+  searchActive = false,
+  searchMatchCount = 0,
+  searchQuery = '',
   showRegions,
   sourceBacklinksBySegmentUid,
   sourceEntryId,
@@ -80,10 +88,13 @@ function PdfSourcePageImpl({
   onToggleSegment,
   altClickOpensNote = false,
 }: {
+  activeAnnotationId?: string | null;
   autoTranslateTextSelection?: boolean;
   flashSegmentUid: string | null;
   hoveredSegmentUid: string | null;
   hoverPreviewEnabled: boolean;
+  hoverPreviewFontSize?: PdfHoverPreviewFontSize;
+  hoverPreviewSize?: PdfHoverPreviewSize;
   hoverPreviewShowRegion: boolean;
   hoverPreviewShowOriginal: boolean;
   hoverPreviewShowNote: boolean;
@@ -96,6 +107,9 @@ function PdfSourcePageImpl({
   pdfDocument: PDFDocumentProxy;
   renderPriority: "preload" | "visible";
   renderEnabled: boolean;
+  searchActive?: boolean;
+  searchMatchCount?: number;
+  searchQuery?: string;
   showRegions: boolean;
   sourceBacklinksBySegmentUid: SourceBacklinksBySegmentUid;
   sourceEntryId: string;
@@ -164,12 +178,13 @@ function PdfSourcePageImpl({
     () =>
       pageTextSelectionAnnotations.flatMap((annotation) =>
         (annotation.text_selection?.rects ?? []).map((rect, index) => ({
+          active: annotation.annotation_id === activeAnnotationId,
           color: annotation.text_selection?.color ?? 'yellow',
           id: `${annotation.annotation_id}:${index}`,
           rect,
         })),
       ),
-    [pageTextSelectionAnnotations],
+    [activeAnnotationId, pageTextSelectionAnnotations],
   );
   const previewSuppressUntilRef = useRef(0);
   const previewPointerInsideRef = useRef(false);
@@ -502,10 +517,12 @@ function PdfSourcePageImpl({
       return;
     }
 
-    const segment = findSelectionAnchorSegment(page.regions, rects);
-    if (!segment) {
-      return;
-    }
+    const segment = resolvePdfSelectionAnchorSegment({
+      pageIdx: page.pageIdx,
+      rects,
+      regions: page.regions,
+      text,
+    });
 
     const selectionRect = range.getBoundingClientRect();
     setPendingTextSelection({
@@ -690,8 +707,15 @@ function PdfSourcePageImpl({
 
       <div
         ref={hitLayerRef}
-        className="relative w-fit overflow-hidden rounded-md border bg-white shadow-sm"
+        className={`relative w-fit overflow-hidden rounded-md border bg-white shadow-sm ${
+          searchActive
+            ? 'ring-2 ring-primary/60'
+            : searchMatchCount > 0
+              ? 'ring-1 ring-warning/50'
+              : ''
+        }`}
         data-testid={`pdf-page-hit-layer-${page.pageIdx}`}
+        data-pdf-page-surface="true"
         onClick={handleClick}
         onContextMenu={handleContextMenu}
         onPointerDown={handlePointerDown}
@@ -746,6 +770,8 @@ function PdfSourcePageImpl({
           pageIdx={page.pageIdx}
           renderPriority={renderPriority}
           renderEnabled={renderEnabled}
+          searchActive={searchActive}
+          searchQuery={searchQuery}
         />
 
         <PdfTextSelectionHighlightLayer highlights={pageTextSelectionHighlights} />
@@ -781,6 +807,8 @@ function PdfSourcePageImpl({
                       ? previewPosition
                       : null
                   }
+                  previewFontSize={hoverPreviewFontSize}
+                  previewSize={hoverPreviewSize}
                   previewShowRegion={hoverPreviewShowRegion}
                   previewShowOriginal={hoverPreviewShowOriginal}
                   previewShowNote={hoverPreviewShowNote}
@@ -1045,23 +1073,6 @@ function clipClientRectToPage(rect: DOMRect, pageRect: DOMRect) {
     return null;
   }
   return { bottom, left, right, top } as DOMRect;
-}
-
-function findSelectionAnchorSegment(
-  regions: PageSegments['regions'],
-  rects: Array<[number, number, number, number]>,
-) {
-  let best: { area: number; segment: SourceSegment } | null = null;
-  for (const region of regions) {
-    const area = rects.reduce(
-      (total, rect) => total + intersectionArea(rect, region.bbox),
-      0,
-    );
-    if (!best || area > best.area) {
-      best = { area, segment: region.sourceSegment };
-    }
-  }
-  return best?.area ? best.segment : null;
 }
 
 function intersectionArea(

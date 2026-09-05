@@ -442,7 +442,7 @@ function compareRegionItems(left: SegmentRegionItem, right: SegmentRegionItem) {
 
 export function scrollToPage(pageIdx: number, container: HTMLElement | null) {
   if (!container) {
-    return;
+    return false;
   }
 
   const target = Array.from(
@@ -450,17 +450,57 @@ export function scrollToPage(pageIdx: number, container: HTMLElement | null) {
   ).find((element) => Number(element.dataset.pdfPageIndex) === pageIdx);
 
   if (!target) {
-    return;
+    return false;
   }
 
   const targetRect = target.getBoundingClientRect();
   const containerRect = container.getBoundingClientRect();
 
+  const targetTop = Math.max(
+    0,
+    container.scrollTop + targetRect.top - containerRect.top - 12,
+  );
+  // A page command should be deterministic in WebView2 and must not also move
+  // the reader horizontally when the PDF is zoomed or displayed as a spread.
+  container.scrollTo({ behavior: "auto", top: targetTop });
+  return true;
+}
+
+export function scrollToPdfRect(
+  pageIdx: number,
+  rect: readonly [number, number, number, number] | null | undefined,
+  container: HTMLElement | null,
+) {
+  if (!container || !rect) {
+    return false;
+  }
+
+  const page = Array.from(
+    container.querySelectorAll<HTMLElement>('[data-pdf-page-index]'),
+  ).find((element) => Number(element.dataset.pdfPageIndex) === pageIdx);
+  const surface = page?.querySelector<HTMLElement>('[data-pdf-page-surface]');
+  if (!surface) {
+    return false;
+  }
+
+  const [x0, y0, x1, y1] = rect;
+  const surfaceRect = surface.getBoundingClientRect();
+  const containerRect = container.getBoundingClientRect();
+  const centerX = surfaceRect.left + (((x0 + x1) / 2) / 1000) * surfaceRect.width;
+  const centerY = surfaceRect.top + (((y0 + y1) / 2) / 1000) * surfaceRect.height;
+
   container.scrollTo({
     behavior: "smooth",
-    left: container.scrollLeft + targetRect.left - containerRect.left,
-    top: container.scrollTop + targetRect.top - containerRect.top - 12,
+    left: Math.max(
+      0,
+      container.scrollLeft + centerX - containerRect.left - container.clientWidth / 2,
+    ),
+    top: Math.max(
+      0,
+      container.scrollTop + centerY - containerRect.top - container.clientHeight * 0.38,
+    ),
   });
+  return true;
 }
 
 export function findNearestSegmentUidInViewport(container: HTMLElement) {

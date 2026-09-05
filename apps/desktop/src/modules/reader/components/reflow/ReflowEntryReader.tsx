@@ -44,6 +44,8 @@ import { usePdfDocument } from '../pdf-reader/usePdfDocument';
 import { usePdfReaderData } from '../pdf-reader/usePdfReaderData';
 import { useSegmentNoteDraft } from '../pdf-reader/useSegmentNoteDraft';
 import { ReflowReader } from './ReflowReader';
+import { ReflowAppearanceControls } from './ReflowAppearanceControls';
+import { ReflowComponentControls } from './ReflowComponentControls';
 import { useGuardedSegmentAction } from '../useGuardedSegmentAction';
 import { TranslationTaskDialog } from '../../translation/TranslationTaskDialog';
 import { UnsavedSegmentChangesDialog } from '../pdf-reader/UnsavedSegmentChangesDialog';
@@ -546,6 +548,16 @@ export function ReflowEntryReader({
       <EntryContentHeader className="gap-2" contentTitle="重排视图" entryTitle={entry.title}>
         <span className="min-w-0 flex-1" />
 
+        <ReflowAppearanceControls
+          preferences={readerPreferences}
+          onChange={onReaderPreferencesChange}
+        />
+
+        <ReflowComponentControls
+          preferences={readerPreferences}
+          onChange={onReaderPreferencesChange}
+        />
+
         <HoverPreviewControls
           mode="reflow"
           preferences={readerPreferences}
@@ -611,6 +623,9 @@ export function ReflowEntryReader({
           hoverPreviewShowAnnotation={readerPreferences.hoverPreviewShowAnnotation}
           notesBySegmentUid={notesBySegmentUid}
           pdfDocument={pdfState.status === 'ready' ? pdfState.document : null}
+          reflowBackgroundColor={readerPreferences.reflowBackgroundColor}
+          reflowComponents={readerPreferences.reflowComponents}
+          reflowFontSize={readerPreferences.reflowFontSize}
           reflowTranslationMode={readerPreferences.reflowTranslationMode}
           hiddenSegmentUids={hiddenSegmentUids}
           segments={segments}

@@ -134,7 +134,11 @@ export type MainAssistantProfile = AgentBaseProfile & {
   kind: 'main_assistant';
 };
 
-export type SubagentOutputKind = 'evidence' | 'patch_plan' | 'skill_selection';
+export type SubagentOutputKind =
+  | 'evidence'
+  | 'memory'
+  | 'patch_plan'
+  | 'task_contract';
 
 export type SubagentProfile = AgentBaseProfile & {
   enabled: boolean;

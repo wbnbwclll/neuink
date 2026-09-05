@@ -2,7 +2,12 @@ import { AlertTriangle, Loader2 } from "lucide-react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { saveNoteAssetBytes, type PdfReaderResponse } from "@/shared/ipc/workspaceApi";
+import {
+  openPdfFile,
+  revealPdfFile,
+  saveNoteAssetBytes,
+  type PdfReaderResponse,
+} from "@/shared/ipc/workspaceApi";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -44,11 +49,10 @@ import { GlobalMarkdownNotePane } from "./pdf-reader/GlobalMarkdownNotePane";
 import { FloatingSegmentPanel } from "./pdf-reader/FloatingSegmentPanel";
 import { PdfReaderDocumentPane } from "./pdf-reader/PdfReaderDocumentPane";
 import { ReaderMessage } from "./pdf-reader/ReaderMessage";
-import { PdfParseFailureMessage } from "./pdf-reader/PdfParseFailureMessage";
 import {
   findSegmentByLogicalOrRealUid,
-  formatPdfParseStatus,
 } from "./pdf-reader/pdfReaderSupport";
+import { mergePdfAnnotationAnchorSegments } from "./pdf-reader/pdfPageAnnotations";
 import { ReaderToolbar } from "./pdf-reader/ReaderToolbar";
 import { SegmentNoteEditor } from "./pdf-reader/SegmentNoteEditor";
 import { SegmentRail } from "./pdf-reader/SegmentRail";
@@ -64,15 +68,18 @@ import {
   inferPageCount,
   logicalSegmentUid,
   scrollToPage,
+  scrollToPdfRect,
   scrollToSegment,
 } from "./pdf-reader/readerUtils";
 import { usePdfBytes } from "./pdf-reader/usePdfBytes";
 import { usePdfDocument } from "./pdf-reader/usePdfDocument";
 import { usePdfReaderData } from "./pdf-reader/usePdfReaderData";
 import { usePdfReaderZoom } from "./pdf-reader/usePdfReaderZoom";
+import { useReadingActivityTracker } from "./pdf-reader/useReadingActivityTracker";
 import { usePdfAnnotationActions } from "./pdf-reader/usePdfAnnotationActions";
 import { usePdfSegmentNavigation } from "./pdf-reader/usePdfSegmentNavigation";
 import { usePdfSourceLinkActions } from "./pdf-reader/usePdfSourceLinkActions";
+import { usePdfTextSearch } from "./pdf-reader/usePdfTextSearch";
 import { usePdfTranslationController } from "./pdf-reader/usePdfTranslationController";
 import { usePdfViewportMetrics } from "./pdf-reader/usePdfViewportMetrics";
 import { useEntryTagSuggestions } from "./pdf-reader/useEntryTagSuggestions";
@@ -205,6 +212,8 @@ type MineruPdfReaderProps = {
     noteId: string,
     title: string,
     markdown: string,
+    links?: SourceLink[] | null,
+    expectedRevision?: string | null,
   ) => Promise<NoteDocument>;
 };
 
@@ -256,6 +265,7 @@ export function MineruPdfReader({
   const {
     annotations,
     loadState,
+    retry: retryPdfReaderData,
     segmentNotes,
     setAnnotations,
     setSegmentNotes,
@@ -283,7 +293,10 @@ export function MineruPdfReader({
   );
   const [parseRetryBusy, setParseRetryBusy] = useState(false);
   const [reparseConfirmOpen, setReparseConfirmOpen] = useState(false);
+  const [visiblePageIndexes, setVisiblePageIndexes] = useState<number[]>([]);
   const parseStatusToastRef = useRef<{ key: string; id: string } | null>(null);
+  const resumedReadingStateKeyRef = useRef<string | null>(null);
+  const handledJumpRequestKeyRef = useRef<string | null>(null);
 
   const {
     busy: annotationBusy,
@@ -306,6 +319,10 @@ export function MineruPdfReader({
   );
 
   const segments = loadState.status === "ready" ? loadState.data.segments : [];
+  const navigableSegments = useMemo(
+    () => mergePdfAnnotationAnchorSegments(segments, annotations),
+    [annotations, segments],
+  );
   const {
     apply: applyRecommendedTags,
     busy: tagSuggestionBusy,
@@ -393,7 +410,10 @@ export function MineruPdfReader({
     },
     onQueuePendingSourceLinkInsertion,
   });
-  const globalNotePaneOpen = notePaneOpen && Boolean(globalNote);
+  // A workspace-paired note is the visible citation target. Keeping the older
+  // embedded note pane open at the same time creates a third pane and makes the
+  // insertion target ambiguous.
+  const globalNotePaneOpen = notePaneOpen && Boolean(globalNote) && !pairedMarkdownNoteTarget;
   const pendingSourceLinkForGlobalNote =
     globalNote &&
     sidePaneNoteTarget &&
@@ -451,7 +471,7 @@ export function MineruPdfReader({
     segments,
     workspaceRoot,
   });
-  const { activeScrollSegmentUid, pdfScrollRef, pdfViewportWidth } =
+  const { activeScrollSegmentUid, bindPdfScrollElement, pdfScrollRef, pdfViewportWidth } =
     usePdfViewportMetrics({
       notePaneOpen: globalNotePaneOpen,
       segments,
@@ -501,6 +521,88 @@ export function MineruPdfReader({
     }
     return pages.map((p) => [p]);
   }, [pages, readerPreferences.pageDisplayMode]);
+
+  const currentPageIdx = Math.min(
+    Math.max(0, pageCount - 1),
+    visiblePageIndexes[0] ?? 0,
+  );
+  const pdfTextSearch = usePdfTextSearch(
+    pdfState.status === "ready" ? pdfState.document : null,
+    currentPageIdx,
+  );
+
+  const goToPageNumber = useCallback(
+    (pageNumber: number) => {
+      const requestedPageIdx = Math.min(pageCount - 1, Math.max(0, pageNumber - 1));
+      const pageIdx = readerPreferences.pageDisplayMode === 'dual'
+        ? Math.floor(requestedPageIdx / 2) * 2
+        : requestedPageIdx;
+      scrollToPage(pageIdx, pdfScrollRef.current);
+    },
+    [pageCount, pdfScrollRef, readerPreferences.pageDisplayMode],
+  );
+
+  useEffect(() => {
+    if (!pdfTextSearch.activeMatch) return;
+    scrollToPage(pdfTextSearch.activeMatch.pageIdx, pdfScrollRef.current);
+  }, [pdfScrollRef, pdfTextSearch.activeMatch]);
+
+  const openOriginalPdf = useCallback(async () => {
+    if (!pdfPath) return;
+    try {
+      await openPdfFile(pdfPath);
+    } catch (caught) {
+      notify({
+        tone: "danger",
+        title: "无法使用系统打开 PDF",
+        description: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  }, [notify, pdfPath]);
+
+  const revealOriginalPdf = useCallback(async () => {
+    if (!pdfPath) return;
+    try {
+      await revealPdfFile(pdfPath);
+    } catch (caught) {
+      notify({
+        tone: "danger",
+        title: "无法显示 PDF 文件",
+        description: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  }, [notify, pdfPath]);
+
+  const savedReadingState = useReadingActivityTracker({
+    enabled: pdfState.status === "ready",
+    entryId: entry.id,
+    mode: "pdf",
+    pageCount,
+    scrollRef: pdfScrollRef,
+    visiblePageIndexes,
+    workspaceRoot,
+  });
+
+  useEffect(() => {
+    if (
+      pdfState.status !== "ready" ||
+      !savedReadingState ||
+      savedReadingState.current_page_idx === null ||
+      jumpRequest
+    ) {
+      return;
+    }
+    const resumeKey = `${entry.id}:${savedReadingState.document_hash ?? "none"}`;
+    if (resumedReadingStateKeyRef.current === resumeKey) {
+      return;
+    }
+    resumedReadingStateKeyRef.current = resumeKey;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        scrollToPage(savedReadingState.current_page_idx ?? 0, pdfScrollRef.current);
+      });
+    });
+  }, [entry.id, jumpRequest, pdfScrollRef, pdfState.status, savedReadingState]);
 
   const parseStatus = entry.status;
   const parseMessage = entry.parseMessage;
@@ -673,6 +775,27 @@ export function MineruPdfReader({
     },
     [annotations, saveAnnotation],
   );
+  const focusPdfAnnotation = useCallback(
+    (annotation: Annotation, segment: SourceSegment) => {
+      const pageIdx =
+        annotation.text_selection?.page_idx ??
+        annotation.segment_snapshot?.page_idx ??
+        segment.page_idx;
+      const rect =
+        annotation.text_selection?.rects[0] ??
+        annotation.segment_snapshot?.bbox ??
+        segment.bbox;
+
+      setAnnotationFocusId(annotation.annotation_id);
+      restartSegmentHighlight(segment.uid);
+      window.requestAnimationFrame(() => {
+        if (!scrollToPdfRect(pageIdx, rect, pdfScrollRef.current)) {
+          scrollToMountedOrPendingSegment(segment);
+        }
+      });
+    },
+    [pdfScrollRef, restartSegmentHighlight, scrollToMountedOrPendingSegment],
+  );
   const translateSelectedText = useCallback(
     ({ segment, text }: { segment: SourceSegment; text: string }) =>
       translateTextSelection({
@@ -801,8 +924,13 @@ export function MineruPdfReader({
     if (!jumpRequest || loadState.status !== "ready") {
       return;
     }
+    const jumpKey = `${entry.id}:${jumpRequest.requestKey}`;
+    if (handledJumpRequestKeyRef.current === jumpKey) {
+      return;
+    }
 
     if (jumpRequest.kind === "page") {
+      handledJumpRequestKeyRef.current = jumpKey;
       window.requestAnimationFrame(() => {
         scrollToPage(jumpRequest.pageIdx, pdfScrollRef.current);
       });
@@ -810,10 +938,11 @@ export function MineruPdfReader({
     }
 
     const segment = findSegmentByLogicalOrRealUid(
-      segments,
+      navigableSegments,
       jumpRequest.segmentUid,
     );
     if (!segment) {
+      handledJumpRequestKeyRef.current = jumpKey;
       window.requestAnimationFrame(() => {
         scrollToPage(jumpRequest.pageIdx, pdfScrollRef.current);
       });
@@ -821,19 +950,29 @@ export function MineruPdfReader({
     }
 
     if (!activateSegment(segment)) return;
+    handledJumpRequestKeyRef.current = jumpKey;
     if (jumpRequest.kind === "annotation") {
+      const annotation = annotations.find(
+        (candidate) => candidate.annotation_id === jumpRequest.annotationId,
+      );
       setNoteMode("annotation");
       setAnnotationFocusId(jumpRequest.annotationId);
       onOpenAnnotationsSurface(logicalSegmentUid(segment));
+      if (annotation) {
+        focusPdfAnnotation(annotation, segment);
+        return;
+      }
     }
     window.requestAnimationFrame(() => {
       scrollToMountedOrPendingSegment(segment);
     });
   }, [
     jumpRequest?.requestKey,
+    annotations,
+    focusPdfAnnotation,
     loadState.status,
     scrollToMountedOrPendingSegment,
-    segments,
+    navigableSegments,
   ]);
 
   const saveSegmentNote = async () => {
@@ -920,26 +1059,6 @@ export function MineruPdfReader({
     );
   }
 
-  if (entry.status === "Failed") {
-    return (
-      <PdfParseFailureMessage
-        busy={parseRetryBusy}
-        message={parseMessage}
-        onRetry={() => void retryPdfParse()}
-      />
-    );
-  }
-
-  if (entry.status === "Queued") {
-    return (
-      <ReaderMessage
-        title="等待开始解析"
-        description="PDF 已保存到本地文库。当前未自动提交解析，可随时开始。"
-        action={<Button disabled={parseRetryBusy} size="sm" type="button" variant="outline" onClick={() => void startPdfParse()}>{parseRetryBusy ? <Loader2 className="animate-spin" size={14} /> : null}开始解析</Button>}
-      />
-    );
-  }
-
   if (loadState.status === "loading" || loadState.status === "idle") {
     return (
       <ReaderMessage
@@ -956,6 +1075,11 @@ export function MineruPdfReader({
         title="无法打开 PDF"
         description={loadState.error}
         tone="danger"
+        action={
+          <Button size="sm" type="button" variant="outline" onClick={retryPdfReaderData}>
+            重新加载
+          </Button>
+        }
       />
     );
   }
@@ -963,6 +1087,7 @@ export function MineruPdfReader({
   return (
     <div className="relative grid size-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-muted/30">
       <ReaderToolbar
+        currentPage={currentPageIdx + 1}
         entry={entry}
         pageCount={pageCount}
         segmentCount={segments.length}
@@ -975,14 +1100,26 @@ export function MineruPdfReader({
         translationMessage={translationMessage}
         zoom={zoom}
         readerPreferences={readerPreferences}
+        searchActiveMatchNumber={pdfTextSearch.activeMatchIndex + 1}
+        searchMatchCount={pdfTextSearch.matches.length}
+        searchQuery={pdfTextSearch.query}
+        searchStatus={pdfTextSearch.status}
+        onCurrentPageChange={goToPageNumber}
         onExportTranslation={() => void exportTranslation()}
         onApplyRecommendedTags={() => void applyRecommendedTags()}
         onDismissRecommendedTags={dismissTagSuggestions}
         onRecommendedTagToggle={toggleRecommendedTag}
         onPauseTranslation={() => void pauseTranslation()}
         onOpenTranslationTask={() => setTranslationTaskOpen(true)}
+        onOpenPdf={pdfPath ? () => void openOriginalPdf() : undefined}
         onReaderPreferencesChange={onReaderPreferencesChange}
         onReparsePdf={() => setReparseConfirmOpen(true)}
+        onRetryPdfParse={() => void retryPdfParse()}
+        onRevealPdf={pdfPath ? () => void revealOriginalPdf() : undefined}
+        onSearchNext={pdfTextSearch.nextMatch}
+        onSearchPrevious={pdfTextSearch.previousMatch}
+        onSearchQueryChange={pdfTextSearch.setQuery}
+        onStartPdfParse={() => void startPdfParse()}
         reparseBusy={parseRetryBusy}
         onTagSuggestionsOpenChange={setTagSuggestionsOpen}
         onZoomIn={() =>
@@ -1076,7 +1213,13 @@ export function MineruPdfReader({
                     pdfDocument={pdfState.status === "ready" ? pdfState.document : null}
                     selectedAnnotationId={annotationFocusId}
                     showCloseButton={false}
-                    segments={segments}
+                    relatedSegmentUids={navigableSegments
+                      .filter(
+                        (segment) =>
+                          logicalSegmentUid(segment) === logicalSegmentUid(selectedSegment),
+                      )
+                      .map((segment) => segment.uid)}
+                    segments={navigableSegments}
                     segment={selectedSegment}
                     sourceEntryId={entry.id}
                     workspaceRoot={workspaceRoot}
@@ -1084,6 +1227,9 @@ export function MineruPdfReader({
                     onDelete={scheduleAnnotationDelete}
                     onModeChange={switchReaderPanelMode}
                     onSave={saveAnnotation}
+                    onSelectAnnotation={(annotation) =>
+                      focusPdfAnnotation(annotation, selectedSegment)
+                    }
                   />
                 ) : (
                   <SegmentNoteEditor
@@ -1139,6 +1285,8 @@ export function MineruPdfReader({
         >
 
           <PdfReaderDocumentPane
+            activeAnnotationId={annotationFocusId}
+            activeSearchPageIdx={pdfTextSearch.activeMatch?.pageIdx ?? null}
             autoTranslateTextSelection={readerPreferences.autoTranslateTextSelection}
             entry={entry}
             flashSegmentUid={flashSegmentUid}
@@ -1146,9 +1294,13 @@ export function MineruPdfReader({
             annotationsBySegmentUid={annotationsBySegmentUid}
             notesBySegmentUid={notesBySegmentUid}
             rows={rows}
+            searchMatchCountsByPage={pdfTextSearch.matchCountsByPage}
+            searchQuery={pdfTextSearch.query}
             pageWidth={pageWidth}
             leftInset={PDF_RAIL_WIDTH}
             hoverPreviewEnabled={readerPreferences.hoverPreviewEnabled}
+            hoverPreviewFontSize={readerPreferences.pdfHoverPreviewFontSize}
+            hoverPreviewSize={readerPreferences.pdfHoverPreviewSize}
             hoverPreviewShowRegion={readerPreferences.hoverPreviewShowRegion}
             hoverPreviewShowOriginal={readerPreferences.hoverPreviewShowOriginal}
             hoverPreviewShowNote={readerPreferences.hoverPreviewShowNote}
@@ -1158,6 +1310,7 @@ export function MineruPdfReader({
             pdfState={pdfState}
             pdfAvailable={Boolean(pdfPath)}
             pdfBytesState={pdfBytesState}
+            bindPdfScrollElement={bindPdfScrollElement}
             showRegions={readerPreferences.showRegions}
             sourceLinkHint={sourceLinkHint}
             sourceBacklinksBySegmentUid={sourceBacklinksBySegmentUid}
@@ -1168,6 +1321,8 @@ export function MineruPdfReader({
             translationVisible={translationVisible}
             workspaceRoot={workspaceRoot}
             onCtrlWheelZoom={handleCtrlWheelZoom}
+            onOpenPdf={pdfPath ? () => void openOriginalPdf() : undefined}
+            onRevealPdf={pdfPath ? () => void revealOriginalPdf() : undefined}
             onOpenSegmentAnnotation={openSegmentAnnotationPane}
             onOpenSegmentNote={openSegmentNotePane}
             onOpenSegmentWorkspace={(segment) =>
@@ -1190,6 +1345,7 @@ export function MineruPdfReader({
             onCreateTextSelectionAnnotation={createTextSelectionAnnotation}
             onTranslateTextSelection={translateSelectedText}
             onToggleSegment={guardedToggleSegment}
+            onVisiblePageIndexesChange={setVisiblePageIndexes}
             altClickOpensNote={
               readerPreferences.segmentNoteOpenGesture === 'modifier' && !syncOnlyOnSegmentClick
             }
@@ -1265,12 +1421,14 @@ export function MineruPdfReader({
                 segmentUid,
               )
             }
-            onSaveNote={(title, markdown) =>
+            onSaveNote={(title, markdown, links, expectedRevision) =>
               onSaveMarkdownNote(
                 sidePaneNoteTarget?.entryId ?? entry.id,
                 globalNote.note_id,
                 title,
                 markdown,
+                links,
+                expectedRevision,
               )
             }
             onInsertCopiedSource={insertCopiedSourceLink}

@@ -7,11 +7,13 @@ import type {
   AnnotationImportance,
   AnnotationTextSelection,
   EntryMeta,
+  EntryReadingState,
   NoteDocument,
   NoteId,
   SegmentBlockNote,
   SourceLink,
   SourceSegment,
+  ReadingStateUpdate,
   TrashItem,
   TagId,
   TagMeta
@@ -251,6 +253,31 @@ export async function listTrashedEntries(root: string): Promise<EntryMeta[]> {
   });
 }
 
+export async function listReadingStates(root: string): Promise<EntryReadingState[]> {
+  return invoke<EntryReadingState[]>('list_reading_states', {
+    request: { root }
+  });
+}
+
+export async function readReadingState(
+  root: string,
+  entryId: EntryId
+): Promise<EntryReadingState> {
+  return invoke<EntryReadingState>('read_reading_state', {
+    request: { root, entry_id: entryId }
+  });
+}
+
+export async function updateReadingState(
+  root: string,
+  entryId: EntryId,
+  update: ReadingStateUpdate
+): Promise<EntryReadingState> {
+  return invoke<EntryReadingState>('update_reading_state', {
+    request: { root, entry_id: entryId, ...update }
+  });
+}
+
 export async function updateEntryMeta(
   root: string,
   entryId: EntryId,
@@ -382,7 +409,9 @@ export async function updateNote(
   entryId: EntryId,
   noteId: NoteId,
   title: string,
-  markdown: string
+  markdown: string,
+  links?: SourceLink[] | null,
+  expectedRevision?: string | null
 ): Promise<NoteDocument> {
   return invoke<NoteDocument>('update_note', {
     request: {
@@ -390,7 +419,9 @@ export async function updateNote(
       entry_id: entryId,
       note_id: noteId,
       title,
-      markdown
+      markdown,
+      links: links ?? null,
+      expected_revision: expectedRevision ?? null
     }
   });
 }
@@ -654,7 +685,7 @@ export type AnnotationCatalogRecord = {
   entry_tag_ids: TagId[];
   entry_title: string;
   segment: AnnotationCatalogSegment | null;
-  segment_status: 'current' | 'orphaned' | 'missing';
+  segment_status: 'current' | 'page_anchored' | 'orphaned' | 'missing';
 };
 
 export type TranslationStatus = 'idle' | 'running' | 'succeeded' | 'failed' | 'partial';
@@ -866,6 +897,22 @@ export async function readPdfReader(root: string, entryId: EntryId): Promise<Pdf
 
 export async function readPdfBytes(pdfPath: string): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>('read_pdf_bytes', {
+    request: {
+      pdf_path: pdfPath
+    }
+  });
+}
+
+export async function openPdfFile(pdfPath: string): Promise<void> {
+  return invoke<void>('open_pdf_file', {
+    request: {
+      pdf_path: pdfPath
+    }
+  });
+}
+
+export async function revealPdfFile(pdfPath: string): Promise<void> {
+  return invoke<void>('reveal_pdf_file', {
     request: {
       pdf_path: pdfPath
     }

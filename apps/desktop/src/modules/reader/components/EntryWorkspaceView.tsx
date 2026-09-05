@@ -45,6 +45,7 @@ import type {
 } from '@/shared/types/domain';
 import { MarkdownNoteEditor } from '../../notes/components/MarkdownNoteEditor';
 import type { SourceLinkOpenTarget } from '../../notes/editor/SourceLinkNode';
+import type { WorkspaceReaderSurfaceKind } from '@/app/workspaceSurfacePairing';
 import { SegmentAnnotationEditor } from '../../annotations/components/SegmentAnnotationEditor';
 
 import type { LibraryEntry } from '../../library/components/LibrarySidebar';
@@ -65,6 +66,7 @@ import {
   readerSelectableItemClass
 } from './ReaderSurfacePrimitives';
 import { SegmentNoteEditor } from './pdf-reader/SegmentNoteEditor';
+import { mergePdfAnnotationAnchorSegments } from './pdf-reader/pdfPageAnnotations';
 import { hasNoteText, logicalSegmentUid } from './pdf-reader/readerUtils';
 import { segmentNoteErrorMessage } from './pdf-reader/segmentNoteError';
 import {
@@ -101,7 +103,7 @@ type EntryWorkspaceViewProps = {
   } | null;
   reflowSyncSegment: { requestKey: number; segmentUid: string } | null;
   splitReaderLinked: boolean;
-  segmentNotesLinkedToPdf: boolean;
+  segmentRecordsLinkedReader: WorkspaceReaderSurfaceKind | null;
   sharedSegmentNoteDrafts: Record<string, string>;
   pendingSourceLinkInsertion: {
     entryId: string;
@@ -158,6 +160,11 @@ type EntryWorkspaceViewProps = {
   onFocusLinkedSegment: (segmentUid: string, mode?: 'note' | 'annotation') => void;
   onSharedSegmentNoteDraftChange: (segmentUid: string, text: string | null) => void;
   onLocateSegmentInPdf: (segmentUid: string, pageIdx: number) => void;
+  onLocateAnnotationInPdf: (
+    annotationId: AnnotationId,
+    segmentUid: string,
+    pageIdx: number,
+  ) => void;
   onConsumePendingSourceLinkInsertion: (entryId: string, noteId: string, linkId: string) => void;
   onConsumePendingNoteImageInsertion: (entryId: string, noteId: string, imageId: string) => void;
   onExportTranslationNote: (entryId: string, title: string, markdown: string) => Promise<void>;
@@ -168,7 +175,14 @@ type EntryWorkspaceViewProps = {
     image: { alt?: string | null; id: string; markdownPath: string }
   ) => void;
   onToggleSidePanePinned: () => void;
-  onSaveMarkdownNote: (entryId: string, noteId: string, title: string, markdown: string) => Promise<NoteDocument>;
+  onSaveMarkdownNote: (
+    entryId: string,
+    noteId: string,
+    title: string,
+    markdown: string,
+    links?: SourceLink[] | null,
+    expectedRevision?: string | null
+  ) => Promise<NoteDocument>;
   onSaveSegmentNote: (entryId: string, segmentUid: string, text: string) => Promise<SegmentBlockNote[]>;
   onDeleteSegmentNote: (entryId: string, segmentUid: string) => Promise<SegmentBlockNote[]>;
   onSaveAnnotation: (entryId: string, annotation: {
@@ -203,7 +217,7 @@ export function EntryWorkspaceView({
   linkedSegment,
   reflowSyncSegment,
   splitReaderLinked,
-  segmentNotesLinkedToPdf,
+  segmentRecordsLinkedReader,
   sharedSegmentNoteDrafts,
   pendingSourceLinkInsertion,
   pendingNoteImageInsertion,
@@ -234,6 +248,7 @@ export function EntryWorkspaceView({
   onFocusLinkedSegment,
   onSharedSegmentNoteDraftChange,
   onLocateSegmentInPdf,
+  onLocateAnnotationInPdf,
   onConsumePendingSourceLinkInsertion,
   onConsumePendingNoteImageInsertion,
   onExportTranslationNote,
@@ -375,7 +390,7 @@ export function EntryWorkspaceView({
               </div>
             ) : null}
             {note ? (
-              <div className="size-full min-h-0 overflow-auto">
+              <div className="size-full min-h-0 min-w-0 overflow-hidden">
                 <MarkdownNoteEditor
                   entryId={entry.id}
                   entryTitle={entry.title}
@@ -393,8 +408,15 @@ export function EntryWorkspaceView({
                   onNoteImageInserted={(imageId) =>
                     onConsumePendingNoteImageInsertion(entry.id, note.note_id, imageId)
                   }
-                  onSaveNote={(title, markdown) =>
-                    onSaveMarkdownNote(entry.id, note.note_id, title, markdown)
+                  onSaveNote={(title, markdown, links, expectedRevision) =>
+                    onSaveMarkdownNote(
+                      entry.id,
+                      note.note_id,
+                      title,
+                      markdown,
+                      links,
+                      expectedRevision
+                    )
                   }
                   onSourceLinkInserted={(link) =>
                     onConsumePendingSourceLinkInsertion(entry.id, note.note_id, link.link_id)
@@ -420,13 +442,14 @@ export function EntryWorkspaceView({
                 focusedSegmentUid={focusedSegmentUid}
                 initialMode={initialRecordMode}
                 linkedSegment={linkedSegment}
-                linkedToPdf={segmentNotesLinkedToPdf}
+                linkedReaderKind={segmentRecordsLinkedReader}
                 pdfDocument={recordPdfState.status === 'ready' ? recordPdfState.document : null}
                 readerData={readerData}
                 sharedDrafts={sharedSegmentNoteDrafts}
                 workspaceRoot={workspaceRoot}
                 onFocusSegment={onFocusLinkedSegment}
                 onLocateSegment={onLocateSegmentInPdf}
+                onLocateAnnotation={onLocateAnnotationInPdf}
                 onDeleteAnnotation={onDeleteAnnotation}
                   onSaveSegmentNote={onSaveSegmentNote}
                 onDeleteSegmentNote={onDeleteSegmentNote}
@@ -477,13 +500,14 @@ function SegmentNotesOverview({
   focusedSegmentUid,
   initialMode,
   linkedSegment,
-  linkedToPdf,
+  linkedReaderKind,
   pdfDocument,
   readerData,
   sharedDrafts,
   workspaceRoot,
   onFocusSegment,
   onLocateSegment,
+  onLocateAnnotation,
   onDeleteAnnotation,
   onSaveAnnotation,
   onSaveSegmentNote,
@@ -495,13 +519,18 @@ function SegmentNotesOverview({
   focusedSegmentUid?: string;
   initialMode: 'note' | 'annotation';
   linkedSegment: EntryWorkspaceViewProps['linkedSegment'];
-  linkedToPdf: boolean;
+  linkedReaderKind: WorkspaceReaderSurfaceKind | null;
   pdfDocument: import('pdfjs-dist').PDFDocumentProxy | null;
   readerData: PdfReaderResponse | null;
   sharedDrafts: Record<string, string>;
   workspaceRoot: string | null;
   onFocusSegment: (segmentUid: string, mode?: 'note' | 'annotation') => void;
   onLocateSegment: (segmentUid: string, pageIdx: number) => void;
+  onLocateAnnotation: (
+    annotationId: AnnotationId,
+    segmentUid: string,
+    pageIdx: number,
+  ) => void;
   onDeleteAnnotation: (entryId: string, annotationId: AnnotationId) => Promise<Annotation[]>;
   onSaveAnnotation: (entryId: string, annotation: {
     annotationId?: AnnotationId | null;
@@ -525,7 +554,7 @@ function SegmentNotesOverview({
   useEffect(() => {
     setNotes(readerData?.segment_notes ?? []);
   }, [readerData?.segment_notes]);
-  const sourceSegments = useMemo(() => readerData?.segments ?? [], [readerData?.segments]);
+  const parsedSourceSegments = useMemo(() => readerData?.segments ?? [], [readerData?.segments]);
   const sourceAnnotations = useMemo(() => readerData?.annotations ?? [], [readerData?.annotations]);
   const [followPdf, setFollowPdf] = useState(true);
   const [recordListCollapsed, setRecordListCollapsed] = useState(false);
@@ -536,6 +565,10 @@ function SegmentNotesOverview({
     linkedSegment?.mode ?? initialMode
   );
   const [annotations, setAnnotations] = useState(sourceAnnotations);
+  const sourceSegments = useMemo(
+    () => mergePdfAnnotationAnchorSegments(parsedSourceSegments, annotations),
+    [annotations, parsedSourceSegments]
+  );
   const [annotationBusy, setAnnotationBusy] = useState(false);
   const [selectedSegmentUid, setSelectedSegmentUid] = useState<string | null>(
     linkedSegment?.segmentUid ?? focusedSegmentUid ?? null
@@ -807,6 +840,25 @@ function SegmentNotesOverview({
     onLocateSegment(selectedSegment.uid, selectedSegment.page_idx);
   };
 
+  const locateSelectedAnnotation = (annotation: Annotation) => {
+    if (!linkedReaderKind) return;
+    const segment = segmentByUid.get(annotation.segment_uid) ?? selectedSegment;
+    if (!segment) return;
+
+    onFocusSegment(segment.uid, 'annotation');
+    if (linkedReaderKind === 'pdf') {
+      onLocateAnnotation(
+        annotation.annotation_id,
+        segment.uid,
+        annotation.text_selection?.page_idx ??
+          annotation.segment_snapshot?.page_idx ??
+          segment.page_idx,
+      );
+      return;
+    }
+    onLocateSegment(segment.uid, segment.page_idx);
+  };
+
   const changeDetailMode = (mode: 'note' | 'annotation') => {
     setDetailMode(mode);
     if (selectedSegment) {
@@ -871,27 +923,27 @@ function SegmentNotesOverview({
       <EntryContentHeader contentTitle="片段记录" entryTitle={entry.title}>
         <Badge variant="outline">笔记 {visibleNotes.length}</Badge>
         <Badge variant="outline">批注 {annotations.length}</Badge>
-        <Badge className="gap-1" variant={linkedToPdf ? 'secondary' : 'outline'}>
+        <Badge className="gap-1" variant={linkedReaderKind ? 'secondary' : 'outline'}>
           <Link2 size={12} aria-hidden="true" />
-          {linkedToPdf ? '已与 PDF 联动' : '未联动'}
+          {linkedReaderKind ? `已与${linkedReaderKind === 'pdf' ? ' PDF' : '重排视图'}联动` : '未联动'}
         </Badge>
         <label className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
           <Switch
-            aria-label="跟随 PDF 当前片段"
+            aria-label={linkedReaderKind === 'reflow' ? '跟随重排视图当前片段' : '跟随 PDF 当前片段'}
             checked={followPdf}
             onCheckedChange={setFollowPdf}
           />
-          跟随 PDF
+          跟随{linkedReaderKind === 'reflow' ? '重排' : ' PDF'}
         </label>
         <Button
           disabled={!selectedSegment}
           size="sm"
           type="button"
-          variant={linkedToPdf ? 'outline' : 'default'}
+          variant={linkedReaderKind ? 'outline' : 'default'}
           onClick={locateSelectedSegment}
         >
           <LocateFixed size={14} aria-hidden="true" />
-          {linkedToPdf ? '定位原文' : '在 PDF 中打开'}
+          {linkedReaderKind ? '定位原文' : '在 PDF 中打开'}
         </Button>
       </EntryContentHeader>
 
@@ -996,7 +1048,7 @@ function SegmentNotesOverview({
                       )}
                       key={logicalUid}
                       type="button"
-                      onClick={() => requestSelection(itemUid, linkedToPdf)}
+                      onClick={() => requestSelection(itemUid, Boolean(linkedReaderKind))}
                     >
                       <div className="flex min-w-0 items-center justify-between gap-2">
                         <span className="text-sm font-medium text-foreground">
@@ -1061,6 +1113,7 @@ function SegmentNotesOverview({
                 onDelete={(annotationId) => void deleteAnnotation(annotationId)}
                 onModeChange={(mode) => changeDetailMode(mode === 'segment' ? 'note' : 'annotation')}
                 onSave={(annotation) => void saveAnnotation(annotation)}
+                onSelectAnnotation={locateSelectedAnnotation}
               />
             ) : (
               <SegmentNoteEditor

@@ -99,9 +99,9 @@ import {
   scopeLabel
 } from './assistantContextTargets';
 import { planAssistantContext } from '../harness/contextPlanner';
+import { latestConversationMemory } from '../harness/conversationMemory';
 import {
   analyzeConversationLength,
-  buildConversationMemory,
   cloneAssistantContextItems,
   contextItemToInput,
   patchConversationNoteProposal,
@@ -279,7 +279,7 @@ export function AssistantPanel({
     conversationId: conversation?.id
   });
   const conversationMemory = useMemo(
-    () => buildConversationMemory(visibleMessages),
+    () => latestConversationMemory(visibleMessages),
     [visibleMessages]
   );
   const longConversation = useMemo(

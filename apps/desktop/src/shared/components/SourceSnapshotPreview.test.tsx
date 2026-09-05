@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SourceSnapshotPreview } from './SourceSnapshotPreview';
 
@@ -12,6 +12,8 @@ vi.mock('./MermaidDiagramPreview', () => ({
 }));
 
 describe('SourceSnapshotPreview', () => {
+  afterEach(() => cleanup());
+
   it('renders Mermaid code fences as diagrams in parsed PDF previews', () => {
     render(
       <SourceSnapshotPreview
@@ -39,5 +41,33 @@ describe('SourceSnapshotPreview', () => {
     render(<SourceSnapshotPreview markdown={'**加粗结论**与后续正文'} />);
 
     expect(screen.getByText('加粗结论').tagName).toBe('STRONG');
+  });
+
+  it('can suppress parsed Mermaid diagrams', () => {
+    render(
+      <SourceSnapshotPreview
+        markdown={'```mermaid\ngraph TD\n  A --> B\n```'}
+        showMermaidDiagrams={false}
+      />
+    );
+
+    expect(screen.queryByTestId('mermaid-preview')).toBeNull();
+  });
+
+  it('applies a configurable image size and opens image details', () => {
+    render(
+      <SourceSnapshotPreview
+        imageDetailEnabled
+        imageSize="compact"
+        markdown="![流程图](https://example.com/flow.png)"
+      />
+    );
+
+    const trigger = screen.getByRole('button', { name: '查看流程图详情' });
+    expect(trigger.querySelector('img')?.className).toContain('max-h-48');
+    fireEvent.click(trigger);
+
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(screen.getByText('图片详情')).toBeTruthy();
   });
 });

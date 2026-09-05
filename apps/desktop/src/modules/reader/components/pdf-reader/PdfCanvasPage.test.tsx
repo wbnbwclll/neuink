@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
 
@@ -25,7 +25,11 @@ vi.mock('pdfjs-dist', () => ({
   }
 }));
 
-import { PdfCanvasPage, PdfTextSelectionHighlightLayer } from './PdfCanvasPage';
+import {
+  applyPdfTextSearchHighlights,
+  PdfCanvasPage,
+  PdfTextSelectionHighlightLayer
+} from './PdfCanvasPage';
 
 afterEach(() => {
   cleanup();
@@ -79,7 +83,7 @@ describe('PdfCanvasPage', () => {
           renderPriority="visible"
         />
         <PdfTextSelectionHighlightLayer highlights={[
-          { color: 'yellow', id: 'annotation:0', rect: [100, 200, 300, 240] }
+          { active: true, color: 'yellow', id: 'annotation:0', rect: [100, 200, 300, 240] }
         ]} />
       </div>
     );
@@ -91,6 +95,8 @@ describe('PdfCanvasPage', () => {
     expect((highlight as HTMLElement).style.left).toBe('10%');
     expect((highlight as HTMLElement).style.top).toBe('20%');
     expect((highlight as HTMLElement).style.mixBlendMode).toBe('multiply');
+    expect(highlight?.getAttribute('data-pdf-annotation-active')).toBe('true');
+    expect(highlight?.classList.contains('pdf-annotation-highlight-active')).toBe(true);
     expect(textLayer?.classList.contains('z-[2]')).toBe(true);
   });
 
@@ -231,6 +237,68 @@ describe('PdfCanvasPage', () => {
 
     await waitFor(() => expect(fixture.drawImage).toHaveBeenCalledTimes(2));
     expect(fixture.render).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a page after a raster load failure', async () => {
+    const fixture = createPdfFixture(Promise.resolve());
+    const page = await fixture.document.getPage(1);
+    const getPage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('page unavailable'))
+      .mockResolvedValue(page);
+    const document = { getPage } as unknown as PDFDocumentProxy;
+    mockCanvasContexts(fixture.drawImage);
+    const view = renderPage(document);
+
+    await waitFor(() => expect(view.getByText('page unavailable')).toBeTruthy());
+    fireEvent.click(view.getByRole('button', { name: '重试此页' }));
+
+    await waitFor(() => expect(fixture.drawImage).toHaveBeenCalledOnce());
+    expect(getPage).toHaveBeenCalledTimes(2);
+  });
+
+  it('marks matching text-layer spans and one active result', () => {
+    const layer = document.createElement('div');
+    const first = document.createElement('span');
+    const second = document.createElement('span');
+    first.textContent = 'Alpha result';
+    second.textContent = 'Another ALPHA result';
+    layer.append(first, second);
+
+    applyPdfTextSearchHighlights(layer, ' alpha ', true);
+
+    expect(first.classList.contains('pdf-search-match-active')).toBe(true);
+    expect(second.classList.contains('pdf-search-match')).toBe(true);
+    applyPdfTextSearchHighlights(layer, '', false);
+    expect(layer.querySelector('.pdf-search-match')).toBeNull();
+  });
+
+  it('updates the page layout width before a replacement raster finishes', async () => {
+    const fixture = createPdfFixture(Promise.resolve());
+    mockCanvasContexts(fixture.drawImage);
+    const view = renderPage(fixture.document);
+
+    await waitFor(() => expect(fixture.drawImage).toHaveBeenCalledOnce());
+    const pendingRender = deferred<void>();
+    fixture.render.mockImplementationOnce(() => ({
+      promise: pendingRender.promise,
+      cancel: vi.fn(),
+      onContinue: null
+    }) as unknown as RenderTask);
+
+    view.rerender(
+      <PdfCanvasPage
+        pageIdx={0}
+        pageWidth={300}
+        pdfDocument={fixture.document}
+        renderEnabled
+        renderPriority="visible"
+      />
+    );
+
+    const page = view.container.querySelector('canvas')?.parentElement;
+    expect(page?.style.width).toBe('300px');
+    expect(page?.style.height).toBe('450px');
   });
 });
 

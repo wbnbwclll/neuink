@@ -85,8 +85,25 @@ fn apply_markdown_proposal(
                 entry_id: proposal.entry_id.clone(),
             },
         )?;
-        let (markdown, _) = materialize_sources(workspace, proposal, &entry_id, &note_id)?;
-        let result = workspace.update_note(&entry_id, &note_id, &proposal.title, markdown.clone());
+        let current = workspace
+            .read_note(&entry_id, &note_id)
+            .map_err(|error| error.to_string())?;
+        let (markdown, _, links) =
+            match materialize_sources(workspace, proposal, &entry_id, &note_id) {
+                Ok(materialized) => materialized,
+                Err(error) => {
+                    recover_journal(workspace, journal_file)?;
+                    return Err(error);
+                }
+            };
+        let result = workspace.update_note_document_if_revision(
+            &entry_id,
+            &note_id,
+            &proposal.title,
+            markdown.clone(),
+            &links,
+            Some(&current.revision),
+        );
         if let Err(error) = result {
             recover_journal(workspace, journal_file)?;
             return Err(error.to_string());
@@ -113,29 +130,50 @@ fn apply_markdown_proposal(
             current_content_hash: stable_hash(&current.markdown),
         });
     }
-    let links = workspace
+    let previous_links = workspace
         .read_note_source_links(&entry_id, &note_id)
         .map_err(|error| error.to_string())?;
     write_json(
         journal_file,
         &ApplyJournal::MarkdownUpdate {
             entry_id: proposal.entry_id.clone(),
-            links,
+            links: previous_links.clone(),
             markdown: current.markdown.clone(),
             note_id: note_id.to_string(),
             title: current.title.clone(),
         },
     )?;
-    let (materialized, patch_operations) =
-        materialize_sources(workspace, proposal, &entry_id, &note_id)?;
-    let markdown = apply_markdown_action(
+    let (materialized, patch_operations, new_links) =
+        match materialize_sources(workspace, proposal, &entry_id, &note_id) {
+            Ok(materialized) => materialized,
+            Err(error) => {
+                let _ = fs::remove_file(journal_file);
+                return Err(error);
+            }
+        };
+    let markdown = match apply_markdown_action(
         &proposal.action,
         &current.markdown,
         &materialized,
         &patch_operations,
-    )?;
-    if let Err(error) = workspace.update_note(&entry_id, &note_id, &proposal.title, &markdown) {
-        recover_journal(workspace, journal_file)?;
+    ) {
+        Ok(markdown) => markdown,
+        Err(error) => {
+            let _ = fs::remove_file(journal_file);
+            return Err(error);
+        }
+    };
+    let mut links = previous_links;
+    links.extend(new_links);
+    if let Err(error) = workspace.update_note_document_if_revision(
+        &entry_id,
+        &note_id,
+        &proposal.title,
+        &markdown,
+        &links,
+        Some(&current.revision),
+    ) {
+        let _ = fs::remove_file(journal_file);
         return Err(error.to_string());
     }
     commit_receipt(
@@ -206,9 +244,17 @@ fn materialize_sources(
     proposal: &VerifiedNoteProposal,
     entry_id: &EntryId,
     note_id: &NoteId,
-) -> Result<(String, Vec<super::note_apply_store::MarkdownPatchOperation>), String> {
+) -> Result<
+    (
+        String,
+        Vec<super::note_apply_store::MarkdownPatchOperation>,
+        Vec<neuink_domain::SourceLink>,
+    ),
+    String,
+> {
     let mut markdown = proposal.markdown.clone();
     let mut patch_operations = proposal.patch_operations.clone();
+    let mut links = Vec::new();
     let mut seen = BTreeSet::new();
     for (index, source) in proposal.sources.iter().enumerate() {
         let key = format!("{}:{}", source.entry_id, source.segment_uid);
@@ -216,7 +262,7 @@ fn materialize_sources(
             continue;
         }
         let link = workspace
-            .create_note_source_link(
+            .build_note_source_link(
                 entry_id,
                 note_id,
                 &EntryId::from_string(&source.entry_id),
@@ -235,8 +281,9 @@ fn materialize_sources(
         if !used && !markdown.contains(&anchor) {
             markdown = format!("{}\n\n{}", markdown.trim_end(), anchor);
         }
+        links.push(link);
     }
-    Ok((markdown, patch_operations))
+    Ok((markdown, patch_operations, links))
 }
 
 fn materialize_patch_markers(
@@ -313,10 +360,9 @@ fn recover_journal(workspace: &Workspace, path: &std::path::Path) -> Result<(), 
             let entry_id = EntryId::from_string(entry_id);
             let note_id = NoteId::from_string(note_id);
             workspace
-                .update_note(&entry_id, &note_id, title, markdown)
-                .map_err(|error| error.to_string())?;
-            workspace
-                .replace_note_source_links(&entry_id, &note_id, &links)
+                .update_note_document_if_revision(
+                    &entry_id, &note_id, title, markdown, &links, None,
+                )
                 .map_err(|error| error.to_string())?;
         }
         ApplyJournal::SegmentUpdate {

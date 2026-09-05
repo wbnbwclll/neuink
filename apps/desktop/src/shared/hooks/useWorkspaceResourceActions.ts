@@ -50,6 +50,7 @@ import type {
   AnnotationTextSelection,
   EntryMeta,
   NoteId,
+  SourceLink,
   TagId,
   TagMeta
 } from '../types/domain';
@@ -748,11 +749,26 @@ export function useWorkspaceResourceActions({
   );
 
   const saveMarkdownNote = useCallback(
-    async (entryId: string, noteId: NoteId, title: string, markdown: string) => {
+    async (
+      entryId: string,
+      noteId: NoteId,
+      title: string,
+      markdown: string,
+      links?: SourceLink[] | null,
+      expectedRevision?: string | null
+    ) => {
       if (!root) {
         throw new Error('workspace is not open');
       }
-      const note = await updateNote(root, entryId, noteId, title, markdown);
+      const note = await updateNote(
+        root,
+        entryId,
+        noteId,
+        title,
+        markdown,
+        links,
+        expectedRevision
+      );
       setEntries((current) =>
         current.map((entry) => {
           if (entry.id !== entryId) {

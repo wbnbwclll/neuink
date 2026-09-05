@@ -1119,7 +1119,7 @@ export function SettingsPanel({
       onAddAgent={() => {
         notify({
           title: '暂不支持新增子 Agent',
-          description: '当前版本只开放两个内置子 Agent：EvidenceAgent 和 PatchPlannerAgent。'
+          description: '当前版本使用 4 个职责固定的内置子 Agent；可在子 Agent 页面配置模型、启用状态与权限。'
         });
         setActiveSettingsTab('subagents');
       }}
