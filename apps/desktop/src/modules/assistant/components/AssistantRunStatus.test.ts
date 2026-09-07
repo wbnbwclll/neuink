@@ -22,4 +22,14 @@ describe('resolveAssistantRunStatus', () => {
       toolEvents: []
     }).label).toBe('正在回答');
   });
+
+  it('shows planning while the orchestrator is understanding the request', () => {
+    expect(resolveAssistantRunStatus({
+      busy: true,
+      error: null,
+      queued: false,
+      streaming: false,
+      toolEvents: [{ id: '1', status: 'running', toolName: 'agent.orchestrate' }]
+    }).label).toBe('正在规划');
+  });
 });

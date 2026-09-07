@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use neuink_domain::{NeuinkDocument, SegmentType};
+use neuink_domain::{NeuinkDocument, SegmentType, SourceSegment};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -20,6 +20,14 @@ struct ListRegionCandidate {
     page_idx: u32,
     page_size: Option<[f32; 2]>,
     sub_type: Option<String>,
+}
+
+struct CaptionBlockCandidate {
+    bbox: [f32; 4],
+    block_type: String,
+    normalized_text: String,
+    page_idx: u32,
+    page_size: Option<[f32; 2]>,
 }
 
 pub fn enrich_document_with_middle(document: &mut NeuinkDocument, middle: &Value) {
@@ -71,6 +79,7 @@ pub fn enrich_document_with_middle(document: &mut NeuinkDocument, middle: &Value
     }
 
     enrich_reference_list_segments(document, &candidates);
+    enrich_caption_bboxes(document, middle);
 }
 
 fn list_region_candidates(middle: &Value) -> Vec<ListRegionCandidate> {
@@ -388,6 +397,196 @@ fn candidate_uses_page_units(candidate: &ListRegionCandidate) -> bool {
             && candidate.bbox[2] <= width * 1.05
             && candidate.bbox[3] <= height * 1.05
     })
+}
+
+// MinerU v2 emits captions as inline items without their own bbox. The middle
+// json keeps dedicated `*_caption` / `*_footnote` blocks with real geometry, so
+// captions can regain their true extent (they are usually narrower than the
+// figure itself) by matching block text back to the caption segment.
+fn enrich_caption_bboxes(document: &mut NeuinkDocument, middle: &Value) {
+    let candidates = caption_block_candidates(middle);
+    if candidates.is_empty() {
+        return;
+    }
+
+    let anchor_bboxes: BTreeMap<String, [f32; 4]> = document
+        .segments
+        .iter()
+        .filter(|segment| {
+            segment.visual_group_id.is_some()
+                && segment.bbox.is_some()
+                && !is_caption_segment(segment)
+        })
+        .filter_map(|segment| {
+            segment
+                .visual_group_id
+                .clone()
+                .zip(segment.bbox)
+        })
+        .collect();
+
+    for segment in document.segments.iter_mut() {
+        if !is_caption_segment(segment) || segment.bbox.is_some() {
+            continue;
+        }
+        let target = normalize_matching_text(&segment.text);
+        if target.len() < 8 {
+            continue;
+        }
+        let expected = expected_caption_block_types(segment);
+        let anchor = segment
+            .visual_group_id
+            .as_deref()
+            .and_then(|id| anchor_bboxes.get(id).copied());
+
+        let best = candidates
+            .iter()
+            .filter(|candidate| candidate.page_idx == segment.page_idx)
+            .filter(|candidate| {
+                expected.is_empty()
+                    || expected
+                        .iter()
+                        .any(|block_type| block_type == &candidate.block_type)
+            })
+            .filter_map(|candidate| {
+                let score = text_match_score(&target, &candidate.normalized_text)?;
+                Some((candidate, score))
+            })
+            .max_by(|(left, left_score), (right, right_score)| {
+                left_score.cmp(right_score).then_with(|| {
+                    let left_distance = anchor
+                        .map(|bbox| vertical_anchor_distance(bbox, left.bbox))
+                        .unwrap_or(f32::MAX);
+                    let right_distance = anchor
+                        .map(|bbox| vertical_anchor_distance(bbox, right.bbox))
+                        .unwrap_or(f32::MAX);
+                    right_distance
+                        .partial_cmp(&left_distance)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+            });
+
+        if let Some((candidate, _)) = best {
+            segment.bbox = Some(normalized_bbox(
+                candidate.bbox,
+                candidate.page_size,
+                true,
+            ));
+        }
+    }
+}
+
+fn is_caption_segment(segment: &SourceSegment) -> bool {
+    matches!(
+        segment.block_role.as_deref(),
+        Some("caption") | Some("footnote")
+    )
+}
+
+fn caption_block_candidates(middle: &Value) -> Vec<CaptionBlockCandidate> {
+    let Some(pages) = find_key(middle, "pdf_info").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut result = Vec::new();
+    for (fallback_page_idx, page) in pages.iter().enumerate() {
+        let page_idx = page
+            .get("page_idx")
+            .and_then(Value::as_u64)
+            .unwrap_or(fallback_page_idx as u64) as u32;
+        let page_size = page_size(page);
+        for key in ["preproc_blocks", "para_blocks"] {
+            if let Some(blocks) = page.get(key).and_then(Value::as_array) {
+                collect_caption_blocks(blocks, page_idx, page_size, &mut result);
+            }
+        }
+    }
+    result
+}
+
+fn collect_caption_blocks(
+    blocks: &[Value],
+    page_idx: u32,
+    page_size: Option<[f32; 2]>,
+    result: &mut Vec<CaptionBlockCandidate>,
+) {
+    for block in blocks {
+        let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
+        if block_type.ends_with("_caption") || block_type.ends_with("_footnote") {
+            if let (Some(bbox), Some(text)) = (
+                bbox_from_value(block.get("bbox")).or_else(|| nested_bbox(block)),
+                block_text(block),
+            ) {
+                result.push(CaptionBlockCandidate {
+                    bbox,
+                    block_type: block_type.to_string(),
+                    normalized_text: normalize_matching_text(&text),
+                    page_idx: direct_page_idx(block).unwrap_or(page_idx),
+                    page_size,
+                });
+            }
+        }
+        if let Some(children) = block.get("blocks").and_then(Value::as_array) {
+            collect_caption_blocks(children, page_idx, page_size, result);
+        }
+    }
+}
+
+fn expected_caption_block_types(segment: &SourceSegment) -> Vec<String> {
+    let raw = segment.raw_type.as_deref().unwrap_or_default();
+    let role = segment.block_role.as_deref().unwrap_or("caption");
+    let bases: &[&str] = match raw {
+        "image" => &["image", "img"],
+        "chart" => &["chart"],
+        "table" => &["table"],
+        "code" => &["code"],
+        "algorithm" => &["algorithm"],
+        _ => return Vec::new(),
+    };
+    bases
+        .iter()
+        .map(|base| format!("{base}_{role}"))
+        .collect()
+}
+
+fn text_match_score(target: &str, candidate: &str) -> Option<usize> {
+    if target.is_empty() || candidate.is_empty() {
+        return None;
+    }
+    if target == candidate {
+        return Some(2 + target.len());
+    }
+    if (target.len() >= 12 && candidate.contains(target))
+        || (candidate.len() >= 12 && target.contains(candidate))
+    {
+        return Some(1 + target.len().min(candidate.len()));
+    }
+    None
+}
+
+fn normalize_matching_text(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len());
+    let mut inside_tag = false;
+    for character in text.chars() {
+        match character {
+            '<' => inside_tag = true,
+            '>' => inside_tag = false,
+            // Line-break hyphenation survives in middle spans ("hyper-"
+            // + newline + "parameters") but is merged away in content lists,
+            // so hyphens cannot participate in the match either.
+            '-' | '‐' | '‑' => {}
+            _ if !inside_tag && !character.is_whitespace() => {
+                normalized.extend(character.to_lowercase());
+            }
+            _ => {}
+        }
+    }
+    normalized
+}
+
+fn vertical_anchor_distance(anchor: [f32; 4], bbox: [f32; 4]) -> f32 {
+    let gap_below = (bbox[1] - anchor[3]).abs();
+    let gap_above = (anchor[1] - bbox[3]).abs();
+    gap_below.min(gap_above)
 }
 
 fn page_size(page: &Value) -> Option<[f32; 2]> {

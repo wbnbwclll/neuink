@@ -1,11 +1,7 @@
 import { listen } from '@tauri-apps/api/event';
 import { useEffect, useMemo, useState } from 'react';
 
-import { listJobs, type Job, type JobEvent } from '@/shared/ipc/workspaceApi';
-
-type JobScopeEntry = {
-  root?: string;
-};
+import { listJobs, type Job, type JobEvent, type JobScope } from '@/shared/ipc/workspaceApi';
 
 export function useWorkspaceJobs(root: string | null) {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -69,7 +65,7 @@ function filterJobsForRoot(jobs: Job[], root: string) {
 }
 
 function jobMatchesRoot(job: Job, root: string) {
-  const scope = (job.scope ?? null) as JobScopeEntry | null;
+  const scope: JobScope | null = job.scope;
   return scope?.root === root;
 }
 

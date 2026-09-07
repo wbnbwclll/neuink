@@ -44,12 +44,14 @@ describe('usePdfAnnotationActions', () => {
     const onDeleteAnnotation = vi.fn().mockResolvedValue([]);
     const { result } = renderActions(onDeleteAnnotation);
 
+    act(() => result.current.setFocusId(annotationId));
     act(() => result.current.scheduleDelete(annotationId));
     const notification = toastMocks.notify.mock.calls[0]?.[0] as ToastInput;
     act(() => notification.onExpire?.());
 
     await waitFor(() => {
       expect(onDeleteAnnotation).toHaveBeenCalledWith('entry-1', annotationId);
+      expect(result.current.focusId).toBeNull();
     });
   });
 });

@@ -26,7 +26,9 @@ blake3 = "1"
 fastembed = "5"
 keyring = "3"
 nanoid = "0.4"
-reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls", "stream"] }
+tokio-stream = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["async-await", "std"] }
 rayon = "1.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

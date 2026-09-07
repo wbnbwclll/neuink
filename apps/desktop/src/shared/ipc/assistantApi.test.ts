@@ -14,6 +14,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 const settingsState: LlmSettingsState = {
   assistant_profile: {
     api_key: null,
+    api_protocol: 'openai_compatible',
     base_url: 'https://example.com/v1',
     id: 'profile-1',
     max_context_length: 128000,

@@ -1,13 +1,35 @@
-use std::{collections::BTreeMap, fs};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    fs,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock, Weak},
+};
 
 use chrono::Utc;
 use neuink_domain::{
-    ContentItem, EntryId, EntryMeta, NoteId, PdfParseStatus, SegmentRef, SegmentUid, SourceLink,
-    SourceSegment,
+    ContentItem, EntryId, EntryMeta, LinkOwner, NoteId, PdfParseStatus, SegmentRef, SegmentUid,
+    SourceLink, SourceSegment,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{atomic_write, atomic_write_json, Workspace, WorkspaceError};
+
+const NOTE_ASSET_ORPHAN_GRACE_SECONDS: i64 = 7 * 24 * 60 * 60;
+const NOTE_ASSET_ORPHAN_MANIFEST: &str = ".orphaned-assets.json";
+const NOTE_ASSET_ORPHAN_DIR: &str = ".orphaned";
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct NoteAssetOrphanManifest {
+    #[serde(default)]
+    unreferenced_since: BTreeMap<String, i64>,
+}
+
+#[derive(Debug)]
+struct NoteAssetTransaction {
+    manifest_path: PathBuf,
+    moves: Vec<(PathBuf, PathBuf)>,
+    previous_manifest: Option<Vec<u8>>,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct NoteDocument {
@@ -15,6 +37,7 @@ pub struct NoteDocument {
     pub title: String,
     pub markdown: String,
     pub links: Vec<SourceLink>,
+    pub revision: String,
 }
 
 impl Workspace {
@@ -41,14 +64,17 @@ impl Workspace {
             return Err(WorkspaceError::NoteMissing(note_id.to_string()));
         }
 
-        let markdown = strip_frontmatter(&fs::read_to_string(note_path)?).to_string();
+        let note_source = fs::read_to_string(note_path)?;
+        let markdown = strip_frontmatter(&note_source).to_string();
         let mut links = self.read_note_links(entry_id, note_id)?;
+        let revision = note_revision(&note_source, &links)?;
         self.enrich_note_source_link_assets(&mut links);
         Ok(NoteDocument {
             note_id: note_id.clone(),
             title,
             markdown,
             links,
+            revision,
         })
     }
 
@@ -59,8 +85,78 @@ impl Workspace {
         title: impl Into<String>,
         markdown: impl Into<String>,
     ) -> Result<NoteDocument, WorkspaceError> {
+        self.update_note_if_revision(entry_id, note_id, title, markdown, None)
+    }
+
+    pub fn update_note_if_revision(
+        &self,
+        entry_id: &EntryId,
+        note_id: &NoteId,
+        title: impl Into<String>,
+        markdown: impl Into<String>,
+        expected_revision: Option<&str>,
+    ) -> Result<NoteDocument, WorkspaceError> {
+        self.update_note_document(
+            entry_id,
+            note_id,
+            title.into(),
+            markdown.into(),
+            None,
+            expected_revision,
+        )
+    }
+
+    pub fn update_note_document_if_revision(
+        &self,
+        entry_id: &EntryId,
+        note_id: &NoteId,
+        title: impl Into<String>,
+        markdown: impl Into<String>,
+        links: &[SourceLink],
+        expected_revision: Option<&str>,
+    ) -> Result<NoteDocument, WorkspaceError> {
+        self.update_note_document(
+            entry_id,
+            note_id,
+            title.into(),
+            markdown.into(),
+            Some(links),
+            expected_revision,
+        )
+    }
+
+    fn update_note_document(
+        &self,
+        entry_id: &EntryId,
+        note_id: &NoteId,
+        title: String,
+        markdown: String,
+        replacement_links: Option<&[SourceLink]>,
+        expected_revision: Option<&str>,
+    ) -> Result<NoteDocument, WorkspaceError> {
         let title = normalize_note_title(title.into());
-        let markdown = markdown.into();
+        let note_path = self.layout().entry_note_file(entry_id, note_id);
+        let links_path = self.layout().entry_note_links_file(entry_id, note_id);
+        let write_lock = note_write_lock(&note_path);
+        let _write_guard = write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !note_path.exists() {
+            return Err(WorkspaceError::NoteMissing(note_id.to_string()));
+        }
+        let previous_note = fs::read_to_string(&note_path)?;
+        let previous_links = self.read_note_links(entry_id, note_id)?;
+        if let Some(expected_revision) = expected_revision {
+            let current_revision = note_revision(&previous_note, &previous_links)?;
+            if current_revision != expected_revision {
+                return Err(WorkspaceError::NoteRevisionConflict(note_id.to_string()));
+            }
+        }
+        let links = match replacement_links {
+            Some(links) => validate_and_prune_note_links(entry_id, note_id, &markdown, links)?,
+            None => prune_note_links(&markdown, &previous_links),
+        };
+        let previous_links_file = fs::read(&links_path).ok();
         let mut entry = self.read_entry(entry_id)?;
         let mut note_found = false;
 
@@ -88,12 +184,26 @@ impl Workspace {
             Utc::now().to_rfc3339(),
             markdown.trim_start()
         );
-        atomic_write(
-            self.layout().entry_note_file(entry_id, note_id),
-            body.as_bytes(),
-        )?;
+        let asset_transaction = self.prepare_note_asset_maintenance(entry_id, note_id, &markdown)?;
+        if let Err(error) = atomic_write(&note_path, body.as_bytes()) {
+            rollback_note_asset_transaction(asset_transaction);
+            return Err(error);
+        }
+        if let Err(error) = atomic_write_json(&links_path, &links) {
+            let _ = atomic_write(&note_path, previous_note.as_bytes());
+            rollback_note_asset_transaction(asset_transaction);
+            return Err(error);
+        }
         entry.updated_at = Utc::now();
-        atomic_write_json(self.layout().entry_meta_file(entry_id), &entry)?;
+        if let Err(error) = atomic_write_json(self.layout().entry_meta_file(entry_id), &entry) {
+            // The aggregate spans three files. Each write is atomic and the earlier
+            // files are restored if a later write fails.
+            let _ = atomic_write(&note_path, previous_note.as_bytes());
+            restore_optional_file(&links_path, previous_links_file.as_deref());
+            rollback_note_asset_transaction(asset_transaction);
+            return Err(error);
+        }
+        drop(_write_guard);
         self.read_note(entry_id, note_id)
     }
 
@@ -135,6 +245,33 @@ impl Workspace {
         source_entry_id: &EntryId,
         segment_uid: SegmentUid,
     ) -> Result<SourceLink, WorkspaceError> {
+        let link =
+            self.build_note_source_link(owner_entry_id, note_id, source_entry_id, segment_uid)?;
+
+        let note_path = self.layout().entry_note_file(owner_entry_id, note_id);
+        let write_lock = note_write_lock(&note_path);
+        let _write_guard = write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !note_path.exists() {
+            return Err(WorkspaceError::NoteMissing(note_id.to_string()));
+        }
+        let mut links = self.read_note_links(owner_entry_id, note_id)?;
+        links.push(link.clone());
+        atomic_write_json(
+            self.layout().entry_note_links_file(owner_entry_id, note_id),
+            &links,
+        )?;
+        Ok(link)
+    }
+
+    pub fn build_note_source_link(
+        &self,
+        owner_entry_id: &EntryId,
+        note_id: &NoteId,
+        source_entry_id: &EntryId,
+        segment_uid: SegmentUid,
+    ) -> Result<SourceLink, WorkspaceError> {
         self.read_note(owner_entry_id, note_id)?;
         let source_entry = self.read_entry(source_entry_id)?;
         let parse_status = source_entry.pdf.as_ref().map(|pdf| pdf.parse.status);
@@ -161,21 +298,13 @@ impl Workspace {
             snapshot_asset_path: segment.asset_path.clone(),
             snapshot_text,
         };
-        let link = SourceLink::note(
+        Ok(SourceLink::note(
             owner_entry_id.clone(),
             note_id.clone(),
             anchor_id,
             source,
             format!("p.{}", segment.page_idx + 1),
-        );
-
-        let mut links = self.read_note_links(owner_entry_id, note_id)?;
-        links.push(link.clone());
-        atomic_write_json(
-            self.layout().entry_note_links_file(owner_entry_id, note_id),
-            &links,
-        )?;
-        Ok(link)
+        ))
     }
 
     pub fn read_note_source_links(
@@ -193,10 +322,24 @@ impl Workspace {
         note_id: &NoteId,
         links: &[SourceLink],
     ) -> Result<(), WorkspaceError> {
-        self.read_note(entry_id, note_id)?;
+        let note_path = self.layout().entry_note_file(entry_id, note_id);
+        let write_lock = note_write_lock(&note_path);
+        let _write_guard = write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !note_path.exists() {
+            return Err(WorkspaceError::NoteMissing(note_id.to_string()));
+        }
+        let note_source = fs::read_to_string(&note_path)?;
+        let links = validate_and_prune_note_links(
+            entry_id,
+            note_id,
+            strip_frontmatter(&note_source),
+            links,
+        )?;
         atomic_write_json(
             self.layout().entry_note_links_file(entry_id, note_id),
-            &links.to_vec(),
+            &links,
         )
     }
 
@@ -210,6 +353,105 @@ impl Workspace {
             return Ok(Vec::new());
         }
         Ok(serde_json::from_slice(&fs::read(path)?)?)
+    }
+
+    fn prepare_note_asset_maintenance(
+        &self,
+        entry_id: &EntryId,
+        note_id: &NoteId,
+        markdown: &str,
+    ) -> Result<Option<NoteAssetTransaction>, WorkspaceError> {
+        let asset_dir = self.layout().entry_note_assets_dir(entry_id, note_id);
+        if !asset_dir.exists() {
+            return Ok(None);
+        }
+
+        let manifest_path = asset_dir.join(NOTE_ASSET_ORPHAN_MANIFEST);
+        let previous_manifest = if manifest_path.exists() {
+            Some(fs::read(&manifest_path)?)
+        } else {
+            None
+        };
+        let mut manifest = match previous_manifest.as_deref() {
+            Some(bytes) => serde_json::from_slice(bytes)?,
+            None => NoteAssetOrphanManifest::default(),
+        };
+        let referenced = referenced_note_asset_names(markdown, note_id);
+        let quarantine_dir = asset_dir.join(NOTE_ASSET_ORPHAN_DIR);
+        let mut transaction = NoteAssetTransaction {
+            manifest_path: manifest_path.clone(),
+            moves: Vec::new(),
+            previous_manifest,
+        };
+
+        let maintenance_result = (|| -> Result<(), WorkspaceError> {
+            for file_name in &referenced {
+                let active_path = asset_dir.join(file_name);
+                let quarantined_path = quarantine_dir.join(file_name);
+                if !active_path.exists() && quarantined_path.is_file() {
+                    fs::rename(&quarantined_path, &active_path)?;
+                    transaction
+                        .moves
+                        .push((quarantined_path, active_path));
+                }
+                manifest.unreferenced_since.remove(file_name);
+            }
+
+            let now = Utc::now().timestamp();
+            for entry in fs::read_dir(&asset_dir)? {
+                let path = entry?.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let Some(file_name) = path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_string)
+                else {
+                    continue;
+                };
+                if !is_managed_note_asset_name(&file_name) {
+                    continue;
+                }
+                if referenced.contains(&file_name) {
+                    manifest.unreferenced_since.remove(&file_name);
+                    continue;
+                }
+
+                let first_seen = *manifest
+                    .unreferenced_since
+                    .entry(file_name.clone())
+                    .or_insert(now);
+                if now.saturating_sub(first_seen) < NOTE_ASSET_ORPHAN_GRACE_SECONDS {
+                    continue;
+                }
+
+                fs::create_dir_all(&quarantine_dir)?;
+                let quarantined_path = quarantine_dir.join(&file_name);
+                if quarantined_path.exists() {
+                    continue;
+                }
+                fs::rename(&path, &quarantined_path)?;
+                transaction.moves.push((path, quarantined_path));
+                manifest.unreferenced_since.remove(&file_name);
+            }
+
+            if manifest.unreferenced_since.is_empty() {
+                if manifest_path.exists() {
+                    fs::remove_file(&manifest_path)?;
+                }
+            } else {
+                atomic_write_json(&manifest_path, &manifest)?;
+            }
+
+            Ok(())
+        })();
+        if let Err(error) = maintenance_result {
+            rollback_note_asset_transaction(Some(transaction));
+            return Err(error);
+        }
+
+        Ok(Some(transaction))
     }
 
     fn enrich_note_source_link_assets(&self, links: &mut [SourceLink]) {
@@ -256,6 +498,159 @@ fn normalize_note_title(title: String) -> String {
     }
 }
 
+fn note_revision(note_source: &str, links: &[SourceLink]) -> Result<String, WorkspaceError> {
+    let markdown = strip_frontmatter(note_source);
+    let referenced_links = prune_note_link_refs(markdown, links);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"neuink-note-v2\0");
+    hasher.update(note_source.as_bytes());
+    hasher.update(b"\0referenced-links\0");
+    hasher.update(&serde_json::to_vec(&referenced_links)?);
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn validate_and_prune_note_links(
+    entry_id: &EntryId,
+    note_id: &NoteId,
+    markdown: &str,
+    links: &[SourceLink],
+) -> Result<Vec<SourceLink>, WorkspaceError> {
+    let mut anchor_ids = BTreeSet::new();
+    for link in links {
+        if link.anchor_id.trim().is_empty() {
+            return Err(WorkspaceError::InvalidNoteDocument(
+                "source link anchor id is empty".to_string(),
+            ));
+        }
+        if !anchor_ids.insert(link.anchor_id.as_str()) {
+            return Err(WorkspaceError::InvalidNoteDocument(format!(
+                "duplicate source link anchor id: {}",
+                link.anchor_id
+            )));
+        }
+        if !matches!(
+            &link.owner,
+            LinkOwner::Note {
+                entry_id: owner_entry_id,
+                note_id: owner_note_id,
+            } if owner_entry_id == entry_id && owner_note_id == note_id
+        ) {
+            return Err(WorkspaceError::InvalidNoteDocument(format!(
+                "source link {} belongs to another note",
+                link.anchor_id
+            )));
+        }
+    }
+    Ok(prune_note_links(markdown, links))
+}
+
+fn prune_note_links(markdown: &str, links: &[SourceLink]) -> Vec<SourceLink> {
+    prune_note_link_refs(markdown, links)
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
+fn prune_note_link_refs<'a>(markdown: &str, links: &'a [SourceLink]) -> Vec<&'a SourceLink> {
+    links
+        .iter()
+        .filter(|link| markdown.contains(&format!("[^{}]", link.anchor_id)))
+        .collect()
+}
+
+fn referenced_note_asset_names(markdown: &str, note_id: &NoteId) -> BTreeSet<String> {
+    let normalized = markdown.replace('\\', "/");
+    let prefix = format!("{}.assets/", note_id.as_str());
+    let mut referenced = BTreeSet::new();
+    let mut remaining = normalized.as_str();
+
+    while let Some(prefix_index) = remaining.find(&prefix) {
+        let candidate = &remaining[prefix_index + prefix.len()..];
+        let end = candidate
+            .find(|character: char| {
+                character.is_whitespace()
+                    || matches!(character, '\'' | '"' | '(' | ')' | '<' | '>')
+            })
+            .unwrap_or(candidate.len());
+        let file_name = &candidate[..end];
+        if !file_name.contains('/') && is_managed_note_asset_name(file_name) {
+            referenced.insert(file_name.to_string());
+        }
+        remaining = &candidate[end..];
+        if remaining.is_empty() {
+            break;
+        }
+    }
+
+    referenced
+}
+
+fn is_managed_note_asset_name(file_name: &str) -> bool {
+    let path = Path::new(file_name);
+    if path.components().count() != 1 {
+        return false;
+    }
+    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    if !matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "avif" | "gif" | "jpeg" | "jpg" | "png" | "webp"
+    ) {
+        return false;
+    }
+    let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let Some((_, hash_suffix)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    hash_suffix.len() == 12 && hash_suffix.chars().all(|character| character.is_ascii_hexdigit())
+}
+
+fn rollback_note_asset_transaction(transaction: Option<NoteAssetTransaction>) {
+    let Some(transaction) = transaction else {
+        return;
+    };
+    for (source, target) in transaction.moves.into_iter().rev() {
+        if target.exists() && !source.exists() {
+            let _ = fs::rename(target, source);
+        }
+    }
+    restore_optional_file(
+        &transaction.manifest_path,
+        transaction.previous_manifest.as_deref(),
+    );
+}
+
+fn note_write_lock(note_path: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+    let locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(lock) = locks.get(note_path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(note_path.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
+
+fn restore_optional_file(path: &Path, previous: Option<&[u8]>) {
+    match previous {
+        Some(bytes) => {
+            let _ = atomic_write(path, bytes);
+        }
+        None => {
+            if path.exists() {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+}
+
 fn strip_frontmatter(markdown: &str) -> &str {
     let Some(rest) = markdown.strip_prefix("---\n") else {
         return markdown;
@@ -263,5 +658,6 @@ fn strip_frontmatter(markdown: &str) -> &str {
     let Some(end) = rest.find("\n---\n") else {
         return markdown;
     };
-    &rest[end + "\n---\n".len()..]
+    let body = &rest[end + "\n---\n".len()..];
+    body.strip_prefix('\n').unwrap_or(body)
 }

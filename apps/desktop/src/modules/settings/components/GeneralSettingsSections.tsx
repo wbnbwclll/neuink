@@ -387,6 +387,38 @@ export function GeneralSettingsSections({ props }: { props: SettingsPanelLayoutP
                       }
                     />
                     <ReaderSettingRow checked={readerPreferences.hoverPreviewEnabled} label="悬停预览" description="鼠标悬停在 PDF 区域上时显示片段预览。" onCheckedChange={(checked) => onReaderPreferencesChange({ ...readerPreferences, hoverPreviewEnabled: checked })} />
+                    <ReaderSelectRow
+                      description="调整悬停卡片中原文、译文、笔记和批注的文字大小。"
+                      disabled={!readerPreferences.hoverPreviewEnabled}
+                      inset
+                      label="预览文字大小"
+                      options={[
+                        { label: '较小', value: 'small' },
+                        { label: '标准', value: 'standard' },
+                        { label: '较大', value: 'large' }
+                      ]}
+                      value={readerPreferences.pdfHoverPreviewFontSize}
+                      onValueChange={(value) => onReaderPreferencesChange({
+                        ...readerPreferences,
+                        pdfHoverPreviewFontSize: value as ReaderPreferences['pdfHoverPreviewFontSize']
+                      })}
+                    />
+                    <ReaderSelectRow
+                      description="调整悬停卡片可占用的宽度和内容空间。"
+                      disabled={!readerPreferences.hoverPreviewEnabled}
+                      inset
+                      label="预览卡片大小"
+                      options={[
+                        { label: '紧凑', value: 'compact' },
+                        { label: '标准', value: 'standard' },
+                        { label: '宽大', value: 'large' }
+                      ]}
+                      value={readerPreferences.pdfHoverPreviewSize}
+                      onValueChange={(value) => onReaderPreferencesChange({
+                        ...readerPreferences,
+                        pdfHoverPreviewSize: value as ReaderPreferences['pdfHoverPreviewSize']
+                      })}
+                    />
                     <ReaderSettingRow checked={readerPreferences.hoverPreviewShowRegion} disabled={!readerPreferences.hoverPreviewEnabled} inset label="区域" description="悬停时高亮 PDF 中对应的片段区域。" onCheckedChange={(checked) => onReaderPreferencesChange({ ...readerPreferences, hoverPreviewShowRegion: checked })} />
                     <ReaderSettingRow checked={readerPreferences.hoverPreviewShowOriginal} disabled={!readerPreferences.hoverPreviewEnabled && !readerPreferences.reflowHoverSourceEnabled} inset label="解析后原文" description="在悬停预览中显示 MinerU 解析后的内容。" onCheckedChange={(checked) => onReaderPreferencesChange({ ...readerPreferences, hoverPreviewShowOriginal: checked })} />
                     <ReaderSettingRow checked={readerPreferences.hoverPreviewShowTranslation} disabled={!readerPreferences.hoverPreviewEnabled && !readerPreferences.reflowHoverSourceEnabled} inset label="译文" description="在悬停预览中显示可用译文。" onCheckedChange={(checked) => onReaderPreferencesChange({ ...readerPreferences, hoverPreviewShowTranslation: checked })} />
@@ -538,5 +570,44 @@ function ReaderSettingRow({
       </span>
       <Switch checked={checked} disabled={disabled} onCheckedChange={onCheckedChange} />
     </label>
+  );
+}
+
+function ReaderSelectRow({
+  description,
+  disabled = false,
+  inset = false,
+  label,
+  onValueChange,
+  options,
+  value
+}: {
+  description: string;
+  disabled?: boolean;
+  inset?: boolean;
+  label: string;
+  onValueChange: (value: string) => void;
+  options: Array<{ label: string; value: string }>;
+  value: string;
+}) {
+  return (
+    <div
+      className={`flex items-start justify-between gap-4 rounded-xl border border-border/70 bg-background/80 px-3 py-3 transition ${
+        disabled ? 'opacity-55' : ''
+      } ${inset ? 'ml-4' : ''}`}
+    >
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-foreground">{label}</div>
+        <div className="mt-1 text-xs leading-5 text-muted-foreground">{description}</div>
+      </div>
+      <Select disabled={disabled} value={value} onValueChange={onValueChange}>
+        <SelectTrigger className="w-28 shrink-0" size="sm"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
   );
 }

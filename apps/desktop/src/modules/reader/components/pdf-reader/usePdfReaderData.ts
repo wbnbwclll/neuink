@@ -28,6 +28,7 @@ export function usePdfReaderData({
   });
   const [segmentNotes, setSegmentNotes] = useState<SegmentBlockNote[]>([]);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [manualReloadKey, setManualReloadKey] = useState(0);
   const previousRecordReloadKeyRef = useRef(recordReloadKey);
 
   useEffect(() => {
@@ -64,7 +65,7 @@ export function usePdfReaderData({
     return () => {
       cancelled = true;
     };
-  }, [entry.id, entry.pdfFileName, onReadPdfReader, reloadKey]);
+  }, [entry.id, entry.pdfFileName, manualReloadKey, onReadPdfReader, reloadKey]);
 
   useEffect(() => {
     if (previousRecordReloadKeyRef.current === recordReloadKey) {
@@ -97,6 +98,7 @@ export function usePdfReaderData({
     loadState,
     annotations,
     segmentNotes,
+    retry: () => setManualReloadKey((key) => key + 1),
     setAnnotations,
     setSegmentNotes
   };

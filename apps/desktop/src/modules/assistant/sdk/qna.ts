@@ -2,6 +2,7 @@ import { generateText, stepCountIs, streamText } from 'ai';
 
 import type {
   AssistantContextSnapshot,
+  AssistantConversationMemory,
   AssistantToolTraceEvent,
   ConversationMessage,
   ConversationSourceLink,
@@ -41,6 +42,7 @@ export type GroundedAnswer = {
   agentLoopState?: import('@/shared/types/agentRuntime').AgentLoopState;
   agentRun?: AssistantAgentRun;
   answer: string;
+  conversationMemory?: AssistantConversationMemory | null;
   entryMetaProposals?: AssistantEntryMetaProposal[];
   noteProposals?: AssistantNoteProposal[];
   tagProposals?: AssistantTagProposal[];
@@ -61,7 +63,7 @@ type EvidenceBundle = {
   sourceByMarker: Map<number, ConversationSourceLink>;
 };
 
-export async function answerWithKeywordGrounding({
+export async function answerWithGroundedAgent({
   abortSignal,
   assistantContext,
   availableEntries,
@@ -70,10 +72,12 @@ export async function answerWithKeywordGrounding({
   currentEntry,
   currentNote,
   harnessBrief,
+  onAnswerReset,
   onDelta,
   onNoteProposal,
   onCreateEntry,
   onToolEvent,
+  onReasoningDelta,
   plan,
   invocationPlan,
   question,
@@ -92,10 +96,12 @@ export async function answerWithKeywordGrounding({
   currentEntry?: { id: string; title: string } | null;
   currentNote?: AssistantActiveNote | null;
   harnessBrief?: string;
+  onAnswerReset?: () => void;
   onDelta?: (delta: string) => void;
   onNoteProposal?: (proposal: AssistantNoteProposal) => void;
   onCreateEntry?: (title: string) => Promise<AssistantEntryMetaTarget>;
   onToolEvent?: (event: AssistantToolTraceEvent) => void;
+  onReasoningDelta?: (delta: string) => void;
   invocationPlan?: AgentInvocationPlan | null;
   plan?: AssistantTaskPlan;
   question: string;
@@ -119,6 +125,7 @@ export async function answerWithKeywordGrounding({
       currentEntry,
       currentNote,
       harnessBrief,
+      onAnswerReset,
       onDelta: (delta) => {
         streamedWithTools = true;
         onDelta?.(delta);
@@ -128,6 +135,10 @@ export async function answerWithKeywordGrounding({
       onToolEvent: (event) => {
         toolActivity = true;
         onToolEvent?.(event);
+      },
+      onReasoningDelta: (delta) => {
+        streamedWithTools = true;
+        onReasoningDelta?.(delta);
       },
       plan,
       invocationPlan,
@@ -171,6 +182,7 @@ export async function answerWithKeywordGrounding({
 
   const evidence = await buildEvidence({
     assistantContext,
+    plan,
     question,
     root,
     scope,
@@ -189,6 +201,7 @@ export async function answerWithKeywordGrounding({
     abortSignal,
     harnessBrief,
     onDelta: streamedWithTools ? undefined : onDelta,
+    onReasoningDelta: streamedWithTools ? undefined : onReasoningDelta,
     question,
     scope,
     sections: evidence.sections,
@@ -206,10 +219,12 @@ async function generateGroundedAnswerWithTools({
   currentEntry,
   currentNote,
   harnessBrief,
+  onAnswerReset,
   onDelta,
   onNoteProposal,
   onCreateEntry,
   onToolEvent,
+  onReasoningDelta,
   plan,
   invocationPlan,
   question,
@@ -228,10 +243,12 @@ async function generateGroundedAnswerWithTools({
   currentEntry?: { id: string; title: string } | null;
   currentNote?: AssistantActiveNote | null;
   harnessBrief?: string;
+  onAnswerReset?: () => void;
   onDelta?: (delta: string) => void;
   onNoteProposal?: (proposal: AssistantNoteProposal) => void;
   onCreateEntry?: (title: string) => Promise<AssistantEntryMetaTarget>;
   onToolEvent?: (event: AssistantToolTraceEvent) => void;
+  onReasoningDelta?: (delta: string) => void;
   invocationPlan?: AgentInvocationPlan | null;
   plan?: AssistantTaskPlan;
   question: string;
@@ -340,6 +357,10 @@ async function generateGroundedAnswerWithTools({
         onDelta?.(part.text);
         continue;
       }
+      if (part.type === 'reasoning-delta') {
+        onReasoningDelta?.(part.text);
+        continue;
+      }
       if (part.type === 'tool-error') {
         onToolEvent?.({
           error: errorMessage(part.error),
@@ -393,6 +414,7 @@ async function generateGroundedAnswerWithTools({
   if (firstMissingRequiredTools.length > 0) {
     const prematureDraft = answer.trim();
     answer = '';
+    onAnswerReset?.();
     const correction = streamText({
       abortSignal,
       ...generationSettings(settings),
@@ -458,12 +480,14 @@ async function generateGroundedAnswerWithTools({
 
 async function buildEvidence({
   assistantContext,
+  plan,
   question,
   root,
   scope,
   settings
 }: {
   assistantContext?: AssistantContext | null;
+  plan?: AssistantTaskPlan;
   question: string;
   root: string;
   scope: ScopeSnapshot;
@@ -516,18 +540,21 @@ async function buildEvidence({
     mergeSourceMaps(sourceByMarker, selectedEntry.sourceByMarker);
   }
 
-  const shouldRetrieve = shouldUseRetrievalQuestion(question) || scope.entry_ids.length !== 1;
+  const shouldRetrieve = Boolean(
+    plan?.needsSegmentSearch || plan?.requiredToolIds?.includes('search_segments')
+  );
 
-  if (!sections.documentContext && !shouldRetrieve && scope.entry_ids.length === 1) {
-    const document = await buildEntryDocumentContext({
-      entryId: scope.entry_ids[0],
-      markerStart: nextMarker,
-      root,
-      settings
-    });
-    sections.documentContext = document.text;
-    nextMarker = document.nextMarker;
-    mergeSourceMaps(sourceByMarker, document.sourceByMarker);
+  if (!shouldRetrieve) {
+    if (!sections.documentContext && scope.entry_ids.length === 1) {
+      const document = await buildEntryDocumentContext({
+        entryId: scope.entry_ids[0],
+        markerStart: nextMarker,
+        root,
+        settings
+      });
+      sections.documentContext = document.text;
+      mergeSourceMaps(sourceByMarker, document.sourceByMarker);
+    }
     return { sections, sourceByMarker };
   }
 
@@ -779,6 +806,7 @@ async function generateGroundedAnswer({
   abortSignal,
   harnessBrief,
   onDelta,
+  onReasoningDelta,
   question,
   scope,
   sections,
@@ -788,6 +816,7 @@ async function generateGroundedAnswer({
   abortSignal?: AbortSignal;
   harnessBrief?: string;
   onDelta?: (delta: string) => void;
+  onReasoningDelta?: (delta: string) => void;
   question: string;
   scope: ScopeSnapshot;
   sections: EvidenceSections;
@@ -811,7 +840,7 @@ async function generateGroundedAnswer({
     toolNotes: 'Use only the supplied grounded context. Do not make capability claims.'
   });
 
-  if (onDelta) {
+  if (onDelta || onReasoningDelta) {
     const result = streamText({
       abortSignal,
       ...generationSettings(settings),
@@ -821,9 +850,15 @@ async function generateGroundedAnswer({
     });
     let answer = '';
 
-    for await (const delta of result.textStream) {
-      answer += delta;
-      onDelta(delta);
+    for await (const part of result.fullStream) {
+      if (part.type === 'text-delta') {
+        answer += part.text;
+        onDelta?.(part.text);
+      } else if (part.type === 'reasoning-delta') {
+        onReasoningDelta?.(part.text);
+      } else if (part.type === 'error') {
+        throw new Error(errorMessage(part.error));
+      }
     }
 
     return ensureGroundedCitations({
@@ -934,23 +969,11 @@ function normalizeCitedSources(
   };
 }
 
-function shouldUseRetrieval(question: string) {
-  return /找|查|定位|在哪里|实验|方法|结果|数据集|消融|对比|find|locate|where|experiment|method|result|dataset|ablation|baseline|table|figure/i.test(
-    question
-  );
-}
-
 function hasEvidence(sections: EvidenceSections) {
   return Boolean(
     sections.documentContext.trim() ||
       sections.pinnedContext.trim() ||
       sections.retrievedEvidence.trim()
-  );
-}
-
-function shouldUseRetrievalQuestion(question: string) {
-  return /找|查找|定位|在哪|实验|方法|结果|数据集|消融|对比|表格|图片|结论|find|locate|where|experiment|method|result|dataset|ablation|baseline|table|figure|conclusion/i.test(
-    question
   );
 }
 

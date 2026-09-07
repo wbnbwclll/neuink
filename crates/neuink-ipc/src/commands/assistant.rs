@@ -1062,35 +1062,23 @@ async fn complete_tag_chat(
     system_prompt: String,
     user_prompt: String,
 ) -> Result<String, String> {
-    let url = format!(
-        "{}/chat/completions",
-        profile.base_url.trim_end_matches('/')
-    );
-    let mut body = json!({
-        "model": profile.model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-    });
-    if let Some(value) = profile.temperature {
-        body["temperature"] = json!(value);
-    }
-    if let Some(value) = profile.top_p {
-        body["top_p"] = json!(value);
-    }
-    if let Some(value) = profile.max_output_tokens {
-        body["max_tokens"] = json!(value);
-    }
-    let mut request = reqwest::Client::new().post(url).json(&body);
-    if let Some(key) = profile
-        .api_key
-        .as_deref()
-        .filter(|key| !key.trim().is_empty())
-    {
-        request = request.bearer_auth(key);
-    }
-    let response = request.send().await.map_err(|error| error.to_string())?;
+    let (url, headers, body) = crate::commands::llm_http::build_chat_request(
+        profile,
+        &system_prompt,
+        &user_prompt,
+        crate::commands::llm_http::ChatFallbacks {
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+        },
+    )?;
+    let response = reqwest::Client::new()
+        .post(url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!(
@@ -1098,14 +1086,8 @@ async fn complete_tag_chat(
             response.text().await.unwrap_or_default()
         ));
     }
-    let payload: Value = response.json().await.map_err(|error| error.to_string())?;
-    payload
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-        .ok_or_else(|| "Tag analysis model returned no content.".to_string())
+    let payload = response.text().await.map_err(|error| error.to_string())?;
+    crate::commands::llm_http::parse_chat_response(profile.api_protocol, &payload)
 }
 
 fn parse_tag_recommendations(

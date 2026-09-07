@@ -129,6 +129,23 @@
   background: transparent;
 }
 
+.pdf-text-layer .pdf-search-match {
+  background: color-mix(in srgb, var(--warning) 32%, transparent);
+  border-radius: 2px;
+}
+
+.pdf-text-layer .pdf-search-match-active {
+  background: color-mix(in srgb, var(--primary) 38%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--primary) 70%, transparent);
+  outline-offset: 1px;
+}
+
+.pdf-annotation-highlight-active {
+  outline: 2px solid color-mix(in srgb, var(--primary) 82%, transparent);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--background) 72%, transparent);
+}
+
 .pdf-note-beacon__halo,
 .pdf-note-beacon__core {
   position: absolute;

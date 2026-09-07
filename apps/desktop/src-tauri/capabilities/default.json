@@ -19,6 +19,10 @@
       "allow": [
         "https://*",
         "https://*:*",
+        "http://*",
+        "http://*/*",
+        "http://*:*",
+        "http://*:*/*",
         "http://localhost:*",
         "http://localhost:*/*",
         "http://127.0.0.1:*",

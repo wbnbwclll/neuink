@@ -13,7 +13,7 @@ import {
   Search,
   X
 } from 'lucide-react';
-import { memo, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -89,6 +89,7 @@ function ChatMessageComponent({
   const entryMetaProposals = entryMetaProposalsFromParts(messageParts);
   const resolvedAgentRun = agentRunFromParts(messageParts);
   const resolvedMemory = memoryFromParts(messageParts);
+  const reasoning = reasoningFromParts(messageParts);
   const contextItems = contextItemsFromParts(messageParts);
   const contextPlan = contextPlanFromParts(messageParts);
   const sourceLinks =
@@ -112,6 +113,9 @@ function ChatMessageComponent({
       ) : null}
       {message.role === 'assistant' && resolvedToolEvents.length > 0 ? (
         <ToolTrace events={resolvedToolEvents} />
+      ) : null}
+      {message.role === 'assistant' && reasoning ? (
+        <ReasoningTrace reasoning={reasoning} streaming={streaming} />
       ) : null}
       {contextItems.length > 0 ? <ContextSummary items={contextItems} plan={contextPlan} /> : null}
       <MarkdownMessageContent
@@ -427,6 +431,60 @@ function textFromParts(parts: AssistantMessagePart[]) {
     .map((part) => part.markdown)
     .filter((markdown) => markdown.trim().length > 0)
     .join('\n\n');
+}
+
+function reasoningFromParts(parts: AssistantMessagePart[]) {
+  return parts
+    .filter(
+      (part): part is Extract<AssistantMessagePart, { type: 'reasoning' }> =>
+        part.type === 'reasoning'
+    )
+    .map((part) => part.text)
+    .join('');
+}
+
+function ReasoningTrace({
+  reasoning,
+  streaming
+}: {
+  reasoning: string;
+  streaming: boolean;
+}) {
+  const [expanded, setExpanded] = useState(streaming);
+
+  useEffect(() => {
+    if (streaming) setExpanded(true);
+  }, [streaming]);
+
+  return (
+    <section className="mb-2 overflow-hidden rounded-md border bg-muted/20 text-[11px] leading-4 text-muted-foreground">
+      <button
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left hover:bg-muted/40"
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+      >
+        {streaming ? (
+          <Loader2 className="shrink-0 animate-spin text-primary" size={12} aria-hidden="true" />
+        ) : (
+          <Brain className="shrink-0 text-primary" size={12} aria-hidden="true" />
+        )}
+        <span className="min-w-0 flex-1 font-medium text-foreground/80">
+          {streaming ? '正在思考' : '思考过程'}
+        </span>
+        <span className="shrink-0">{expanded ? '收起' : '展开'}</span>
+      </button>
+      {expanded ? (
+        <div
+          aria-live={streaming ? 'polite' : undefined}
+          className="max-h-48 overflow-auto whitespace-pre-wrap break-words border-t px-2 py-1.5"
+        >
+          {reasoning}
+          {streaming ? <span aria-hidden="true" className="ml-0.5 animate-pulse">▍</span> : null}
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
 function toolEventsFromParts(parts: AssistantMessagePart[]): AssistantToolTraceEvent[] {
@@ -1048,7 +1106,7 @@ function ToolTrace({ events }: { events: AssistantToolTraceEvent[] }) {
 
 function ToolTraceIcon({ event }: { event: AssistantToolTraceEvent }) {
   if (event.status === 'running') {
-    return <Loader2 className="shrink-0" size={12} aria-hidden="true" />;
+    return <Loader2 className="shrink-0 animate-spin" size={12} aria-hidden="true" />;
   }
 
   if (event.status === 'error') {
@@ -1074,6 +1132,18 @@ function ToolTraceIcon({ event }: { event: AssistantToolTraceEvent }) {
 }
 
 function toolLabel(toolName: string) {
+  if (toolName === 'agent.observe') {
+    return '读取当前界面';
+  }
+  if (toolName === 'agent.hydrate') {
+    return '装载上下文';
+  }
+  if (toolName === 'agent.orchestrate') {
+    return '理解并规划任务';
+  }
+  if (toolName === 'agent.loop') {
+    return '执行 Agent 任务';
+  }
   if (toolName === 'search_segments') {
     return 'Search segments';
   }
@@ -1103,12 +1173,12 @@ function toolLabel(toolName: string) {
 
 function statusLabel(status: AssistantToolTraceEvent['status']) {
   if (status === 'running') {
-    return 'running';
+    return '进行中';
   }
   if (status === 'error') {
-    return 'error';
+    return '失败';
   }
-  return 'done';
+  return '完成';
 }
 
 const MarkdownMessageContent = memo(function MarkdownMessageContent({

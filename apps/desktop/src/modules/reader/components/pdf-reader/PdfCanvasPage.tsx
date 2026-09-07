@@ -1,9 +1,10 @@
-import { Loader2 } from 'lucide-react';
+import { Loader2, RotateCcw } from 'lucide-react';
 import { TextLayer } from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
 import { memo, useEffect, useRef, useState } from 'react';
 
 import type { AnnotationHighlightColor } from '@/shared/types/domain';
+import { Button } from '@/components/ui/button';
 
 import {
   applyPdfLayerSize,
@@ -21,6 +22,7 @@ const DEFAULT_PAGE_ASPECT_RATIO = 1.414;
 const TEXT_LAYER_RENDER_DELAY_MS = 240;
 
 export type PdfTextSelectionHighlight = {
+  active?: boolean;
   color: AnnotationHighlightColor;
   id: string;
   rect: readonly [number, number, number, number];
@@ -31,13 +33,17 @@ function PdfCanvasPageImpl({
   pageWidth,
   pdfDocument,
   renderPriority,
-  renderEnabled
+  renderEnabled,
+  searchActive = false,
+  searchQuery = ''
 }: {
   pageIdx: number;
   pageWidth: number;
   pdfDocument: PDFDocumentProxy;
   renderPriority: 'preload' | 'visible';
   renderEnabled: boolean;
+  searchActive?: boolean;
+  searchQuery?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textLayerRef = useRef<HTMLDivElement | null>(null);
@@ -47,16 +53,22 @@ function PdfCanvasPageImpl({
   const hasRenderedPageRef = useRef(false);
   const renderedPageWidthRef = useRef<number | null>(null);
   const pageAspectRatioRef = useRef(DEFAULT_PAGE_ASPECT_RATIO);
+  const searchActiveRef = useRef(searchActive);
+  const searchQueryRef = useRef(searchQuery);
   const [pageSize, setPageSize] = useState<{ height: number; width: number } | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [renderAttempt, setRenderAttempt] = useState(0);
 
   renderPriorityRef.current = renderPriority;
+  searchActiveRef.current = searchActive;
+  searchQueryRef.current = searchQuery;
 
   useEffect(() => {
     hasRenderedPageRef.current = false;
     renderedPageWidthRef.current = null;
     pageAspectRatioRef.current = DEFAULT_PAGE_ASPECT_RATIO;
     setPageSize(null);
+    setRenderError(null);
 
     return () => {
       pageRef.current?.cleanup?.();
@@ -203,7 +215,7 @@ function PdfCanvasPageImpl({
       cancelRenderContinuation?.();
       releaseRenderCanvas();
     };
-  }, [pageIdx, pageWidth, pdfDocument, renderEnabled]);
+  }, [pageIdx, pageWidth, pdfDocument, renderAttempt, renderEnabled]);
 
   useEffect(() => {
     const textLayerElement = textLayerRef.current;
@@ -251,6 +263,11 @@ function PdfCanvasPageImpl({
               textLayerElement.style.setProperty('--min-font-size', minFontSize);
             }
             textLayerElement.replaceChildren(...stagingLayer.childNodes);
+            applyPdfTextSearchHighlights(
+              textLayerElement,
+              searchQueryRef.current,
+              searchActiveRef.current
+            );
           } catch (caught) {
             if (!cancelled && !signal.aborted && !isPdfRenderCancellation(caught)) {
               console.warn('[pdf-reader] PDF text layer rendering failed.', {
@@ -274,14 +291,20 @@ function PdfCanvasPageImpl({
     };
   }, [pageIdx, pageWidth, pdfDocument, renderEnabled, renderPriority, pageSize]);
 
+  useEffect(() => {
+    applyPdfTextSearchHighlights(textLayerRef.current, searchQuery, searchActive);
+  }, [searchActive, searchQuery]);
+
+  const displayAspectRatio = pageSize && pageSize.width > 0
+    ? pageSize.height / pageSize.width
+    : pageAspectRatioRef.current;
+
   return (
     <div
       className="relative z-[2] isolate bg-white"
       style={{
-        height: pageSize
-          ? `${pageSize.height}px`
-          : `${pageWidth * DEFAULT_PAGE_ASPECT_RATIO}px`,
-        width: pageSize ? `${pageSize.width}px` : `${pageWidth}px`
+        height: `${pageWidth * displayAspectRatio}px`,
+        width: `${pageWidth}px`
       }}
     >
       <canvas ref={canvasRef} className="absolute inset-0 z-0 block bg-white" />
@@ -290,14 +313,32 @@ function PdfCanvasPageImpl({
         className="pdf-text-layer absolute inset-0 z-[2]"
         onCopy={(event) => copyPdfTextSelection(event, textLayerRef.current)}
       />
-      {!pageSize ? (
+      {!pageSize && !renderError ? (
         <div className="absolute inset-0 z-[3] grid place-items-center text-xs text-muted-foreground">
           <Loader2 className="animate-spin" size={16} aria-hidden="true" />
         </div>
       ) : null}
       {renderError ? (
-        <div className="absolute inset-0 z-[3] grid place-items-center bg-background/90 px-4 text-center text-sm text-destructive">
-          {renderError}
+        <div className="absolute inset-0 z-[3] grid place-items-center bg-background/95 px-4 text-center">
+          <div className="grid max-w-sm justify-items-center gap-3">
+            <p className="text-sm text-destructive">{renderError}</p>
+            <Button
+              size="sm"
+              type="button"
+              variant="outline"
+              onClick={() => {
+                rasterJobRef.current?.cancel();
+                hasRenderedPageRef.current = false;
+                renderedPageWidthRef.current = null;
+                setRenderError(null);
+                setPageSize(null);
+                setRenderAttempt((attempt) => attempt + 1);
+              }}
+            >
+              <RotateCcw size={14} aria-hidden="true" />
+              重试此页
+            </Button>
+          </div>
         </div>
       ) : null}
     </div>
@@ -308,6 +349,28 @@ function PdfCanvasPageImpl({
 // layer. The raster page only updates when its actual render inputs change.
 export const PdfCanvasPage = memo(PdfCanvasPageImpl);
 
+export function applyPdfTextSearchHighlights(
+  textLayerElement: HTMLElement | null,
+  query: string,
+  active: boolean
+) {
+  if (!textLayerElement) return;
+  const normalizedQuery = query.replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+  const spans = Array.from(textLayerElement.querySelectorAll<HTMLElement>('span'));
+  let activeAssigned = false;
+  for (const span of spans) {
+    span.classList.remove('pdf-search-match', 'pdf-search-match-active');
+    if (!normalizedQuery) continue;
+    const text = span.textContent?.replace(/\s+/g, ' ').toLocaleLowerCase() ?? '';
+    if (!text.includes(normalizedQuery)) continue;
+    span.classList.add('pdf-search-match');
+    if (active && !activeAssigned) {
+      span.classList.add('pdf-search-match-active');
+      activeAssigned = true;
+    }
+  }
+}
+
 export function PdfTextSelectionHighlightLayer({
   highlights
 }: {
@@ -315,9 +378,10 @@ export function PdfTextSelectionHighlightLayer({
 }) {
   return (
     <div className="pointer-events-none absolute inset-0 z-[2]" aria-hidden="true">
-      {highlights.map(({ color, id, rect }) => (
+      {highlights.map(({ active = false, color, id, rect }) => (
         <span
-          className="absolute rounded-[1px]"
+          className={`absolute rounded-[1px] ${active ? 'pdf-annotation-highlight-active' : ''}`}
+          data-pdf-annotation-active={active ? 'true' : undefined}
           data-pdf-text-highlight="true"
           key={id}
           style={textSelectionHighlightStyle(rect, color)}

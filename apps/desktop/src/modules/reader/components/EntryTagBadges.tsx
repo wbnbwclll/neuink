@@ -33,7 +33,7 @@ export function EntryTagBadges({ tags }: { tags: string[] }) {
             onClick={(event) => event.stopPropagation()}
           >
             <Badge
-              className="entry-tag-primary max-w-28 min-w-0 gap-1.5 bg-secondary/80 transition-colors hover:bg-secondary"
+              className="entry-tag-primary min-w-0 gap-1.5 bg-secondary/80 transition-colors hover:bg-secondary"
               variant="secondary"
             >
               <span className={cn('size-1.5 shrink-0 rounded-full', tagAccent(tags[0]))} />
@@ -41,7 +41,7 @@ export function EntryTagBadges({ tags }: { tags: string[] }) {
             </Badge>
             {tags.length > 1 ? (
               <Badge
-                className="entry-tag-secondary max-w-28 min-w-0 gap-1.5 bg-secondary/80 transition-colors hover:bg-secondary"
+                className="entry-tag-secondary min-w-0 gap-1.5 bg-secondary/80 transition-colors hover:bg-secondary"
                 variant="secondary"
               >
                 <span className={cn('size-1.5 shrink-0 rounded-full', tagAccent(tags[1]))} />

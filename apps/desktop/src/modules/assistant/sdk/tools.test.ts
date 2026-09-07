@@ -112,7 +112,7 @@ describe('model-driven side-effect tools', () => {
 
   it('reads an explicitly mentioned Note before creating a verified patch proposal', async () => {
     vi.mocked(readNote).mockResolvedValue({
-      links: [], markdown: '# Existing\n\nOld text\n', note_id: 'note-1', title: '目标笔记'
+      links: [], markdown: '# Existing\n\nOld text\n', note_id: 'note-1', revision: 'revision-1', title: '目标笔记'
     });
     const proposals: Array<{ beforeMarkdown?: string | null }> = [];
     const runtime = await createAssistantTools({

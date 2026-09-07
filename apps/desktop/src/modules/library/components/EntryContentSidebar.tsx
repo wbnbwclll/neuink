@@ -359,7 +359,7 @@ export function EntryContentSidebar({
                   onClick={() => onSelectContent('reflow')}
                 />
                 <ContentRow
-                  active={activeContentId === 'segment-notes' || activeContentId === 'annotations'}
+                  active={activeContentId === 'segment-notes'}
                   icon={<StickyNote size={14} />}
                   label="片段记录"
                   meta="笔记与批注"
@@ -419,7 +419,7 @@ export function EntryContentSidebar({
                     />
                   ) : undefined
                 }
-                meta="笔记"
+                meta="文档笔记"
                 action={
                   <div className="flex items-center gap-0.5">
                     {entry.pdfFileName ? (

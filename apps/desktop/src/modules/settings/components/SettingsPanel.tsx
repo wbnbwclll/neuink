@@ -27,8 +27,10 @@ import {
   saveAgentRuntimeSettings,
   saveLlmSettings,
   setTaskLlmProfile,
+  type LlmApiProtocol,
   type LlmProfile,
-  type LlmSettingsState
+  type LlmSettingsState,
+  resolveLlmApiProtocol
 } from '@/shared/ipc/assistantApi';
 import {
   getWorkspaceSettings,
@@ -165,6 +167,7 @@ export function SettingsPanel({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('http://localhost:11434/v1');
+  const [apiProtocol, setApiProtocol] = useState<LlmApiProtocol>('openai_compatible');
   const [model, setModel] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [maxContextLength, setMaxContextLength] = useState('8192');
@@ -270,6 +273,8 @@ export function SettingsPanel({
       const target = nextSettings.profiles[0] ?? null;
       if (target) {
         fillForm(target);
+        // 仅用于初始化编辑表单，不应让第一条模型卡片呈现为已选中状态。
+        setEditingId(null);
       }
       setDraftAssistantProfileId(nextSettings.assistant_profile_id);
       setDraftTranslationProfileId(nextSettings.translation_profile_id);
@@ -426,6 +431,7 @@ export function SettingsPanel({
     setEditingId(profile.id);
     setName(profile.name);
     setBaseUrl(profile.base_url);
+    setApiProtocol(resolveLlmApiProtocol(profile.api_protocol));
     setModel(profile.model);
     setApiKey(profile.api_key ?? '');
     setMaxContextLength(String(profile.max_context_length ?? 8192));
@@ -442,6 +448,7 @@ export function SettingsPanel({
 
     const fingerprint = profileFingerprint({
       api_key: apiKey || null,
+      api_protocol: apiProtocol,
       base_url: baseUrl,
       id: editingId,
       max_context_length: Number(maxContextLength) || null,
@@ -462,6 +469,7 @@ export function SettingsPanel({
         profileId: editingId,
         name: name || model,
         baseUrl,
+        apiProtocol,
         model,
         apiKey,
         maxContextLength: Number(maxContextLength) || undefined,
@@ -483,6 +491,7 @@ export function SettingsPanel({
     return () => window.clearTimeout(timer);
   }, [
     apiKey,
+    apiProtocol,
     baseUrl,
     editingId,
     maxContextLength,
@@ -560,7 +569,8 @@ export function SettingsPanel({
   const newProfile = () => {
     setEditingId(null);
     setName('');
-    setBaseUrl('http://localhost:11434/v1');
+    setBaseUrl('');
+    setApiProtocol('openai_compatible');
     setModel('');
     setApiKey('');
     setMaxContextLength('8192');
@@ -581,6 +591,7 @@ export function SettingsPanel({
       const nextSettings = await saveLlmSettings({
         name: name || model,
         baseUrl,
+        apiProtocol,
         model,
         apiKey,
         maxContextLength: Number(maxContextLength) || undefined,
@@ -616,6 +627,7 @@ export function SettingsPanel({
         profileId: editingId,
         name: name || model,
         baseUrl,
+        apiProtocol,
         model,
         apiKey,
         maxContextLength: Number(maxContextLength) || undefined,
@@ -643,6 +655,7 @@ export function SettingsPanel({
   const applyProviderPreset = (preset: ProviderPreset) => {
     setName(preset.label);
     setBaseUrl(preset.baseUrl);
+    setApiProtocol(preset.protocol);
     setEditingId(null);
     const cachedModels = modelCatalogCache[normalizeBaseUrl(preset.baseUrl)]?.models ?? [];
     applyModelPreset(cachedModels[0] ?? preset.models[0]);
@@ -662,7 +675,7 @@ export function SettingsPanel({
   const refreshModels = async () => {
     setModelRefreshBusy(true);
     try {
-      const models = await listOpenAiCompatibleModels({ baseUrl, apiKey });
+      const models = await listOpenAiCompatibleModels({ baseUrl, apiKey, apiProtocol });
       const nextModels = mergeModelPresets(
         models.map((model) => mergeRemoteModelPreset(model, providerPreset?.models ?? [])),
         providerPreset?.models ?? []
@@ -714,6 +727,7 @@ export function SettingsPanel({
           profileId: editingId ?? undefined,
           name: name || model || 'Untitled model',
           baseUrl,
+          apiProtocol,
           model,
           apiKey,
           maxContextLength: Number(maxContextLength) || undefined,
@@ -774,7 +788,7 @@ export function SettingsPanel({
   const test = async () => {
     setBusy(true);
     try {
-      await testOpenAiCompatibleConnection({ baseUrl, apiKey });
+      await testOpenAiCompatibleConnection({ baseUrl, apiKey, apiProtocol });
       notify({ tone: 'success', title: '连接测试通过' });
     } catch (caught) {
       notifyFailure('连接测试失败', caught);
@@ -784,7 +798,10 @@ export function SettingsPanel({
   };
 
   const testProfile = async (
-    profile: Pick<LlmProfile, 'base_url' | 'id' | 'name'> & { api_key?: string | null }
+    profile: Pick<LlmProfile, 'base_url' | 'id' | 'name'> & {
+      api_key?: string | null;
+      api_protocol?: LlmProfile['api_protocol'] | null;
+    }
   ) => {
     setProfileTestStates((current) => ({
       ...current,
@@ -793,7 +810,8 @@ export function SettingsPanel({
     try {
       await testOpenAiCompatibleConnection({
         baseUrl: profile.base_url,
-        apiKey: profile.api_key ?? ''
+        apiKey: profile.api_key ?? '',
+        apiProtocol: resolveLlmApiProtocol(profile.api_protocol)
       });
       setProfileTestStates((current) => ({
         ...current,
@@ -993,6 +1011,7 @@ export function SettingsPanel({
       <SettingsPanelLayout
       activeSettingsTab={activeSettingsTab}
       apiKey={apiKey}
+      apiProtocol={apiProtocol}
       baseUrl={baseUrl}
       busy={busy}
       cachedModelCatalog={cachedModelCatalog}
@@ -1014,6 +1033,7 @@ export function SettingsPanel({
       modelRefreshBusy={modelRefreshBusy}
       name={name}
       onApiKeyChange={setApiKey}
+      onApiProtocolChange={setApiProtocol}
       onBack={onBack}
       onBaseUrlChange={setBaseUrl}
       onOpenWorkspace={() => void chooseWorkspaceFolder('switch')}
@@ -1038,7 +1058,25 @@ export function SettingsPanel({
       onCreateProfile={() => createProfile()}
       onMaxContextLengthChange={setMaxContextLength}
       onMaxOutputTokensChange={setMaxOutputTokens}
-      onModelChange={setModel}
+      onModelChange={(value) => {
+        setModel(value);
+        // 手动输入/粘贴的模型 ID 命中已同步的模型目录时，自动回填上下文与输出参数；
+        // 用户手动改过的值（非默认）不覆盖。
+        const preset = modelPresets.find((item) => item.id === value.trim());
+        if (!preset) {
+          return;
+        }
+        const currentContext = maxContextLength.trim();
+        if (
+          preset.maxContextLength != null &&
+          (currentContext === '' || currentContext === '8192')
+        ) {
+          setMaxContextLength(String(preset.maxContextLength));
+        }
+        if (preset.maxOutputTokens != null && maxOutputTokens.trim() === '') {
+          setMaxOutputTokens(String(preset.maxOutputTokens));
+        }
+      }}
       onModelPresetSelect={(value) => {
         const preset = modelPresets.find((item) => item.id === value);
         if (preset) {
@@ -1056,6 +1094,10 @@ export function SettingsPanel({
         announceAutoSave('阅读设置已更新。');
       }}
       onProviderPresetSelect={(value) => {
+        if (value === '__custom__') {
+          newProfile();
+          return;
+        }
         if (value.startsWith('__profile__')) {
           const profile = settings.profiles.find((item) => `__profile__${item.id}` === value);
           if (profile) {
@@ -1077,7 +1119,7 @@ export function SettingsPanel({
       onAddAgent={() => {
         notify({
           title: '暂不支持新增子 Agent',
-          description: '当前版本只开放两个内置子 Agent：EvidenceAgent 和 PatchPlannerAgent。'
+          description: '当前版本使用 4 个职责固定的内置子 Agent；可在子 Agent 页面配置模型、启用状态与权限。'
         });
         setActiveSettingsTab('subagents');
       }}
@@ -1244,6 +1286,7 @@ function formatEndpointForDisplay(value: string) {
 }
 
 type PendingSettingsDraft = {
+  apiProtocol: LlmApiProtocol;
   baseUrl: string;
   customParserEndpoint: string;
   customParserApiKey: string;
@@ -1269,6 +1312,7 @@ type PendingSettingsDraft = {
 
 function profileFingerprint(profile: {
   api_key: string | null;
+  api_protocol: LlmApiProtocol;
   base_url: string;
   id: string;
   max_context_length: number | null;
@@ -1280,6 +1324,7 @@ function profileFingerprint(profile: {
 }) {
   return JSON.stringify({
     apiKey: profile.api_key ?? '',
+    apiProtocol: profile.api_protocol,
     baseUrl: profile.base_url.trim(),
     maxContextLength: profile.max_context_length,
     maxOutputTokens: profile.max_output_tokens,
@@ -1296,6 +1341,7 @@ function hasPendingChanges(draft: PendingSettingsDraft) {
   const modelChanged = editingProfile
     ? editingProfile.name !== (draft.name || draft.model || 'Untitled model') ||
       editingProfile.base_url !== normalizeBaseUrl(draft.baseUrl) ||
+      resolveLlmApiProtocol(editingProfile.api_protocol) !== draft.apiProtocol ||
       editingProfile.model !== draft.model.trim() ||
       (editingProfile.api_key ?? '') !== draft.apiKey.trim() ||
       String(editingProfile.max_context_length ?? 8192) !== String(Number(draft.maxContextLength) || 8192) ||

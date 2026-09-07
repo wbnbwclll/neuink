@@ -170,8 +170,5 @@ function verifyProposals(
     if (proposal.action !== 'create' && proposal.beforeMarkdown === null) {
       errors.push('An existing-note proposal did not capture its base content.');
     }
-    if (/(无法.{0,8}(编辑|写入)|手动复制|请选择|是否要)/u.test(proposal.markdown)) {
-      errors.push('A note proposal contains workflow commentary instead of note content.');
-    }
   }
 }

@@ -5,14 +5,17 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent
 } from 'react';
-import { Link2 } from 'lucide-react';
-
 import type { WorkspacePaneId, WorkspaceSurface, WorkspaceSurfaceLayout } from '@/app/workspaceSurface';
-import { entryContentId, surfaceKey } from '@/app/workspaceSurface';
+import { entryContentId, entryContentSurface, surfaceKey } from '@/app/workspaceSurface';
+import {
+  readerKind,
+  resolveWorkspaceSurfacePair,
+  type WorkspaceReaderSurfaceKind
+} from '@/app/workspaceSurfacePairing';
 import {
   clampWorkspaceSplitLeftWidth,
-  WORKSPACE_SPLIT_MIN_LEFT_WIDTH,
-  WORKSPACE_SPLIT_MIN_RIGHT_WIDTH
+  getWorkspaceSplitMinimums,
+  getWorkspaceSplitWidthBounds
 } from '@/app/workspaceSplit';
 import type { CreateEntryRequest, CreateEntryResult } from '@/shared/hooks/useWorkspace';
 import type { AnnotationCatalogRecord, PdfReaderResponse } from '@/shared/ipc/workspaceApi';
@@ -47,13 +50,8 @@ import { SettingsPanel } from '../../settings/components/SettingsPanel';
 import { CreateEntryPanel } from './CreateEntryPanel';
 import { MineruClientImportGuide } from './MineruClientImportGuide';
 import { EntryLibraryView } from './EntryLibraryView';
-import { EntryContentHeader } from './EntryContentHeader';
 import { EntryWorkspaceView } from './EntryWorkspaceView';
-import {
-  ReaderEmptyState,
-  ReaderSurfaceBody,
-  readerSelectableItemClass
-} from './ReaderSurfacePrimitives';
+import { SourceLinksSurface } from './SourceLinksSurface';
 import {
   hasHeavyReaderIdleExpired,
   HEAVY_READER_SWEEP_INTERVAL_MS,
@@ -157,7 +155,14 @@ type ReaderPaneProps = {
     textSelection?: AnnotationTextSelection | null;
   }) => Promise<Annotation[]>;
   onDeleteAnnotation: (entryId: string, annotationId: AnnotationId) => Promise<Annotation[]>;
-  onSaveMarkdownNote: (entryId: string, noteId: string, title: string, markdown: string) => Promise<NoteDocument>;
+  onSaveMarkdownNote: (
+    entryId: string,
+    noteId: string,
+    title: string,
+    markdown: string,
+    links?: SourceLink[] | null,
+    expectedRevision?: string | null
+  ) => Promise<NoteDocument>;
   onSelectEntry: (id: string) => void;
   onSelectTag: (tag: string | null) => void;
   onSwitchWorkspaceRoot: (root: string) => Promise<void>;
@@ -434,6 +439,10 @@ export function ReaderPane({
     window.dispatchEvent(new Event('neuink:reader-surface-change'));
   }, [surfaceLayout.focusedPane, surfaceLayout.left, surfaceLayout.right]);
 
+  const workspaceSplitMinimums = surfaceLayout.right
+    ? getWorkspaceSplitMinimums(surfaceLayout.left, surfaceLayout.right)
+    : null;
+
   const startWorkspaceSplitResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) {
       return;
@@ -449,8 +458,13 @@ export function ReaderPane({
     const divider = event.currentTarget;
     const bounds = container.getBoundingClientRect();
     const pointerId = event.pointerId;
+    const originalWidth = workspaceSplitLeftWidth ?? Math.round(bounds.width / 2);
     const getNextWidth = (clientX: number) =>
-      clampWorkspaceSplitLeftWidth(clientX - bounds.left, bounds.width);
+      clampWorkspaceSplitLeftWidth(
+        clientX - bounds.left,
+        bounds.width,
+        workspaceSplitMinimums ?? undefined
+      );
     let pendingWidth = getNextWidth(event.clientX);
     let animationFrame: number | null = null;
     let finished = false;
@@ -472,6 +486,7 @@ export function ReaderPane({
       }
       animationFrame = window.requestAnimationFrame(() => {
         animationFrame = null;
+        onWorkspaceSplitLeftWidthPreview(pendingWidth);
         workspaceSplitPreviewRef.current?.style.setProperty(
           'transform',
           `translate3d(${pendingWidth}px, 0, 0)`
@@ -500,12 +515,13 @@ export function ReaderPane({
     };
     const finishResize = (commit: boolean) => {
       if (finished) return;
-      const finalWidth = commit ? pendingWidth : (workspaceSplitLeftWidth ?? Math.round(bounds.width / 2));
+      const finalWidth = commit ? pendingWidth : originalWidth;
       cleanupResize();
       onWorkspaceSplitLeftWidthPreview(finalWidth);
       setIsWorkspaceSplitResizing(false);
       setWorkspaceSplitPreviewLeft(null);
       if (commit) onWorkspaceSplitLeftWidthChange(pendingWidth);
+      window.dispatchEvent(new Event('neuink:reader-surface-change'));
     };
     const handlePointerUp = (pointerEvent: PointerEvent) => {
       if (pointerEvent.pointerId === pointerId) {
@@ -525,7 +541,7 @@ export function ReaderPane({
     window.addEventListener('pointercancel', handlePointerCancel);
     window.addEventListener('blur', handleWindowBlur);
     window.addEventListener('keydown', handleKeyDown);
-    workspaceSplitResizeCleanupRef.current = cleanupResize;
+    workspaceSplitResizeCleanupRef.current = () => finishResize(false);
   };
   const resizeWorkspaceSplitWithKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
@@ -539,13 +555,21 @@ export function ReaderPane({
 
     event.preventDefault();
     const bounds = container.getBoundingClientRect();
+    const widthBounds = getWorkspaceSplitWidthBounds(
+      bounds.width,
+      workspaceSplitMinimums ?? undefined
+    );
     const currentWidth = workspaceSplitLeftWidth ?? Math.round(bounds.width / 2);
     const nextWidth = event.key === 'Home'
-      ? WORKSPACE_SPLIT_MIN_LEFT_WIDTH
+      ? widthBounds.minLeftWidth
       : event.key === 'End'
-        ? bounds.width - WORKSPACE_SPLIT_MIN_RIGHT_WIDTH
+        ? widthBounds.maxLeftWidth
         : currentWidth + (event.key === 'ArrowLeft' ? -24 : 24);
-    const width = clampWorkspaceSplitLeftWidth(nextWidth, bounds.width);
+    const width = clampWorkspaceSplitLeftWidth(
+      nextWidth,
+      bounds.width,
+      workspaceSplitMinimums ?? undefined
+    );
     onWorkspaceSplitLeftWidthPreview(width);
     onWorkspaceSplitLeftWidthChange(width);
   };
@@ -571,9 +595,12 @@ export function ReaderPane({
         onPurgeEntry={onPurgeEntry}
         onPurgeTrashItem={onPurgeTrashItem}
         onRefreshParseStatus={onRefreshParseStatus}
+        onReparseEntry={onRetryPdfParse}
         onRestoreEntry={onRestoreEntry}
         onRestoreTrashItem={onRestoreTrashItem}
         onSelectEntry={onSelectEntry}
+        onSelectTag={onSelectTag}
+        onUpdateEntry={onUpdateEntry}
       />;
   const resolveMarkdownNoteTarget = (tabId: string | null): MarkdownNoteTarget | null => {
     if (!tabId) {
@@ -652,15 +679,26 @@ export function ReaderPane({
       sidePane.target?.kind === 'markdown-note'
         ? entries.find((item) => item.id === sidePane.target?.entryId) ?? null
         : null;
-    const pairedMarkdownNoteTarget = resolveMarkdownNoteTarget(siblingTabId);
     const linkedSegment = linkedSegmentByEntryId[openEntry.id] ?? null;
     const siblingParsed = siblingTabId ? parseEntryContentTab(siblingTabId) : null;
+    const currentSurface = entryContentSurface(parsed.entryId, parsed.contentId);
+    const siblingSurface = siblingParsed
+      ? entryContentSurface(siblingParsed.entryId, siblingParsed.contentId)
+      : null;
+    const pairing = siblingSurface
+      ? resolveWorkspaceSurfacePair(currentSurface, siblingSurface)
+      : null;
+    const pairedMarkdownNoteTarget = pairing?.relation === 'citation'
+      ? resolveMarkdownNoteTarget(siblingTabId)
+      : null;
     const pairedPdfPane = Boolean(
-      siblingParsed?.entryId === openEntry.id && siblingParsed.contentId === 'pdf'
+      pairing?.sameEntry && siblingSurface?.kind === 'pdf'
     );
     const pairedReflowPane = Boolean(
-      siblingParsed?.entryId === openEntry.id && siblingParsed.contentId === 'reflow'
+      pairing?.sameEntry && siblingSurface?.kind === 'reflow'
     );
+    const linkedReaderKind: WorkspaceReaderSurfaceKind | null =
+      pairing?.relation === 'record-sync' ? readerKind(siblingSurface) : null;
     const linkedPdfJump = linkedPdfJumpByEntryId[parsed.entryId] ?? null;
     const externalPdfJump = pdfJumpByEntryId[parsed.entryId] ?? null;
 
@@ -680,8 +718,8 @@ export function ReaderPane({
         initialRecordMode={initialRecordMode}
         linkedSegment={linkedSegment}
         reflowSyncSegment={linkedReflowSegmentByEntryId[openEntry.id] ?? null}
-        splitReaderLinked={pairedPdfPane || pairedReflowPane}
-        segmentNotesLinkedToPdf={pairedPdfPane}
+        splitReaderLinked={pairing?.relation === 'reader-sync'}
+        segmentRecordsLinkedReader={linkedReaderKind}
         sharedSegmentNoteDrafts={segmentNoteDraftsByEntryId[openEntry.id] ?? {}}
 	        pendingSourceLinkInsertion={pendingSourceLinkInsertion}
 	        pendingNoteImageInsertion={pendingNoteImageInsertion}
@@ -739,25 +777,40 @@ export function ReaderPane({
           }
         }}
         onReflowSegmentClick={(segmentUid, pageIdx) => {
-          if (!pairedPdfPane) return;
-          setLinkedPdfJumpByEntryId((current) => ({
-            ...current,
-            [openEntry.id]: {
-              kind: 'segment',
-              pageIdx,
-              requestKey: nextLinkedRequestKey(),
-              segmentUid
-            }
-          }));
+          focusLinkedSegment(openEntry.id, segmentUid, 'reflow');
+          if (pairedPdfPane) {
+            setLinkedPdfJumpByEntryId((current) => ({
+              ...current,
+              [openEntry.id]: {
+                kind: 'segment',
+                pageIdx,
+                requestKey: nextLinkedRequestKey(),
+                segmentUid
+              }
+            }));
+          }
         }}
-        onFocusLinkedSegment={(segmentUid, mode) =>
-          focusLinkedSegment(openEntry.id, segmentUid, 'segment-notes', mode)
-        }
+        onFocusLinkedSegment={(segmentUid, mode) => {
+          focusLinkedSegment(openEntry.id, segmentUid, 'segment-notes', mode);
+          if (pairedReflowPane) {
+            setLinkedReflowSegmentByEntryId((current) => ({
+              ...current,
+              [openEntry.id]: { requestKey: nextLinkedRequestKey(), segmentUid }
+            }));
+          }
+        }}
         onSharedSegmentNoteDraftChange={(segmentUid, text) =>
           updateLinkedSegmentNoteDraft(openEntry.id, segmentUid, text)
         }
         onLocateSegmentInPdf={(segmentUid, pageIdx) => {
           focusLinkedSegment(openEntry.id, segmentUid, 'segment-notes');
+          if (pairedReflowPane) {
+            setLinkedReflowSegmentByEntryId((current) => ({
+              ...current,
+              [openEntry.id]: { requestKey: nextLinkedRequestKey(), segmentUid }
+            }));
+            return;
+          }
           setLinkedPdfJumpByEntryId((current) => ({
             ...current,
             [openEntry.id]: {
@@ -771,6 +824,25 @@ export function ReaderPane({
             onOpenSurface(
               { kind: 'pdf', entryId: openEntry.id },
               pane === 'left' ? 'right' : 'left'
+            );
+          }
+        }}
+        onLocateAnnotationInPdf={(annotationId, segmentUid, pageIdx) => {
+          focusLinkedSegment(openEntry.id, segmentUid, 'segment-notes', 'annotation');
+          setLinkedPdfJumpByEntryId((current) => ({
+            ...current,
+            [openEntry.id]: {
+              kind: 'annotation',
+              annotationId,
+              pageIdx,
+              requestKey: nextLinkedRequestKey(),
+              segmentUid,
+            },
+          }));
+          if (!pairedPdfPane) {
+            onOpenSurface(
+              { kind: 'pdf', entryId: openEntry.id },
+              pane === 'left' ? 'right' : 'left',
             );
           }
         }}
@@ -841,45 +913,44 @@ export function ReaderPane({
     if (surface.kind === 'source-links') {
       const backlinks = Object.values(sourceBacklinksByEntryId[surface.entryId] ?? {}).flat();
       const entry = entries.find((item) => item.id === surface.entryId);
+      const pairing = sibling ? resolveWorkspaceSurfacePair(surface, sibling) : null;
+      const siblingReaderKind = pairing?.relation === 'source-navigation' ? readerKind(sibling) : null;
+      const locateBacklinkSource = (segmentUid: string) => {
+        if (!siblingReaderKind) return;
+        focusLinkedSegment(surface.entryId, segmentUid, 'segment-notes');
+        if (siblingReaderKind === 'reflow') {
+          setLinkedReflowSegmentByEntryId((current) => ({
+            ...current,
+            [surface.entryId]: { requestKey: nextLinkedRequestKey(), segmentUid }
+          }));
+          return;
+        }
+        setLinkedPdfJumpByEntryId((current) => ({
+          ...current,
+          [surface.entryId]: {
+            kind: 'segment',
+            pageIdx: 0,
+            requestKey: nextLinkedRequestKey(),
+            segmentUid
+          }
+        }));
+      };
       return (
-        <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden">
-          <EntryContentHeader contentTitle="来源链接" entryTitle={entry?.title ?? '条目'} />
-          <ReaderSurfaceBody>
-            {backlinks.length === 0 ? (
-              <ReaderEmptyState
-                description="在 PDF 或重排视图中复制或插入来源后，会显示在这里。"
-                icon={Link2}
-                title="暂无来源链接"
-              />
-            ) : (
-              <div className="grid gap-2">
-                {backlinks.map((backlink) => (
-                  <button
-                    className={readerSelectableItemClass}
-                    key={`${backlink.linkId}:${backlink.segmentUid}`}
-                    type="button"
-                    onClick={() =>
-                      onOpenSurface(
-                        { kind: 'note', entryId: backlink.noteEntryId, noteId: backlink.noteId },
-                        pane === 'left' ? 'right' : 'left'
-                      )
-                    }
-                  >
-                    <div className="truncate text-sm font-medium text-foreground">
-                      {backlink.noteTitle}
-                    </div>
-                    <div className="mt-1 truncate text-xs text-muted-foreground">
-                      {backlink.noteEntryTitle} · 原文片段 {backlink.segmentUid}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </ReaderSurfaceBody>
-        </div>
+        <SourceLinksSurface
+          backlinks={backlinks}
+          entryTitle={entry?.title ?? '条目'}
+          linkedReaderKind={siblingReaderKind}
+          onLocateSource={locateBacklinkSource}
+          onOpenNote={(backlink) =>
+            onOpenSurface(
+              { kind: 'note', entryId: backlink.noteEntryId, noteId: backlink.noteId },
+              pane === 'left' ? 'right' : 'left'
+            )
+          }
+        />
       );
     }
-    const contentId = surface.kind === 'annotations' ? 'segment-notes' : entryContentId(surface);
+    const contentId = entryContentId(surface);
     if (contentId && 'entryId' in surface) {
       const siblingContentId = sibling ? entryContentId(sibling) : null;
       const siblingTabId = sibling && siblingContentId && 'entryId' in sibling
@@ -891,9 +962,7 @@ export function ReaderPane({
         true,
         pane,
         'segmentUid' in surface ? surface.segmentUid : undefined,
-        surface.kind === 'annotations'
-          ? 'annotation'
-          : surface.kind === 'segment-notes'
+        surface.kind === 'segment-notes'
             ? surface.mode ?? 'note'
             : 'note'
       );
@@ -904,7 +973,7 @@ export function ReaderPane({
       case 'settings':
         return <div className="h-full min-h-0 overflow-hidden">{renderSettingsPanel()}</div>;
       case 'create-entry':
-        return <div className="h-full min-h-0 overflow-y-auto">{renderCreateEntryPanel()}</div>;
+        return <div className="h-full min-h-0 overflow-hidden">{renderCreateEntryPanel()}</div>;
       case 'mineru-client-guide':
         return <div className="h-full min-h-0 overflow-y-auto"><MineruClientImportGuide /></div>;
       case 'tag-editor':
@@ -932,8 +1001,14 @@ export function ReaderPane({
       </div>
     );
   });
+  const activePairing = surfaceLayout.right
+    ? resolveWorkspaceSurfacePair(surfaceLayout.left, surfaceLayout.right)
+    : null;
   return (
-    <section className="app-editor">
+    <section
+      className="app-editor"
+      data-workspace-pair-relation={activePairing?.relation ?? 'single'}
+    >
         <div className="m-0 h-full min-h-0 min-w-0">
           <div
             className={
@@ -945,6 +1020,7 @@ export function ReaderPane({
             <div
               className="workspace-pane"
               data-workspace-drop-pane="left"
+              data-workspace-surface-kind={surfaceLayout.left.kind}
               data-workspace-tab-count={surfaceLayout.leftTabs.length}
               onPointerDown={() => onFocusSurface('left')}
             >
@@ -958,7 +1034,7 @@ export function ReaderPane({
                   role="separator"
                   tabIndex={0}
                   aria-orientation="vertical"
-                  aria-valuemin={WORKSPACE_SPLIT_MIN_LEFT_WIDTH}
+                  aria-valuemin={workspaceSplitMinimums?.left}
                   aria-valuenow={workspaceSplitLeftWidth ?? undefined}
                   onKeyDown={resizeWorkspaceSplitWithKeyboard}
                   onPointerDown={startWorkspaceSplitResize}
@@ -974,6 +1050,7 @@ export function ReaderPane({
                 <div
                   className="workspace-pane"
                   data-workspace-drop-pane="right"
+                  data-workspace-surface-kind={surfaceLayout.right.kind}
                   data-workspace-tab-count={surfaceLayout.rightTabs.length}
                   onPointerDown={() => onFocusSurface('right')}
                 >

@@ -24,8 +24,7 @@ import {
   initialWorkspaceSurfaceLayout,
   surfaceKey,
   workspaceSurfaceReducer,
-  type WorkspacePaneId,
-  type WorkspaceSurface
+  type WorkspacePaneId
 } from './workspaceSurface';
 import {
   resolveActiveActivityPanel,
@@ -34,8 +33,8 @@ import {
 import {
   clampWorkspaceSplitLeftWidth,
   WORKSPACE_SPLIT_DIVIDER_WIDTH,
-  WORKSPACE_SPLIT_MIN_LEFT_WIDTH,
-  WORKSPACE_SPLIT_MIN_RIGHT_WIDTH
+  WORKSPACE_SPLIT_NOTE_MIN_WIDTH,
+  WORKSPACE_SPLIT_STANDARD_MIN_WIDTH
 } from './workspaceSplit';
 import { AssistantPanel } from '../modules/assistant/components/AssistantPanel';
 import type { AssistantComposerDraft } from '../modules/assistant/components/AssistantComposerEditor';
@@ -182,14 +181,14 @@ export function readStoredWorkspaceSplitLeftWidth() {
     return null;
   }
   const saved = Number(window.localStorage.getItem(WORKSPACE_SPLIT_WIDTH_STORAGE_KEY));
-  return Number.isFinite(saved) && saved >= WORKSPACE_SPLIT_MIN_LEFT_WIDTH
+  return Number.isFinite(saved) && saved >= WORKSPACE_SPLIT_NOTE_MIN_WIDTH
     ? Math.round(saved)
     : null;
 }
 
 export function getWorkspaceSplitContainerWidth() {
   if (typeof document === 'undefined') {
-    return WORKSPACE_SPLIT_MIN_LEFT_WIDTH + WORKSPACE_SPLIT_DIVIDER_WIDTH + WORKSPACE_SPLIT_MIN_RIGHT_WIDTH;
+    return WORKSPACE_SPLIT_STANDARD_MIN_WIDTH * 2 + WORKSPACE_SPLIT_DIVIDER_WIDTH;
   }
   const editor = document.querySelector('.app-editor');
   if (editor instanceof HTMLElement) {
@@ -199,7 +198,7 @@ export function getWorkspaceSplitContainerWidth() {
     }
   }
   return Math.max(
-    WORKSPACE_SPLIT_MIN_LEFT_WIDTH + WORKSPACE_SPLIT_DIVIDER_WIDTH + WORKSPACE_SPLIT_MIN_RIGHT_WIDTH,
+    WORKSPACE_SPLIT_STANDARD_MIN_WIDTH * 2 + WORKSPACE_SPLIT_DIVIDER_WIDTH,
     window.innerWidth - DEFAULT_SIDEBAR_WIDTH
   );
 }
@@ -276,25 +275,6 @@ export function formatVectorStatus(
     return '向量：缓存 ' + (status.semantic_disk_cache_record_count ?? status.semantic_document_count);
   }
   return '向量：待构建 ' + status.semantic_document_count;
-}
-
-export function surfaceLabel(surface: WorkspaceSurface, entries: LibraryEntry[]) {
-  const entryTitle = 'entryId' in surface
-    ? entries.find((entry) => entry.id === surface.entryId)?.title
-    : null;
-  switch (surface.kind) {
-    case 'library': return '条目库';
-    case 'settings': return '设置';
-    case 'create-entry': return '新建条目';
-    case 'tag-editor': return '标签管理';
-    case 'entry-overview': return (entryTitle ?? '条目') + ' · 概览';
-    case 'pdf': return (entryTitle ?? '条目') + ' · PDF';
-    case 'reflow': return (entryTitle ?? '条目') + ' · 重排视图';
-    case 'note': return (entryTitle ?? '条目') + ' · 笔记';
-    case 'segment-notes': case 'annotations': return (entryTitle ?? '条目') + ' · 片段记录';
-    case 'source-links': return (entryTitle ?? '条目') + ' · 来源链接';
-    case 'entry-trash': return (entryTitle ?? '条目') + ' · 回收站';
-  }
 }
 
 export function ActivityButton({

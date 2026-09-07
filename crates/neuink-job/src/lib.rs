@@ -85,8 +85,11 @@ impl JobProgress {
     }
 }
 
+/// 内部标签 + 扁平字段序列化（`{"kind":"entry","root":...,"entry_id":...}`）。
+/// 前端 hook 直接读 `scope.root` / `scope.entry_id`，外部标签的嵌套形状会让
+/// 任务事件匹配全部失败（表现为翻译进度条不动）。
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JobScope {
     Entry { root: String, entry_id: String },
     Workspace { root: String },
@@ -157,8 +160,25 @@ impl LocalJobManager {
         payload: Value,
     ) -> Option<JobEvent> {
         self.update(job_id, JobEventKind::Succeeded, payload, |job| {
+            let total = job.progress.total;
             job.status = JobStatus::Succeeded;
-            job.progress = JobProgress::new(job.progress.total, job.progress.total);
+            job.progress = JobProgress::new(total, total);
+            job.message = Some(message.into());
+            job.error = None;
+        })
+    }
+
+    pub fn succeed_with_progress(
+        &self,
+        job_id: &str,
+        current: usize,
+        total: usize,
+        message: impl Into<String>,
+        payload: Value,
+    ) -> Option<JobEvent> {
+        self.update(job_id, JobEventKind::Succeeded, payload, |job| {
+            job.status = JobStatus::Succeeded;
+            job.progress = JobProgress::new(current, total);
             job.message = Some(message.into());
             job.error = None;
         })
@@ -288,7 +308,7 @@ fn trim_jobs(jobs: &mut HashMap<String, Job>) {
 mod tests {
     use serde_json::Value;
 
-    use super::{JobKind, LocalJobManager};
+    use super::{JobKind, JobScope, LocalJobManager};
 
     #[test]
     fn completed_job_history_is_bounded() {
@@ -299,5 +319,41 @@ mod tests {
         }
 
         assert_eq!(manager.list().len(), 256);
+    }
+
+    #[test]
+    fn succeeded_job_can_preserve_partial_progress() {
+        let manager = LocalJobManager::new();
+        let event = manager.create(JobKind::Translation, None, 5);
+
+        let completed = manager
+            .succeed_with_progress(&event.job.id, 2, 5, "partial", Value::Null)
+            .expect("succeeded event");
+
+        assert_eq!(completed.job.status, super::JobStatus::Succeeded);
+        assert_eq!(completed.job.progress.current, 2);
+        assert_eq!(completed.job.progress.total, 5);
+        assert_eq!(completed.job.progress.percent, 40);
+    }
+
+    /// 前端按 `scope.root` / `scope.entry_id` 扁平字段匹配任务事件，
+    /// 序列化形状一旦变回外部标签嵌套，事件过滤会全部失败（进度条不动）。
+    #[test]
+    fn job_scope_serializes_flat_fields() {
+        let scope = JobScope::Entry {
+            root: "C:/ws".to_string(),
+            entry_id: "e1".to_string(),
+        };
+        let value = serde_json::to_value(&scope).expect("serialize scope");
+        assert_eq!(value["kind"], "entry");
+        assert_eq!(value["root"], "C:/ws");
+        assert_eq!(value["entry_id"], "e1");
+
+        let workspace_scope = JobScope::Workspace {
+            root: "C:/ws".to_string(),
+        };
+        let value = serde_json::to_value(&workspace_scope).expect("serialize scope");
+        assert_eq!(value["kind"], "workspace");
+        assert_eq!(value["root"], "C:/ws");
     }
 }

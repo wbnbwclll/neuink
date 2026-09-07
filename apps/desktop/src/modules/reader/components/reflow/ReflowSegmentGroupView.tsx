@@ -13,6 +13,7 @@ import {
 } from "@/shared/components/SourceSnapshotPreview";
 import { useToast } from "@/shared/hooks/useToast";
 import type { TranslatedSegment } from "@/shared/ipc/workspaceApi";
+import { reflowTextSizeScale } from "@/shared/lib/readerPreferences";
 import type { Annotation, SegmentBlockNote, SourceSegment } from "@/shared/types/domain";
 
 import {
@@ -46,6 +47,10 @@ import {
   warmReflowPreviewAssets,
   type ReflowPreviewPointerState
 } from './ReflowSourcePreview';
+import {
+  reflowGroupTextScale,
+  useReflowComponentPreferences
+} from './ReflowComponentPreferencesContext';
 
 export const ReflowSegmentGroupView = memo(function ReflowSegmentGroupView({
   active,
@@ -105,6 +110,8 @@ export const ReflowSegmentGroupView = memo(function ReflowSegmentGroupView({
   onAddAssistantContext?: (segment: SourceSegment) => void;
   onTranslateSegment?: (segment: SourceSegment) => void;
 }) {
+  const componentPreferences = useReflowComponentPreferences();
+  const componentTextScale = reflowGroupTextScale(segmentGroup, componentPreferences);
   const relatedImagePath =
     segmentGroup.assetPath ?? segmentGroup.body.asset_path ?? null;
   const hasNote = segmentGroup.segments.some((segment) =>
@@ -180,6 +187,7 @@ export const ReflowSegmentGroupView = memo(function ReflowSegmentGroupView({
         isHiding && "-translate-x-2 scale-[0.99] opacity-0",
       )}
       id={`reflow-segment-${segmentGroup.body.uid}`}
+      style={{ fontSize: `${componentTextScale}em` }}
       tabIndex={0}
       onClick={(event) => {
         if (altClickOpensNote && event.altKey) {
@@ -338,12 +346,18 @@ function VisualReflowContent({
   onPreviewChange: (next: ReflowPreviewPointerState | null) => void;
   onRequirePdfDocument: () => void;
 }) {
+  const componentPreferences = useReflowComponentPreferences();
+  const visualPreference = segmentGroup.body.raw_type === 'chart'
+    ? componentPreferences.chart
+    : componentPreferences.figure;
   const bodyText = segmentGroup.body.markdown ?? segmentGroup.body.text;
 
   return (
     <div className="grid min-w-0 gap-3">
       <SegmentText
         entryId={entryId}
+        imageDetailEnabled={componentPreferences.imageClickToOpen}
+        imageSize={visualPreference.size}
         originalText={bodyText || segmentGroup.body.text}
         reflowTranslationMode={reflowTranslationMode}
         relatedImagePath={relatedImagePath}
@@ -355,7 +369,7 @@ function VisualReflowContent({
         workspaceRoot={workspaceRoot}
       />
 
-      {segmentGroup.captions.map((caption) => (
+      {componentPreferences.supportingText.visible ? segmentGroup.captions.map((caption) => (
         <RoleText
           key={caption.uid}
           label={segmentDisplayLabel(caption)}
@@ -372,9 +386,9 @@ function VisualReflowContent({
           onPreviewChange={onPreviewChange}
           onRequirePdfDocument={onRequirePdfDocument}
         />
-      ))}
+      )) : null}
 
-      {segmentGroup.footnotes.map((footnote) => (
+      {componentPreferences.supportingText.visible ? segmentGroup.footnotes.map((footnote) => (
         <RoleText
           key={footnote.uid}
           label={segmentDisplayLabel(footnote)}
@@ -392,7 +406,7 @@ function VisualReflowContent({
           onPreviewChange={onPreviewChange}
           onRequirePdfDocument={onRequirePdfDocument}
         />
-      ))}
+      )) : null}
     </div>
   );
 }
@@ -418,6 +432,7 @@ function TextReflowContent({
   translatedText: string | null;
   workspaceRoot: string | null;
 }) {
+  const componentPreferences = useReflowComponentPreferences();
   const text = segment.markdown ?? segment.text;
 
   if (segment.segment_type === "heading") {
@@ -437,7 +452,7 @@ function TextReflowContent({
 
   if (segment.segment_type === "list") {
     return (
-      <div className="min-w-0 text-[15px] leading-relaxed text-foreground">
+      <div className="min-w-0 text-[1em] leading-relaxed text-foreground">
         <InteractiveListContent
           entryId={entryId}
           hoverPreviewEnabled={hoverPreviewEnabled}
@@ -455,7 +470,7 @@ function TextReflowContent({
 
   if (segment.segment_type === "code") {
     return (
-      <div className="min-w-0 text-[13px] leading-normal">
+      <div className="min-w-0 text-[0.8125em] leading-normal">
         <SegmentText
           entryId={entryId}
           originalText={text}
@@ -470,7 +485,7 @@ function TextReflowContent({
 
   if (segment.segment_type === "math") {
     return (
-      <div className="min-w-0 text-[15px] leading-relaxed">
+      <div className="min-w-0 text-[1em] leading-relaxed">
         <SegmentText
           entryId={entryId}
           originalText={text}
@@ -489,7 +504,7 @@ function TextReflowContent({
     segment.segment_type === "aside_text"
   ) {
     return (
-      <div className="min-w-0 border-l-2 border-muted-foreground/25 pl-3 text-sm text-muted-foreground">
+      <div className="min-w-0 border-l-2 border-muted-foreground/25 pl-3 text-[0.875em] text-muted-foreground">
         <SourceSnapshotPreview
           allowScroll={false}
           compact
@@ -500,6 +515,7 @@ function TextReflowContent({
           )}
           segmentType={segment.segment_type}
           sourceEntryId={entryId}
+          showMermaidDiagrams={componentPreferences.diagramVisible}
           workspaceRoot={workspaceRoot}
         />
       </div>
@@ -556,10 +572,10 @@ function headingClassName(segment: SourceSegment) {
   const level = Number(segment.mineru_metadata?.level ?? 2);
   return cn(
     "min-w-0 break-words font-semibold leading-snug text-foreground",
-    level <= 1 && "text-2xl",
-    level === 2 && "text-xl",
-    level === 3 && "text-lg",
-    level >= 4 && "text-base",
+    level <= 1 && "text-[1.5em]",
+    level === 2 && "text-[1.25em]",
+    level === 3 && "text-[1.125em]",
+    level >= 4 && "text-[1em]",
   );
 }
 
@@ -663,14 +679,16 @@ function RoleText({
   onPreviewChange: (next: ReflowPreviewPointerState | null) => void;
   onRequirePdfDocument: () => void;
 }) {
+  const componentPreferences = useReflowComponentPreferences();
   return (
     <div
       className={cn(
         "min-w-0 overflow-hidden rounded-sm border-l-2 px-3 py-2",
         subtle
-          ? "bg-muted/30 text-xs text-muted-foreground"
-          : "bg-muted/40 text-sm",
+          ? "bg-muted/30 text-[0.75em] text-muted-foreground"
+          : "bg-muted/40 text-[0.875em]",
       )}
+      style={{ fontSize: `${reflowTextSizeScale(componentPreferences.supportingText.size)}em` }}
       onMouseMove={(event) => {
         event.stopPropagation();
         if (!hoverPreviewEnabled) {
@@ -825,6 +843,7 @@ function InteractiveListItems({
   segment: SourceSegment;
   workspaceRoot: string | null;
 }) {
+  const componentPreferences = useReflowComponentPreferences();
   const { notify } = useToast();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const items = useMemo(() => parseMarkdownListItems(markdown), [markdown]);
@@ -912,6 +931,7 @@ function InteractiveListItems({
                 relatedImagePath={relatedImagePath}
                 segmentType={segment.segment_type}
                 sourceEntryId={entryId || null}
+                showMermaidDiagrams={componentPreferences.diagramVisible}
                 workspaceRoot={workspaceRoot}
               />
             </div>
@@ -937,6 +957,8 @@ function listItemPreviewSegment(segment: SourceSegment, item: ReflowListItem): S
 
 function SegmentText({
   entryId,
+  imageDetailEnabled = false,
+  imageSize = 'standard',
   originalText,
   reflowTranslationMode,
   relatedImagePath,
@@ -945,6 +967,8 @@ function SegmentText({
   workspaceRoot,
 }: {
   entryId: string;
+  imageDetailEnabled?: boolean;
+  imageSize?: 'compact' | 'standard' | 'large' | 'full';
   originalText: string;
   reflowTranslationMode: ReflowTranslationMode;
   relatedImagePath?: string | null;
@@ -952,14 +976,18 @@ function SegmentText({
   translatedText: string | null;
   workspaceRoot: string | null;
 }) {
+  const componentPreferences = useReflowComponentPreferences();
   if (reflowTranslationMode === "translation") {
     return (
       <SourceSnapshotPreview
         allowScroll={false}
+        imageDetailEnabled={imageDetailEnabled}
+        imageSize={imageSize}
         markdown={translatedText?.trim() || originalText}
         relatedImagePath={relatedImagePath}
         segmentType={segment.segment_type}
         sourceEntryId={entryId || null}
+        showMermaidDiagrams={componentPreferences.diagramVisible}
         workspaceRoot={workspaceRoot}
       />
     );
@@ -970,10 +998,13 @@ function SegmentText({
       <div className="grid min-w-0 gap-2">
         <SourceSnapshotPreview
           allowScroll={false}
+          imageDetailEnabled={imageDetailEnabled}
+          imageSize={imageSize}
           markdown={originalText}
           relatedImagePath={relatedImagePath}
           segmentType={segment.segment_type}
           sourceEntryId={entryId || null}
+          showMermaidDiagrams={componentPreferences.diagramVisible}
           workspaceRoot={workspaceRoot}
         />
         <div className="min-w-0 border-t pt-2 text-[0.95em] text-muted-foreground">
@@ -982,6 +1013,7 @@ function SegmentText({
             markdown={translatedText}
             segmentType={segment.segment_type}
             sourceEntryId={entryId || null}
+            showMermaidDiagrams={componentPreferences.diagramVisible}
             workspaceRoot={workspaceRoot}
           />
         </div>
@@ -992,10 +1024,13 @@ function SegmentText({
   return (
     <SourceSnapshotPreview
       allowScroll={false}
+      imageDetailEnabled={imageDetailEnabled}
+      imageSize={imageSize}
       markdown={originalText}
       relatedImagePath={relatedImagePath}
       segmentType={segment.segment_type}
       sourceEntryId={entryId || null}
+      showMermaidDiagrams={componentPreferences.diagramVisible}
       workspaceRoot={workspaceRoot}
     />
   );

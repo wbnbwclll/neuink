@@ -1,37 +1,60 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AssistantContextSnapshot } from '@/shared/ipc/assistantApi';
+import type { AssistantTaskPlan } from '@/shared/types/assistant';
+import { DEFAULT_AGENT_RUNTIME_SETTINGS } from '@/shared/lib/agentRuntimeSettings';
+import type { OrchestratedTask } from './taskOrchestrator';
 
-import { compileAssistantExecutionContract } from './executionContract';
+import {
+  buildInvocationPlanForContract,
+  compileAssistantExecutionContract
+} from './executionContract';
 
-function snapshot({ note = false } = {}): AssistantContextSnapshot {
+function orchestration(
+  patch: Partial<Omit<OrchestratedTask, 'plan'>> & { plan?: Partial<AssistantTaskPlan> } = {}
+): OrchestratedTask {
+  const { plan: planPatch, ...orchestrationPatch } = patch;
+  const plan: AssistantTaskPlan = {
+    attachments: [],
+    capabilities: ['synthesize'],
+    citationPolicy: 'none',
+    confidence: 0.95,
+    deliverables: ['chat_answer'],
+    evidencePolicy: 'none',
+    intent: 'general_qa',
+    missing: [],
+    needsCurrentNote: false,
+    needsDocumentContext: false,
+    needsNoteProposal: false,
+    needsSegmentSearch: false,
+    rationale: 'Structured orchestration result.',
+    request: 'request',
+    target: { kind: 'chat_only' },
+    steps: [{ dependsOn: [], id: 'answer', kind: 'synthesize_answer' }],
+    ...planPatch
+  };
   return {
-    active_entry: {
-      entry_id: 'entry-1', entry_title: 'Paper', has_pdf: true, parse_status: 'completed'
-    },
-    active_note: note
-      ? {
-          entry_id: 'entry-1', entry_title: 'Paper', markdown: '# Note',
-          markdown_char_count: 6, note_id: 'note-1', note_title: 'Note',
-          source_link_count: 0, truncated: false
-        }
-      : null,
-    document: null,
-    pinned_segments: [],
-    warnings: []
+    orchestratorAgentId: 'task-orchestrator-agent',
+    plan,
+    requiredToolIds: [],
+    skillIdsToLoad: [],
+    sourcePolicy: 'none',
+    ...orchestrationPatch
   };
 }
 
 describe('assistant execution contracts', () => {
-  it('binds current-paper questions to a required active-document read', () => {
-    const contract = compileAssistantExecutionContract({
-      activeSurface: {
-        capturedAt: '2026-07-20T00:00:00Z', entryId: 'entry-1', kind: 'pdf',
-        noteId: null, pane: 'right', segmentUid: null, surfaceKey: 'pdf:entry-1'
+  it('preserves the orchestrator tool and source decisions without keyword rerouting', () => {
+    const contract = compileAssistantExecutionContract(orchestration({
+      plan: {
+        citationPolicy: 'required',
+        evidencePolicy: 'required',
+        intent: 'paper_summary',
+        needsDocumentContext: true,
+        target: { entryId: 'entry-1', kind: 'chat_only' }
       },
-      question: '当前论文讲了什么？',
-      snapshot: snapshot()
-    });
+      requiredToolIds: ['read_entry_assistant_context'],
+      sourcePolicy: 'active_context_only'
+    }));
 
     expect(contract.plan.intent).toBe('paper_summary');
     expect(contract.requiredToolIds).toEqual(['read_entry_assistant_context']);
@@ -39,46 +62,55 @@ describe('assistant execution contracts', () => {
     expect(contract.failurePolicy).toBe('stop');
   });
 
-  it('routes external literature requests to Sciverse without naming the provider', () => {
-    const contract = compileAssistantExecutionContract({
-      question: '请检索外部文献，分析蛋白质折叠研究的主要局限。',
-      snapshot: snapshot()
-    });
+  it('keeps note creation separate from editing an active note', () => {
+    const contract = compileAssistantExecutionContract(orchestration({
+      plan: {
+        capabilities: ['propose_note'],
+        deliverables: ['note_create_proposal'],
+        intent: 'note_create',
+        needsNoteProposal: true,
+        noteAction: 'create',
+        target: { entryId: 'entry-1', kind: 'markdown_note' }
+      },
+      requiredToolIds: ['note.propose_create'],
+      sourcePolicy: 'active_context_only'
+    }));
 
-    expect(contract.plan.intent).toBe('paper_search');
-    expect(contract.requiredToolIds).toContain('search_sciverse_evidence');
-    expect(contract.sourcePolicy).toBe('sciverse_only');
+    expect(contract.plan.intent).toBe('note_create');
+    expect(contract.plan.missing).toEqual([]);
+    expect(contract.requiredToolIds).toEqual(['note.propose_create']);
   });
 
-  it('infers scholarly retrieval for an evidence-oriented scientific question', () => {
-    const contract = compileAssistantExecutionContract({
-      question: 'AlphaFold2 蛋白质结构预测的准确性与主要局限是什么？',
-      snapshot: snapshot()
-    });
+  it('preserves Skill selections made by the orchestrator', () => {
+    const contract = compileAssistantExecutionContract(orchestration({
+      skillIdsToLoad: ['reading-note']
+    }));
 
-    expect(contract.requiredToolIds).toContain('search_sciverse_evidence');
-    expect(contract.sourcePolicy).toBe('sciverse_only');
+    expect(contract.skillIdsToLoad).toEqual(['reading-note']);
   });
 
-  it('requires a note read and a line-addressed proposal for current-note edits', () => {
-    const contract = compileAssistantExecutionContract({
-      question: '把当前 Markdown 笔记第 3 行修改得更准确。',
-      snapshot: snapshot({ note: true })
-    });
+  it('exposes direct Entry creation as an explicit workspace write', () => {
+    const contract = compileAssistantExecutionContract(orchestration({
+      plan: {
+        capabilities: ['create_entry'],
+        deliverables: ['entry_created'],
+        intent: 'entry_create',
+        target: { kind: 'new_entry' }
+      },
+      requiredToolIds: ['create_entry']
+    }));
+    const invocation = buildInvocationPlanForContract(
+      contract,
+      DEFAULT_AGENT_RUNTIME_SETTINGS
+    );
 
-    expect(contract.plan.intent).toBe('note_update');
-    expect(contract.plan.editCoordinatePolicy).toBe('line_and_hash');
-    expect(contract.requiredToolIds).toEqual(['read_current_note', 'note.propose_patch']);
-    expect(contract.plan.target.noteId).toBe('note-1');
+    expect(invocation.enabledToolIds).toContain('create_entry');
+    expect(invocation.writePolicy).toBe('workspace_write');
   });
 
-  it('does not require workspace tools for ordinary general questions', () => {
-    const contract = compileAssistantExecutionContract({
-      question: '请解释什么是贝叶斯推断。',
-      snapshot: snapshot()
-    });
+  it('allows general answers only when no required evidence or side effect exists', () => {
+    const contract = compileAssistantExecutionContract(orchestration());
 
-    expect(contract.plan.intent).toBe('general_qa');
     expect(contract.requiredToolIds).toEqual([]);
     expect(contract.failurePolicy).toBe('allow_general_fallback');
   });

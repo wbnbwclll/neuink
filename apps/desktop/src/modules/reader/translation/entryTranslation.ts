@@ -221,7 +221,7 @@ export async function translateEntrySegments({
       const batch = batches[index];
       onProgress?.({
         detail: `${batch.length} 个 Segment`,
-        message: `翻译批次 ${index + 1}/${batches.length}`,
+        message: '正在翻译',
         phase: 'batch',
         translation: response.translation
       });
@@ -251,7 +251,7 @@ export async function translateEntrySegments({
       );
       onProgress?.({
         detail: `${batch.length} 个 Segment 已写入翻译结果`,
-        message: `翻译中 ${index + 1}/${batches.length}`,
+        message: '正在翻译',
         phase: 'batch',
         translation: response.translation
       });

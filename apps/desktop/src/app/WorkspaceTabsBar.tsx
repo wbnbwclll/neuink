@@ -1,4 +1,4 @@
-import { ArrowLeftRight, ChevronDown, PanelRight, X } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, Link2, PanelRight, X } from 'lucide-react';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -25,7 +25,17 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { surfaceKey, type WorkspacePaneId, type WorkspaceSurface, type WorkspaceSurfaceLayout } from './workspaceSurface';
+import {
+  surfaceKey,
+  workspaceSurfaceLabel,
+  type WorkspacePaneId,
+  type WorkspaceSurface,
+  type WorkspaceSurfaceLayout
+} from './workspaceSurface';
+import {
+  resolveWorkspaceSurfacePair,
+  workspaceSurfacePairRelationLabel
+} from './workspaceSurfacePairing';
 
 const TAB_WIDTH = 176;
 const MENU_WIDTH = 34;
@@ -72,6 +82,11 @@ export function WorkspaceTabsBar({
   const suppressNextTabClickRef = useRef(false);
   const dragActive = pointerDrag?.dragging === true;
   const draggingKey = pointerDrag?.dragging ? surfaceKey(pointerDrag.surface) : null;
+  const pairRelationLabel = layout.right
+    ? workspaceSurfacePairRelationLabel(
+        resolveWorkspaceSurfacePair(layout.left, layout.right).relation
+      )
+    : null;
 
   const startPointerDrag = (surface: WorkspaceSurface, event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.target instanceof Element && event.target.closest('[data-tab-close="true"]')) {
@@ -225,6 +240,7 @@ export function WorkspaceTabsBar({
     <div className={cn(
       'tabsbar workspace-tabsbar',
       split && 'is-split',
+      pairRelationLabel && 'has-pair-status',
       dragActive && 'is-tab-dragging',
       dragActive && pointerDrag && isAssistantContextSurface(pointerDrag.surface) && 'is-assistant-context-dragging'
     )}>
@@ -269,6 +285,17 @@ export function WorkspaceTabsBar({
       </div>
       {split ? (
         <div className="workspace-tabsbar-actions">
+          {pairRelationLabel ? (
+            <span
+              aria-label={pairRelationLabel}
+              className="workspace-tabsbar-pair-status"
+              role="status"
+              title={pairRelationLabel}
+            >
+              <Link2 size={12} aria-hidden="true" />
+              联动
+            </span>
+          ) : null}
           <Button
             aria-label="交换左右分屏"
             size="icon-xs"
@@ -301,7 +328,7 @@ export function WorkspaceTabsBar({
                 width: dragVisualRef.current.rect.width
               }}
             >
-              <span className="truncate">{surfaceLabel(pointerDrag.surface, entries)}</span>
+              <span className="truncate">{workspaceSurfaceLabel(pointerDrag.surface, entries)}</span>
             </div>
           </div>,
           document.body
@@ -393,13 +420,13 @@ function TabPane({
           <Tooltip>
             <TooltipTrigger asChild>
               <button type="button" onClick={() => onSelect(pane, surface)}>
-                <span className="truncate">{surfaceLabel(surface, entries)}</span>
+                <span className="truncate">{workspaceSurfaceLabel(surface, entries)}</span>
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>{surfaceLabel(surface, entries)}</TooltipContent>
+            <TooltipContent side="bottom" sideOffset={6}>{workspaceSurfaceLabel(surface, entries)}</TooltipContent>
           </Tooltip>
           <button
-            aria-label={`关闭${surfaceLabel(surface, entries)}`}
+            aria-label={`关闭${workspaceSurfaceLabel(surface, entries)}`}
             data-tab-close="true"
             type="button"
             onClick={() => onClose(pane, surface)}
@@ -432,7 +459,7 @@ function TabPane({
           <DropdownMenuContent align="end" className="w-72">
             {hidden.map((surface) => (
               <DropdownMenuItem key={surfaceKey(surface)} onSelect={() => onSelect(pane, surface)}>
-                <span className="truncate">{surfaceLabel(surface, entries)}</span>
+                <span className="truncate">{workspaceSurfaceLabel(surface, entries)}</span>
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -497,22 +524,4 @@ function useElementWidth(ref: RefObject<HTMLDivElement | null>) {
     return () => observer.disconnect();
   }, [ref]);
   return width;
-}
-
-function surfaceLabel(surface: WorkspaceSurface, entries: Array<{ id: string; title: string }>) {
-  const title = 'entryId' in surface ? entries.find((entry) => entry.id === surface.entryId)?.title ?? '条目' : '';
-  switch (surface.kind) {
-    case 'library': return '条目库';
-    case 'settings': return '设置';
-    case 'create-entry': return '新建条目';
-    case 'mineru-client-guide': return 'MinerU 客户端教程';
-    case 'tag-editor': return '标签管理';
-    case 'entry-overview': return `${title} · 概览`;
-    case 'pdf': return `${title} · PDF`;
-    case 'reflow': return `${title} · 重排视图`;
-    case 'note': return `${title} · 笔记`;
-    case 'segment-notes': case 'annotations': return `${title} · 片段记录`;
-    case 'source-links': return `${title} · 来源链接`;
-    case 'entry-trash': return `${title} · 回收站`;
-  }
 }

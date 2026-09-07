@@ -95,7 +95,9 @@ export function JobStatusDock({
                         </span>
                       </div>
                       <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                        {job.message || job.error || jobStatusLabel(job)}
+                        {job.kind === 'translation' && (job.status === 'processing' || job.status === 'queued')
+                          ? translationJobDescription(job.message)
+                          : job.error || job.message || jobStatusLabel(job)}
                       </div>
                       <Progress
                         className="mt-2 h-1.5"
@@ -120,7 +122,9 @@ function summarizeJobs(jobs: Job[], activeCount: number) {
 
   if (activeCount > 0) {
     return {
-      description: latest?.message || `有 ${activeCount} 个任务正在运行`,
+      description: latest?.kind === 'translation'
+        ? translationJobDescription(latest.message)
+        : latest?.message || `有 ${activeCount} 个任务正在运行`,
       icon: Loader2,
       iconClass: 'text-primary',
       title: activeCount === 1 ? '1 个任务进行中' : `${activeCount} 个任务进行中`
@@ -151,6 +155,11 @@ function summarizeJobs(jobs: Job[], activeCount: number) {
     iconClass: 'text-success',
     title: '最近任务'
   };
+}
+
+function translationJobDescription(message?: string | null) {
+  const received = message?.match(/已接收\s*(\d+)\s*字/)?.[1];
+  return received ? `正在翻译 · 已接收 ${received} 字` : '正在翻译';
 }
 
 function jobTitle(job: Job) {

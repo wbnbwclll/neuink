@@ -58,7 +58,9 @@ export function resolveAssistantRunStatus({
   if (name.includes('verifier')) return active('正在验证');
   if (name.includes('search')) return active('正在检索');
   if (name.includes('hydrate') || name.includes('read')) return active('正在读取');
-  if (name.includes('planner') || name.includes('subagent')) return active('正在规划');
+  if (name.includes('planner') || name.includes('subagent') || name.includes('orchestrate')) {
+    return active('正在规划');
+  }
   if (streaming) return active('正在回答');
   return active('正在思考');
 }

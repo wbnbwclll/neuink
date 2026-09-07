@@ -16,6 +16,10 @@ pub enum WorkspaceError {
     NoteAlreadyExists(String),
     #[error("note does not exist: {0}")]
     NoteMissing(String),
+    #[error("note changed after it was opened: {0}")]
+    NoteRevisionConflict(String),
+    #[error("invalid note document: {0}")]
+    InvalidNoteDocument(String),
     #[error("tag already exists under the same parent: {0}")]
     TagAlreadyExists(String),
     #[error("tag does not exist: {0}")]
