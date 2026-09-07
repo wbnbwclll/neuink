@@ -1084,7 +1084,10 @@ pub async fn retry_pdf_parse(
     let Some(pdf) = entry.pdf else {
         return Err("entry has no PDF to parse".to_string());
     };
-    if !matches!(pdf.parse.status, PdfParseStatus::Failed | PdfParseStatus::Succeeded) {
+    if !matches!(
+        pdf.parse.status,
+        PdfParseStatus::Failed | PdfParseStatus::Succeeded
+    ) {
         return Err("只有解析失败或已完成的 PDF 可以重新解析".to_string());
     }
 

@@ -695,11 +695,9 @@ impl TranslationPipeline {
                             // 模型漏译的 segment 会被 translated_segment 判定为 failed，
                             // 与整批失败一样留给「重试失败」处理，不再终止全部任务。
                             if let Err(error) = self.update_translation(|translation| {
-                                let segments = ordinary_segments
-                                    .iter()
-                                    .map(|segment| {
-                                        translated_segment(segment, translated.get(&segment.uid))
-                                    });
+                                let segments = ordinary_segments.iter().map(|segment| {
+                                    translated_segment(segment, translated.get(&segment.uid))
+                                });
                                 upsert_segments(translation, segments);
                             }) {
                                 record_fatal(&fatal_error, error);
@@ -722,7 +720,8 @@ impl TranslationPipeline {
                         }
                     }
                     done_counter.fetch_add(translated_count, Ordering::Relaxed);
-                    if let Err(error) = self.emit_translation_progress(app, job_id, "正在翻译") {
+                    if let Err(error) = self.emit_translation_progress(app, job_id, "正在翻译")
+                    {
                         record_fatal(&fatal_error, error);
                         return;
                     }
@@ -767,7 +766,8 @@ impl TranslationPipeline {
                     if translated_successfully {
                         done_counter.fetch_add(1, Ordering::Relaxed);
                     }
-                    if let Err(error) = self.emit_translation_progress(app, job_id, "正在翻译") {
+                    if let Err(error) = self.emit_translation_progress(app, job_id, "正在翻译")
+                    {
                         record_fatal(&fatal_error, error);
                         return;
                     }
@@ -1196,8 +1196,10 @@ impl LlmClient {
             {
                 Ok(response) => response,
                 Err(_) => {
-                    last_timeout_error =
-                        format!("LLM request timed out after {} seconds.", timeout_duration.as_secs());
+                    last_timeout_error = format!(
+                        "LLM request timed out after {} seconds.",
+                        timeout_duration.as_secs()
+                    );
                     continue;
                 }
             }
@@ -1268,29 +1270,25 @@ impl LlmClient {
             let mut saw_sse_data = false;
             let mut received_chars = 0usize;
             loop {
-                let chunk = match timeout(
-                    idle_timeout,
-                    tokio_stream::StreamExt::next(&mut stream),
-                )
-                .await
-                {
-                    Ok(chunk) => chunk,
-                    Err(_) => {
-                        // 空闲超时：还没收到任何内容就升级超时重试；已有内容则报错，
-                        // 让上层用非流式路径重新完整请求。
-                        if received_chars == 0 {
-                            last_timeout_error = format!(
-                                "LLM stream idle after {} seconds.",
-                                idle_timeout.as_secs()
-                            );
-                            break;
+                let chunk =
+                    match timeout(idle_timeout, tokio_stream::StreamExt::next(&mut stream)).await {
+                        Ok(chunk) => chunk,
+                        Err(_) => {
+                            // 空闲超时：还没收到任何内容就升级超时重试；已有内容则报错，
+                            // 让上层用非流式路径重新完整请求。
+                            if received_chars == 0 {
+                                last_timeout_error = format!(
+                                    "LLM stream idle after {} seconds.",
+                                    idle_timeout.as_secs()
+                                );
+                                break;
+                            }
+                            return Err(format!(
+                                "LLM stream stalled after {received_timeout} seconds of silence.",
+                                received_timeout = idle_timeout.as_secs()
+                            ));
                         }
-                        return Err(format!(
-                            "LLM stream stalled after {received_timeout} seconds of silence.",
-                            received_timeout = idle_timeout.as_secs()
-                        ));
-                    }
-                };
+                    };
                 let Some(chunk) = chunk else {
                     break;
                 };
@@ -1936,9 +1934,9 @@ fn translation_payload(translation: &EntryTranslation) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        list_translation_units, parse_json_object, protect_formula_spans, request_timeout_for_attempt,
-        restore_formula_spans, should_translate_segment, split_list_translation_units,
-        translation_budgets, MAX_PAPER_CONTEXT_BUDGET,
+        list_translation_units, parse_json_object, protect_formula_spans,
+        request_timeout_for_attempt, restore_formula_spans, should_translate_segment,
+        split_list_translation_units, translation_budgets, MAX_PAPER_CONTEXT_BUDGET,
     };
     use std::time::Duration;
 

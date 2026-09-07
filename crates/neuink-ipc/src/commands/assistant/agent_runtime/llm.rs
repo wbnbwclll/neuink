@@ -37,10 +37,7 @@ pub(crate) async fn complete_chat(
         return Err(format!("LLM request failed: HTTP {status}. {message}"));
     }
 
-    let payload = response
-        .text()
-        .await
-        .map_err(|error| error.to_string())?;
+    let payload = response.text().await.map_err(|error| error.to_string())?;
     parse_chat_response(profile.api_protocol, &payload)
 }
 
