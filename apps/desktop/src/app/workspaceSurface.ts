@@ -285,5 +285,6 @@ export function workspaceSurfaceLabel(
     case 'segment-notes': return `${title} · 片段记录`;
     case 'source-links': return `${title} · 来源链接`;
     case 'entry-trash': return `${title} · 回收站`;
+    case 'web': return `${surface.title || surface.url} · 网页`;
   }
 }
