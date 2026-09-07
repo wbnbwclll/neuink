@@ -13,4 +13,5 @@ pub mod tag;
 #[cfg(test)]
 mod tag_tests;
 pub mod translation;
+pub mod web_search;
 pub mod workspace;

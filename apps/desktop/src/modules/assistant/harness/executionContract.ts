@@ -278,7 +278,7 @@ function toolsForContract(contract: AssistantExecutionContract, configuredIds: A
   } else if (contract.sourcePolicy === 'sciverse_only') {
     supporting.add('search_sciverse_evidence');
     supporting.add('read_sciverse_content');
-    supporting.add('websousuo');
+    supporting.add('web_search');
   } else {
     for (const toolId of configuredIds) {
       if (!isWriteTool(toolId)) supporting.add(toolId);

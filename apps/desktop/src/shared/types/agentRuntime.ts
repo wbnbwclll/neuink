@@ -15,7 +15,8 @@ export type AgentToolId =
   | 'skill.search'
   | 'skill.load'
   | 'task.run_subagent'
-  | 'websousuo'
+  | 'web_search'
+  | 'read_web_page'
   | `mcp.${string}`;
 
 export type AgentLoopStatus =

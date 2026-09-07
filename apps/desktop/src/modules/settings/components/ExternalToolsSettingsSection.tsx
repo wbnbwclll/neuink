@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils';
 import { SciverseSettingsSection } from '@/modules/sciverse/components/SciverseSettingsSection';
 
 import type { SettingsPanelLayoutProps } from './SettingsPanelLayout';
+import { WebSearchSettingsSection } from './WebSearchSettingsSection';
 
 export function ExternalToolsSettingsSection({
   props
@@ -25,6 +26,7 @@ export function ExternalToolsSettingsSection({
           </p>
         </div>
 
+        <WebSearchSettingsSection active={active} />
         <SciverseSettingsSection active={active} />
       </div>
     </TabsContent>

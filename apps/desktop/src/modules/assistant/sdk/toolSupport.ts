@@ -68,7 +68,7 @@ const SUPPORTED_TOOL_NAMES = new Set([
   'get_sciverse_metadata_catalog',
   'search_sciverse_paper_schema',
   'get_sciverse_paper_schema',
-  'websousuo'
+  'web_search'
 ]);
 
 export function scopedEnabledToolIds(
@@ -250,11 +250,18 @@ export function normalizeToolInput(
     return {};
   }
 
-  if (toolName === 'websousuo') {
+  if (toolName === 'web_search') {
     return {
       root,
       query: requiredString(object.query, 'query'),
       top_k: clampNumber(object.top_k, 1, 20, 8)
+    };
+  }
+
+  if (toolName === 'read_web_page') {
+    return {
+      root,
+      url: requiredString(object.url, 'url')
     };
   }
 
@@ -363,18 +370,23 @@ export async function executeTool(
     };
   }
 
-  if (toolName === 'websousuo') {
-    const result = await invokeAssistantTool<WebsousuoResponse>('websousuo', input);
-    const formatted = formatWebsousuoOutput(result, addSource, contextBudget);
+  if (toolName === 'web_search') {
+    const result = await invokeAssistantTool<WebSearchResponse>('web_search', input);
+    const formatted = formatWebSearchOutput(result, addSource, contextBudget);
     return {
       modelOutput: {
         evidence: formatted.evidence,
-        kind: 'websousuo',
+        kind: 'web_search',
         query: result.query
       },
       sources: formatted.sources,
       summary: formatted.summary
     };
+  }
+
+  if (toolName === 'read_web_page') {
+    const result = await invokeAssistantTool<ReadWebPageResponse>('read_web_page', input);
+    return formatReadWebPageOutput(result, addSource, contextBudget);
   }
 
   throw new Error(`Unsupported assistant tool: ${toolName}`);
@@ -619,22 +631,22 @@ export function formatSciverseSearchOutput(
   };
 }
 
-export type WebsousuoHit = {
+export type WebSearchHit = {
   title: string;
   url: string;
   snippet: string;
 };
 
-export type WebsousuoResponse = {
+export type WebSearchResponse = {
   query: string;
-  results: WebsousuoHit[];
+  results: WebSearchHit[];
 };
 
-const MAX_WEBSOUSUO_SNIPPET = 240;
-const MAX_WEBSOUSUO_RESULTS = 12;
+const MAX_WEBSEARCH_SNIPPET = 240;
+const MAX_WEBSEARCH_RESULTS = 12;
 
-export function formatWebsousuoOutput(
-  result: WebsousuoResponse,
+export function formatWebSearchOutput(
+  result: WebSearchResponse,
   addSource: (source: ConversationSourceLink) => number,
   contextBudget: number
 ) {
@@ -653,8 +665,8 @@ export function formatWebsousuoOutput(
     if (!hit.url || seen.has(hit.url)) continue;
     seen.add(hit.url);
 
-    const snippet = compactQuote(hit.snippet).slice(0, MAX_WEBSOUSUO_SNIPPET);
-    if (evidence.length + 1 > MAX_WEBSOUSUO_RESULTS || usedBudget + snippet.length > budget) {
+    const snippet = compactQuote(hit.snippet).slice(0, MAX_WEBSEARCH_SNIPPET);
+    if (evidence.length + 1 > MAX_WEBSEARCH_RESULTS || usedBudget + snippet.length > budget) {
       break;
     }
     usedBudget += snippet.length;
@@ -682,6 +694,45 @@ export function formatWebsousuoOutput(
       evidence.length > 0
         ? `Found ${evidence.length} web source${evidence.length === 1 ? '' : 's'} for "${result.query}".`
         : `No web results for "${result.query}".`
+  };
+}
+
+export type ReadWebPageResponse = {
+  url: string;
+  title: string;
+  markdown: string;
+  markdown_char_count: number;
+  truncated: boolean;
+};
+
+export function formatReadWebPageOutput(
+  result: ReadWebPageResponse,
+  addSource: (source: ConversationSourceLink) => number,
+  contextBudget: number
+) {
+  const budget = Math.max(1, contextBudget);
+  const markdown = trimToBudget(result.markdown, budget);
+  const source: WebConversationSourceLink = {
+    provider: 'web',
+    title: result.title.trim() || result.url,
+    url: result.url,
+    quote: compactQuote(markdown)
+  };
+  addSource(source);
+
+  return {
+    modelOutput: {
+      kind: 'read_web_page',
+      markdown,
+      markdown_char_count: result.markdown_char_count,
+      truncated: result.truncated || markdown.length < result.markdown.length,
+      title: result.title,
+      url: result.url
+    },
+    sources: [source],
+    summary: `Read web page "${result.title || result.url}" (${result.markdown_char_count} chars${
+      result.truncated ? ', truncated' : ''
+    }).`
   };
 }
 
@@ -1791,8 +1842,11 @@ export function toolDescription(descriptor: AssistantToolDescriptor) {
   if (descriptor.name === 'read_sciverse_content') {
     return `${descriptor.description} Use bounded reads and continue with next_offset only when more context is necessary.`;
   }
-  if (descriptor.name === 'websousuo') {
+  if (descriptor.name === 'web_search') {
     return `${descriptor.description} Preserve every returned source URL in the answer.`;
+  }
+  if (descriptor.name === 'read_web_page') {
+    return `${descriptor.description} Read the most promising web_search result before answering so you can cite exact, verifiable content instead of just snippets.`;
   }
   return descriptor.description;
 }
@@ -1861,8 +1915,11 @@ export function runningSummary(toolName: string, input: JsonObject) {
   if (toolName === 'read_entry_assistant_context') {
     return `Reading parsed markdown for Entry ${String(input.entry_id)}.`;
   }
-  if (toolName === 'websousuo') {
+  if (toolName === 'web_search') {
     return `Searching the web for "${String(input.query)}".`;
+  }
+  if (toolName === 'read_web_page') {
+    return `Reading web page ${String(input.url)}.`;
   }
   return 'Running assistant tool.';
 }

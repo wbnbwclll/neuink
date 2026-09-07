@@ -18,6 +18,8 @@ neuink-search = { path = "../neuink-search" }
 neuink-sciverse = { path = "../neuink-sciverse" }
 neuink-workspace = { path = "../neuink-workspace" }
 reqwest.workspace = true
+roxmltree.workspace = true
+rs-trafilatura.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true

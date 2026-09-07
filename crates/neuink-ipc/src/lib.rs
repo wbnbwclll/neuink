@@ -119,5 +119,9 @@ pub fn register_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
         commands::translation::translate_entry_segment,
         commands::translation::save_translation_context,
         commands::translation::upsert_translated_segments,
+        commands::web_search::get_web_search_settings,
+        commands::web_search::save_web_search_settings,
+        commands::web_search::reveal_tavily_api_token,
+        commands::web_search::test_web_search_provider,
     ])
 }

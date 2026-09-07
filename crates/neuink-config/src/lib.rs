@@ -21,6 +21,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub search: SearchSettings,
     #[serde(default)]
+    pub web_search: WebSearchSettings,
+    #[serde(default)]
     pub recent_workspaces: Vec<RecentWorkspace>,
     pub autosave_interval_ms: Option<u64>,
     pub theme: Option<String>,
@@ -69,6 +71,38 @@ impl Default for SearchSettings {
 
 fn default_searxng_base_url() -> String {
     "http://localhost:8080".to_string()
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct WebSearchSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_web_search_providers")]
+    pub providers: Vec<SearchProvider>,
+    #[serde(default)]
+    pub tavily_api_key_ref: Option<String>,
+}
+
+impl Default for WebSearchSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            providers: default_web_search_providers(),
+            tavily_api_key_ref: None,
+        }
+    }
+}
+
+fn default_web_search_providers() -> Vec<SearchProvider> {
+    vec![SearchProvider::Duckduckgo]
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchProvider {
+    Duckduckgo,
+    Arxiv,
+    Tavily,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

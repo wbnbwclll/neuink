@@ -2,8 +2,6 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     process::Command,
-    sync::{Mutex, OnceLock},
-    time::Instant,
 };
 
 use neuink_config::LlmProfile;
@@ -13,8 +11,6 @@ use neuink_workspace::Workspace;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use ddgs::{Ddgs, TextOptions};
-
 use super::sciverse::{
     assistant_tools_enabled, sciverse_agentic_search, sciverse_meta_catalog, sciverse_meta_search,
     sciverse_paper_schema, sciverse_paper_schema_search, sciverse_read_content,
@@ -22,6 +18,10 @@ use super::sciverse::{
 };
 use super::search::{search_segments, SearchSegmentsRequest};
 use super::settings::read_assistant_profile;
+use super::web_search::{
+    invoke_read_web_page_tool, invoke_web_search_tool, read_web_page_descriptor,
+    web_search_descriptor, web_search_tools_enabled,
+};
 
 mod agent_run_registry;
 mod agent_runtime;
@@ -102,26 +102,6 @@ pub struct ReadEntryAssistantContextResponse {
     pub entry_title: String,
     pub markdown: String,
     pub sources: Vec<EntryAssistantSource>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct WebsousuoRequest {
-    pub query: String,
-    #[serde(default)]
-    pub top_k: Option<u32>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct WebsousuoResult {
-    pub title: String,
-    pub url: String,
-    pub snippet: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct WebsousuoResponse {
-    pub query: String,
-    pub results: Vec<WebsousuoResult>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -269,22 +249,10 @@ pub fn list_tools<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Vec<ToolDescri
                 "required": ["root", "entry_id"]
             }),
         },
-        ToolDescriptor {
-            name: "websousuo".to_string(),
-            description: "Search the web for up-to-date information outside the local Neuink workspace. Use this for current events, general knowledge, or external sources not present in the library."
-                .to_string(),
-            parameters_schema: json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "root": {"type": "string"},
-                    "query": {"type": "string", "minLength": 1, "maxLength": 4096},
-                    "top_k": {"type": "integer", "minimum": 1, "maximum": 20}
-                },
-                "required": ["root", "query"]
-            }),
-        },
-    ];
+        ];
+    if web_search_tools_enabled(&app) {
+        tools.extend([web_search_descriptor(), read_web_page_descriptor()]);
+    }
     if assistant_tools_enabled(&app) {
         tools.extend([
             ToolDescriptor {
@@ -672,101 +640,13 @@ pub async fn invoke_tool<R: tauri::Runtime>(
                 serde_json::from_value(request.args).map_err(|error| error.to_string())?;
             read_entry_assistant_context(args).map(|response| json!(response))
         }
-        "websousuo" => {
-            let args: WebsousuoRequest =
-                serde_json::from_value(request.args).map_err(|error| error.to_string())?;
-            let result = websousuo_search(args).await?;
-            serde_json::to_value(result).map_err(|error| error.to_string())
-        }
+        "web_search" => invoke_web_search_tool(app, request.args).await,
+        "read_web_page" => invoke_read_web_page_tool(request.args).await,
         name if name.starts_with("mcp.") => {
             agent_runtime::invoke_mcp_tool(name.to_string(), request.args)
         }
         _ => Err(format!("unknown tool: {}", request.name)),
     }
-}
-
-const WEBSOUSUO_CACHE_CAPACITY: usize = 512;
-
-struct CachedWebsousuo {
-    stored_at: Instant,
-    response: WebsousuoResponse,
-}
-
-static WEBSOUSUO_CLIENT: OnceLock<Result<Ddgs, String>> = OnceLock::new();
-static WEBSOUSUO_CACHE: OnceLock<Mutex<HashMap<String, CachedWebsousuo>>> = OnceLock::new();
-
-fn websousuo_client() -> Result<&'static Ddgs, String> {
-    WEBSOUSUO_CLIENT
-        .get_or_init(|| Ddgs::new().map_err(|error| format!("websousuo init failed: {error}")))
-        .as_ref()
-        .map_err(String::clone)
-}
-
-fn cached_websousuo(key: &str) -> Option<WebsousuoResponse> {
-    WEBSOUSUO_CACHE
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap()
-        .get(key)
-        .map(|entry| entry.response.clone())
-}
-
-fn store_websousuo(key: String, response: WebsousuoResponse) {
-    let mut cache = WEBSOUSUO_CACHE
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap();
-    if cache.len() >= WEBSOUSUO_CACHE_CAPACITY && !cache.contains_key(&key) {
-        if let Some(oldest) = cache
-            .iter()
-            .min_by_key(|(_, entry)| entry.stored_at)
-            .map(|(oldest_key, _)| oldest_key.clone())
-        {
-            cache.remove(&oldest);
-        }
-    }
-    cache.insert(
-        key,
-        CachedWebsousuo {
-            stored_at: Instant::now(),
-            response,
-        },
-    );
-}
-
-async fn websousuo_search(request: WebsousuoRequest) -> Result<WebsousuoResponse, String> {
-    let query = request.query.trim().to_string();
-    if query.is_empty() {
-        return Err("websousuo requires a non-empty query".to_string());
-    }
-    let top_k = request.top_k.unwrap_or(8).clamp(1, 20) as usize;
-    let key = format!("{query}:{top_k}");
-
-    if let Some(cached) = cached_websousuo(&key) {
-        return Ok(cached);
-    }
-
-    let ddgs = websousuo_client()?;
-    let hits = ddgs
-        .text_with_options(&query, TextOptions::default().max_results(top_k))
-        .await
-        .map_err(|error| format!("websousuo request failed: {error}"))?;
-
-    let results = hits
-        .into_iter()
-        .map(|hit| WebsousuoResult {
-            title: if hit.title.trim().is_empty() {
-                hit.href.clone()
-            } else {
-                hit.title
-            },
-            url: hit.href,
-            snippet: hit.body,
-        })
-        .collect();
-    let response = WebsousuoResponse { query, results };
-    store_websousuo(key, response.clone());
-    Ok(response)
 }
 
 #[tauri::command]

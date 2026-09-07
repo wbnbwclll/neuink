@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  formatReadWebPageOutput,
   formatSciverseSearchOutput,
-  formatWebsousuoOutput,
+  formatWebSearchOutput,
   applyMarkdownPatchPreview,
   markdownPatchOperations,
   noteProposalAction,
@@ -171,10 +172,10 @@ describe('Sciverse assistant tools', () => {
   });
 });
 
-describe('formatWebsousuoOutput', () => {
+describe('formatWebSearchOutput', () => {
   it('dedupes by URL, deduplicates markers, and caps to the configured budget', () => {
     const sources: Array<Partial<{ provider: string; title: string; url: string; quote: string }>> = [];
-    const output = formatWebsousuoOutput({
+    const output = formatWebSearchOutput({
       query: 'neuink',
       results: [
         { title: 'A', url: 'https://a.example', snippet: 'Alpha snippet' },
@@ -206,7 +207,7 @@ describe('formatWebsousuoOutput', () => {
     // Each snippet is compact-quoted to <= 240 chars. A 250-char first result
     // leaves less than one more snippet worth of a 280-char budget, so the
     // second result is cut off the evidence list.
-    const output = formatWebsousuoOutput({
+    const output = formatWebSearchOutput({
       query: 'budget',
       results: [
         { title: 'One', url: 'https://1.example', snippet: new Array(250).fill('a').join('') },
@@ -216,5 +217,46 @@ describe('formatWebsousuoOutput', () => {
 
     expect(output.evidence).toHaveLength(1);
     expect(output.evidence[0].url).toBe('https://1.example');
+  });
+});
+
+describe('formatReadWebPageOutput', () => {
+  it('registers the page as a web source and hands the markdown body to the model', () => {
+    const sources: unknown[] = [];
+    const output = formatReadWebPageOutput({
+      url: 'https://a.example',
+      title: 'Example',
+      markdown: '# Title\n\nBody text here.',
+      markdown_char_count: 29,
+      truncated: false
+    }, (source) => {
+      sources.push(source);
+      return sources.length;
+    }, 10_000);
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toMatchObject({ provider: 'web', url: 'https://a.example' });
+    expect(output.modelOutput).toMatchObject({
+      kind: 'read_web_page',
+      markdown: '# Title\n\nBody text here.',
+      url: 'https://a.example',
+      truncated: false
+    });
+    expect(output.summary).toContain('Example');
+  });
+
+  it('trims the body to the context budget and marks it truncated', () => {
+    const body = new Array(600).fill('a').join('');
+    const output = formatReadWebPageOutput({
+      url: 'https://big.example',
+      title: '',
+      markdown: body,
+      markdown_char_count: 600,
+      truncated: false
+    }, () => 1, 200);
+
+    expect(output.modelOutput.truncated).toBe(true);
+    expect(output.modelOutput.markdown.length).toBeLessThan(600);
+    expect(output.sources[0].title).toBe('https://big.example');
   });
 });
