@@ -1,6 +1,12 @@
 type Listener = () => void;
 const owners = new Map<string, string>();
-const drafts = new Map<string, { markdown: string; revision: number }>();
+export interface NoteEditDraft {
+  markdown: string;
+  title: string;
+  revision: number;
+}
+
+const drafts = new Map<string, NoteEditDraft>();
 const listeners = new Set<Listener>();
 const key = (entryId: string, noteId: string) => `${entryId}:${noteId}`;
 const emit = () => listeners.forEach((listener) => listener());
@@ -14,11 +20,16 @@ export function releaseNoteEditLease(entryId: string, noteId: string, ownerId: s
   const noteKey = key(entryId, noteId); if (owners.get(noteKey) === ownerId) { owners.delete(noteKey); emit(); }
 }
 export const ownsNoteEditLease = (entryId: string, noteId: string, ownerId: string) => owners.get(key(entryId, noteId)) === ownerId;
-export function publishNoteEditDraft(entryId: string, noteId: string, markdown: string) {
+export function publishNoteEditDraft(
+  entryId: string,
+  noteId: string,
+  markdown: string,
+  title: string
+) {
   const noteKey = key(entryId, noteId);
   const current = drafts.get(noteKey);
-  if (current?.markdown === markdown) return;
-  drafts.set(noteKey, { markdown, revision: (current?.revision ?? 0) + 1 });
+  if (current?.markdown === markdown && current.title === title) return;
+  drafts.set(noteKey, { markdown, title, revision: (current?.revision ?? 0) + 1 });
   emit();
 }
 export function clearNoteEditDraft(entryId: string, noteId: string) {

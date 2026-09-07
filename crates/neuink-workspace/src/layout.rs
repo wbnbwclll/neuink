@@ -68,6 +68,10 @@ impl WorkspaceLayout {
         self.entry_dir(entry_id).join("paper.translation.json")
     }
 
+    pub fn entry_reading_state_file(&self, entry_id: &EntryId) -> PathBuf {
+        self.entry_dir(entry_id).join("paper.reading.json")
+    }
+
     pub fn entry_segment_notes_file(&self, entry_id: &EntryId) -> PathBuf {
         self.entry_dir(entry_id).join("segment-notes.json")
     }

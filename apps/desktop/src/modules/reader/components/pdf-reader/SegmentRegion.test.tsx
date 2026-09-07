@@ -261,4 +261,28 @@ describe('PDF segment preview layout', () => {
     expect(layout.left + layout.width).toBe(912);
     expect(layout.top).toBeLessThan(720);
   });
+
+  it('applies independent font and card size preferences', () => {
+    const compact = buildPreviewLayout({
+      fontSize: 'small',
+      hasFooter: false,
+      position: { x: 80, segmentTop: 80, segmentBottom: 80 },
+      preferScrollable: true,
+      size: 'compact',
+      text: 'preview text'
+    });
+    const large = buildPreviewLayout({
+      fontSize: 'large',
+      hasFooter: false,
+      position: { x: 80, segmentTop: 80, segmentBottom: 80 },
+      preferScrollable: true,
+      size: 'large',
+      text: 'preview text'
+    });
+
+    expect(compact.width).toBeLessThan(large.width);
+    expect(Number(compact.contentStyle.fontSize)).toBeLessThan(
+      Number(large.contentStyle.fontSize)
+    );
+  });
 });

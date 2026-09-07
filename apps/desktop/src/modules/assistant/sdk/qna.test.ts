@@ -23,6 +23,7 @@ describe('buildSelectedMarkdownContext', () => {
       }] : [],
       markdown: noteId === 'note-1' ? 'Claim [^sl-1]' : 'Second note body',
       note_id: noteId,
+      revision: `revision-${noteId}`,
       title: noteId
     }));
 

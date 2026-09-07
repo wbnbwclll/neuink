@@ -92,6 +92,7 @@ export function usePdfAnnotationActions({
     try {
       const nextAnnotations = await onDeleteAnnotation(entryId, annotationId);
       setAnnotations(nextAnnotations);
+      setFocusId((current) => (current === annotationId ? null : current));
       notify({ tone: "success", title: "批注已删除" });
     } catch (caught) {
       notify({

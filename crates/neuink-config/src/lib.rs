@@ -148,6 +148,16 @@ fn default_translation_segment_types() -> Vec<String> {
     .collect()
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmApiProtocol {
+    Anthropic,
+    Google,
+    #[default]
+    #[serde(other)]
+    OpenaiCompatible,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct LlmSettings {
     pub base_url: String,
@@ -162,6 +172,8 @@ pub struct LlmSettings {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub api_protocol: LlmApiProtocol,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -179,4 +191,6 @@ pub struct LlmProfile {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub api_protocol: LlmApiProtocol,
 }

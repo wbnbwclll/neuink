@@ -1,5 +1,4 @@
 export const DEFAULT_PAGE_WIDTH = 820;
-export const MIN_PAGE_WIDTH = 520;
 export const NOTE_PANE_WIDTH = 390;
 export const PDF_RAIL_WIDTH = 48;
 export const PDF_VIEWPORT_PADDING = 48;

@@ -1,4 +1,14 @@
-import { Bot, FolderOpen, PackagePlus, PlugZap, Plus, Trash2, Workflow } from 'lucide-react';
+import {
+  Bot,
+  FolderOpen,
+  PackagePlus,
+  PlugZap,
+  Plus,
+  ShieldCheck,
+  Trash2,
+  Workflow,
+  Wrench
+} from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 
 import { Badge } from '@/components/ui/badge';
@@ -26,6 +36,12 @@ import type {
 
 export type AgentSettingsView = 'main-agent' | 'subagents' | 'skills';
 
+const REQUIRED_SUBAGENT_IDS = new Set(['task-orchestrator-agent']);
+const SYSTEM_SUBAGENT_IDS = new Set([
+  'task-orchestrator-agent',
+  'memory-agent'
+]);
+
 type AgentSettingsSectionProps = {
   llmProfiles: { id: string; model: string; name: string }[];
   onAddAgent: () => void;
@@ -47,7 +63,6 @@ type AgentSettingsSectionProps = {
 
 export function AgentSettingsSection({
   llmProfiles,
-  onAddSkillPackage,
   onImportSkillPackage,
   onOpenSkillPackageFolder,
   onRemoveSkillPackage,
@@ -70,24 +85,30 @@ export function AgentSettingsSection({
     runtimeSettings.skillPackages[0] ??
     createBlankSkillPackage(0);
   const [skillEditorOpen, setSkillEditorOpen] = useState(false);
+  const enabledSkills = runtimeSettings.skillPackages.filter((skillPackage) => skillPackage.enabled);
+  const systemSubagents = runtimeSettings.subagents.filter((agent) => SYSTEM_SUBAGENT_IDS.has(agent.id));
+  const workerSubagents = runtimeSettings.subagents.filter((agent) => !SYSTEM_SUBAGENT_IDS.has(agent.id));
 
   if (view === 'main-agent') {
     return (
-      <div className="grid gap-6">
-        <div>
-          <h2 className="text-base font-semibold">主 Agent</h2>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            Neuink 只有一个全局主助手，负责直接响应用户、加载 Skills、调用工具，并按需委派内置子 Agent。
-          </p>
-        </div>
+      <div className="grid gap-4">
+        <AgentSettingsHeader
+          description="主 Agent 是唯一直接与用户对话的执行者。它先接收任务合同，再决定直接回答、调用工具或委派专项子 Agent。"
+          title="主 Agent"
+        />
 
-        <EditorPanel description="配置全局主助手的模型、提示词和可委派能力。" title="主助手">
+        <div className="grid items-start gap-4 xl:grid-cols-2">
+        <EditorPanel description="只配置身份、模型和职责。运行权限在右侧单独管理。" title="身份与模型">
           <AgentCommonFields
             agent={runtimeSettings.mainAssistant}
             llmProfiles={llmProfiles}
             roleLabel="全局主助手"
+            showSystemPrompt={false}
             onUpdate={onUpdateAgent}
           />
+        </EditorPanel>
+
+        <EditorPanel description="这些开关决定主 Agent 在执行阶段能做什么。" title="执行权限">
           <div className="grid gap-3 md:grid-cols-2">
             <SwitchRow
               checked={runtimeSettings.mainAssistant.permissions.canInvokeSubagents}
@@ -98,6 +119,34 @@ export function AgentSettingsSection({
                   permissions: {
                     ...runtimeSettings.mainAssistant.permissions,
                     canInvokeSubagents: checked
+                  }
+                })
+              }
+            />
+            <SwitchRow
+              checked={runtimeSettings.mainAssistant.permissions.canInvokeTools}
+              description="关闭后只能进行不依赖外部观察的回答。"
+              label="允许调用工具"
+              onCheckedChange={(checked) =>
+                onUpdateAgent({
+                  ...runtimeSettings.mainAssistant,
+                  permissions: {
+                    ...runtimeSettings.mainAssistant.permissions,
+                    canInvokeTools: checked
+                  }
+                })
+              }
+            />
+            <SwitchRow
+              checked={runtimeSettings.mainAssistant.permissions.canUseSkills}
+              description="Skill 由编排模型根据语义选择，不按关键词硬匹配。"
+              label="允许加载 Skills"
+              onCheckedChange={(checked) =>
+                onUpdateAgent({
+                  ...runtimeSettings.mainAssistant,
+                  permissions: {
+                    ...runtimeSettings.mainAssistant.permissions,
+                    canUseSkills: checked
                   }
                 })
               }
@@ -116,55 +165,88 @@ export function AgentSettingsSection({
               }
             />
           </div>
-          <TagSelector
-            label="主助手可加载的 Skills"
-            options={runtimeSettings.skillPackages.map((skillPackage) => ({
-              id: skillPackage.id,
-              label: skillPackage.name
+          <AssignmentSelector
+            description="系统子 Agent 会自动参与固定阶段；这里只控制主 Agent 可以按需委派的任务型 worker。"
+            emptyText="当前没有任务型子 Agent。"
+            items={workerSubagents.map((agent) => ({
+              description: agent.description,
+              disabled: !agent.enabled,
+              id: agent.id,
+              label: agent.name
             }))}
-            selectedIds={runtimeSettings.mainAssistant.allowedSkillPackageIds}
-            onToggle={(skillPackageId) =>
-              onUpdateAgent({
-                ...runtimeSettings.mainAssistant,
-                allowedSkillPackageIds: toggleId(
-                  runtimeSettings.mainAssistant.allowedSkillPackageIds,
-                  skillPackageId
-                )
+            label="可委派的任务型子 Agent"
+            selectedIds={runtimeSettings.mainAssistant.allowedSubagentIds}
+            onToggle={(agentId) =>
+              onUpdateRuntimeSettings({
+                ...runtimeSettings,
+                mainAssistant: {
+                  ...runtimeSettings.mainAssistant,
+                  allowedSubagentIds: toggleId(
+                    runtimeSettings.mainAssistant.allowedSubagentIds,
+                    agentId
+                  )
+                }
               })
             }
           />
+        </EditorPanel>
+        </div>
+
+        <details className="group rounded-lg border bg-card">
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm font-semibold">
+            <Wrench className="text-muted-foreground" size={14} />
+            高级设置
+            <span className="ml-auto text-xs font-normal text-muted-foreground">系统提示词与 MCP 授权</span>
+          </summary>
+          <div className="grid gap-4 border-t p-4">
+            <Field label="主 Agent 系统提示词">
+              <Textarea
+                className="min-h-36 font-mono text-xs leading-5"
+                value={runtimeSettings.mainAssistant.systemPrompt}
+                onChange={(event) => onUpdateAgent({
+                  ...runtimeSettings.mainAssistant,
+                  systemPrompt: event.target.value
+                })}
+              />
+            </Field>
           <McpServerSelector
             agent={runtimeSettings.mainAssistant}
             runtimeSettings={runtimeSettings}
             onUpdate={onUpdateAgent}
           />
-          <ToolPackageEditor
-            runtimeSettings={runtimeSettings}
-            onUpdateRuntimeSettings={onUpdateRuntimeSettings}
-          />
-        </EditorPanel>
+          </div>
+        </details>
       </div>
     );
   }
 
   if (view === 'subagents') {
     return (
-      <div className="grid gap-6">
-        <div>
-          <h2 className="text-base font-semibold">子 Agent</h2>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            子 Agent 是内部 worker，不作为聊天角色。当前只保留 EvidenceAgent 和 PatchPlannerAgent。
-          </p>
-        </div>
+      <div className="grid gap-4">
+        <AgentSettingsHeader
+          description="子 Agent 不直接接管对话。系统型 Agent 负责任务编排与记忆；任务型 Agent 只执行主 Agent 委派的专项工作。Skill 选择已经并入任务编排阶段。"
+          title="子 Agent"
+        />
 
         <div className="grid items-start gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
-          <SettingsCollectionCard icon={Workflow} title="内置子 Agent">
-            {runtimeSettings.subagents.map((agent) => (
+          <SettingsCollectionCard icon={Workflow} title={`内置子 Agent · ${runtimeSettings.subagents.length}`}>
+            <CollectionGroupLabel>系统流程</CollectionGroupLabel>
+            {systemSubagents.map((agent) => (
               <SelectableRow
                 key={agent.id}
                 active={selectedSubagent?.id === agent.id}
                 label={agent.name}
-                meta={`${agent.enabled ? '启用' : '停用'} · ${subagentOutputLabel(agent.outputKind)}`}
+                meta={`${agent.enabled ? '启用' : '停用'} · ${subagentPurposeLabel(agent)}`}
+                onClick={() => onSelectAgent(agent.id)}
+              />
+            ))}
+            <CollectionGroupLabel>任务执行</CollectionGroupLabel>
+            {workerSubagents.map((agent) => (
+              <SelectableRow
+                key={agent.id}
+                active={selectedSubagent?.id === agent.id}
+                label={agent.name}
+                meta={`${agent.enabled ? '启用' : '停用'} · ${subagentPurposeLabel(agent)}`}
                 onClick={() => onSelectAgent(agent.id)}
               />
             ))}
@@ -179,6 +261,19 @@ export function AgentSettingsSection({
                 agent={selectedSubagent}
                 llmProfiles={llmProfiles}
                 runtimeSettings={runtimeSettings}
+                assignedToMain={runtimeSettings.mainAssistant.allowedSubagentIds.includes(selectedSubagent.id)}
+                required={REQUIRED_SUBAGENT_IDS.has(selectedSubagent.id)}
+                onAssignmentChange={(assigned) =>
+                  onUpdateRuntimeSettings({
+                    ...runtimeSettings,
+                    mainAssistant: {
+                      ...runtimeSettings.mainAssistant,
+                      allowedSubagentIds: assigned
+                        ? [...new Set([...runtimeSettings.mainAssistant.allowedSubagentIds, selectedSubagent.id])]
+                        : runtimeSettings.mainAssistant.allowedSubagentIds.filter((id) => id !== selectedSubagent.id)
+                    }
+                  })
+                }
                 onUpdate={onUpdateAgent}
               />
             </EditorPanel>
@@ -193,23 +288,24 @@ export function AgentSettingsSection({
   }
 
   return (
-    <div className="grid gap-6">
-      <div>
-        <h2 className="text-base font-semibold">Skills</h2>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          Skill 是知识和经验包。这里维护 Neuink 元信息，SKILL.md 和资源文件保持只读预览。
-        </p>
-      </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-xs text-muted-foreground">{runtimeSettings.skillPackages.length} 个已安装技能 · 按任务关键词自动选择</div>
-        <div className="flex gap-2">
-          <Button size="sm" type="button" variant="outline" onClick={onImportSkillPackage}><PackagePlus />导入 Skill</Button>
-          <Button size="sm" type="button" onClick={onAddSkillPackage}><Plus />新建 Skill</Button>
-        </div>
-      </div>
+    <div className="grid gap-4">
+      <AgentSettingsHeader
+        action={(
+          <Button size="sm" type="button" variant="outline" onClick={onImportSkillPackage}>
+            <PackagePlus />
+            导入 Skill
+          </Button>
+        )}
+        description={`Skill 是按需加载的说明与资源包，不会自行运行。已安装 ${runtimeSettings.skillPackages.length} 个，已启用 ${enabledSkills.length} 个，由 TaskOrchestratorAgent 根据任务语义选择。`}
+        title="Skills 技能库"
+      />
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {runtimeSettings.skillPackages.length === 0 ? (
+          <div className="col-span-full rounded-xl border border-dashed bg-muted/20 p-6 text-center text-xs leading-5 text-muted-foreground">
+            尚未安装 Skill。导入包含 SKILL.md 的标准技能包后，编排模型才会看到它的能力说明。
+          </div>
+        ) : null}
         {runtimeSettings.skillPackages.map((skillPackage) => {
           const active = selectedSkillPackage.id === skillPackage.id;
           return (
@@ -236,7 +332,13 @@ export function AgentSettingsSection({
                   }}
                 >
                   <p className="line-clamp-2 min-h-10 text-xs leading-5 text-muted-foreground">{skillPackage.description || '尚未添加说明。'}</p>
-                  <div className="text-xs text-muted-foreground">{skillPackage.category} · {skillPackage.kind === 'builtin' ? '内置' : '已安装'}</div>
+                  <div className="flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+                    <span>{skillCategoryLabel(skillPackage.category)}</span>
+                    <span>·</span>
+                    <span>{skillPackage.kind === 'builtin' ? '内置' : '已安装'}</span>
+                    <span>·</span>
+                    <span>{skillPackage.triggers.length > 0 ? `${skillPackage.triggers.length} 条适用场景` : '未描述适用场景'}</span>
+                  </div>
                 </button>
               </CardContent>
             </Card>
@@ -261,16 +363,93 @@ export function AgentSettingsSection({
   );
 }
 
+function AgentSettingsHeader({
+  action,
+  description,
+  title
+}: {
+  action?: ReactNode;
+  description: string;
+  title: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div>
+        <h2 className="text-base font-semibold">{title}</h2>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{description}</p>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+function AssignmentSelector({ description, emptyText, items, label, onToggle, selectedIds }: {
+  description: string;
+  emptyText: string;
+  items: Array<{ description: string; disabled?: boolean; id: string; label: string }>;
+  label: string;
+  onToggle: (id: string) => void;
+  selectedIds: string[];
+}) {
+  return (
+    <div className="grid gap-2">
+      <div>
+        <Label>{label}</Label>
+        <p className="mt-1 text-[11px] leading-4 text-muted-foreground">{description}</p>
+      </div>
+      <div className="grid gap-2 rounded-lg border border-border/70 bg-background p-2">
+        {items.length === 0 ? <div className="px-1 py-2 text-xs text-muted-foreground">{emptyText}</div> : null}
+        {items.map((item) => (
+          <label className={`flex items-center gap-3 rounded-md border border-border/60 px-3 py-2 ${item.disabled ? 'opacity-55' : ''}`} key={item.id}>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-medium">{item.label}</span>
+              <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{item.description}</span>
+            </span>
+            <Switch checked={!item.disabled && selectedIds.includes(item.id)} disabled={item.disabled} onCheckedChange={() => onToggle(item.id)} />
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CollectionGroupLabel({ children }: { children: ReactNode }) {
+  return <div className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{children}</div>;
+}
+
+function subagentPurposeLabel(agent: SubagentProfile) {
+  if (agent.outputKind === 'task_contract') return '任务理解与执行合同';
+  if (agent.outputKind === 'memory') return '对话语义记忆';
+  if (agent.outputKind === 'patch_plan') return '笔记局部修改规划';
+  return '证据检索与整理';
+}
+
+function subagentExecutionDescription(agent: SubagentProfile) {
+  if (agent.outputKind === 'task_contract') return '每次提问首先运行，理解自然语言、当前上下文和历史延续关系，生成后续执行合同。';
+  if (agent.outputKind === 'memory') return '在回合完成后压缩稳定目标、决定和未完成事项；它不替代原始对话记录。';
+  if (agent.outputKind === 'patch_plan') return '仅在需要修改现有 Markdown 笔记时生成局部 patch 方案，最终仍需用户确认。';
+  return '仅在需要跨文献检索和阅读证据时接受委派，并返回带来源的证据摘要。';
+}
+
+function skillCategoryLabel(category: SkillPackage['category']) {
+  const labels: Record<SkillPackage['category'], string> = {
+    automation: '自动化', custom: '自定义', reading: '阅读', report: '报告', research: '研究', slides: '演示文稿', writing: '写作'
+  };
+  return labels[category];
+}
+
 function AgentCommonFields({
   agent,
   llmProfiles,
   onUpdate,
-  roleLabel
+  roleLabel,
+  showSystemPrompt = true
 }: {
   agent: AgentProfile;
   llmProfiles: { id: string; model: string; name: string }[];
   onUpdate: (nextAgent: AgentProfile) => void;
   roleLabel: string;
+  showSystemPrompt?: boolean;
 }) {
   return (
     <>
@@ -312,34 +491,46 @@ function AgentCommonFields({
         />
       </Field>
 
-      <Field label="系统提示词">
+      {showSystemPrompt ? <Field label="系统提示词">
         <Textarea
           className="min-h-28"
           value={agent.systemPrompt}
           onChange={(event) => onUpdate({ ...agent, systemPrompt: event.target.value })}
         />
-      </Field>
+      </Field> : null}
     </>
   );
 }
 
 function SubagentEditor({
   agent,
+  assignedToMain,
   llmProfiles,
+  onAssignmentChange,
   onUpdate,
+  required,
   runtimeSettings
 }: {
   agent: SubagentProfile;
+  assignedToMain: boolean;
   llmProfiles: { id: string; model: string; name: string }[];
+  onAssignmentChange: (assigned: boolean) => void;
   onUpdate: (nextAgent: AgentProfile) => void;
+  required: boolean;
   runtimeSettings: AgentRuntimeSettings;
 }) {
+  const systemAgent = SYSTEM_SUBAGENT_IDS.has(agent.id);
   return (
     <>
+      <div className="grid gap-2 rounded-lg border border-primary/15 bg-primary/[0.035] px-3 py-2 text-xs leading-5 text-muted-foreground">
+        <div className="font-medium text-foreground">{subagentPurposeLabel(agent)}</div>
+        <div>{subagentExecutionDescription(agent)}</div>
+      </div>
       <AgentCommonFields
         agent={agent}
         llmProfiles={llmProfiles}
         roleLabel={`子 Agent · ${subagentOutputLabel(agent.outputKind)}`}
+        showSystemPrompt={false}
         onUpdate={onUpdate}
       />
       <ReadOnlyValue
@@ -350,42 +541,30 @@ function SubagentEditor({
       <div className="grid gap-3 md:grid-cols-2">
         <SwitchRow
           checked={agent.enabled}
-          label="启用此子 Agent"
+          description={required ? '任务编排依赖此 Agent，不能停用。' : '停用后不会参与后续任务。'}
+          disabled={required}
+          label={required ? '启用此子 Agent（必需）' : '启用此子 Agent'}
           onCheckedChange={(checked) => onUpdate({ ...agent, enabled: checked })}
         />
-        <SwitchRow
-          checked={agent.permissions.canReadWorkspaceWide}
-          label="允许读取全局 Workspace"
-          onCheckedChange={(checked) =>
-            onUpdate({
-              ...agent,
-              permissions: { ...agent.permissions, canReadWorkspaceWide: checked }
-            })
-          }
-        />
-        <SwitchRow
-          checked={agent.permissions.canUseSkills}
-          label="允许加载 Skills"
-          onCheckedChange={(checked) =>
-            onUpdate({
-              ...agent,
-              permissions: { ...agent.permissions, canUseSkills: checked }
-            })
-          }
-        />
-        <SwitchRow
-          checked={agent.permissions.canWriteProposals}
-          label="允许生成写入提案"
-          onCheckedChange={(checked) =>
-            onUpdate({
-              ...agent,
-              permissions: { ...agent.permissions, canWriteProposals: checked }
-            })
-          }
-        />
+        {systemAgent ? (
+          <SwitchRow
+            checked={agent.enabled}
+            description={required ? '固定必需阶段，无需手动委派。' : '启用后自动参与对应系统阶段，不进入任务委派列表。'}
+            disabled
+            label="系统流程自动调用"
+            onCheckedChange={() => undefined}
+          />
+        ) : (
+          <SwitchRow
+            checked={assignedToMain}
+            description="允许主 Agent 在需要时把专项任务交给它。"
+            label="允许主 Agent 委派"
+            onCheckedChange={onAssignmentChange}
+          />
+        )}
       </div>
 
-      <TagSelector
+      {!systemAgent && agent.permissions.canUseSkills ? <TagSelector
         label="允许加载的 Skills"
         options={runtimeSettings.skillPackages.map((skillPackage) => ({
           id: skillPackage.id,
@@ -398,8 +577,67 @@ function SubagentEditor({
             allowedSkillPackageIds: toggleId(agent.allowedSkillPackageIds, skillPackageId)
           })
         }
-      />
-      <McpServerSelector agent={agent} runtimeSettings={runtimeSettings} onUpdate={onUpdate} />
+      /> : null}
+
+      <details className="group rounded-lg border border-border/70 bg-background">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-medium">
+          <ShieldCheck className="text-muted-foreground" size={14} />
+          高级权限与提示词
+          <span className="ml-auto text-xs font-normal text-muted-foreground">
+            {systemAgent ? '系统型 Agent 默认不调用工具' : '最小权限原则'}
+          </span>
+        </summary>
+        <div className="grid gap-3 border-t p-3">
+          {!systemAgent ? <div className="grid gap-3 md:grid-cols-2">
+            <SwitchRow
+              checked={agent.permissions.canInvokeTools}
+              label="允许调用工具"
+              onCheckedChange={(checked) => onUpdate({
+                ...agent,
+                permissions: { ...agent.permissions, canInvokeTools: checked }
+              })}
+            />
+            <SwitchRow
+              checked={agent.permissions.canReadWorkspaceWide}
+              label="允许读取全局 Workspace"
+              onCheckedChange={(checked) => onUpdate({
+                ...agent,
+                permissions: { ...agent.permissions, canReadWorkspaceWide: checked }
+              })}
+            />
+            <SwitchRow
+              checked={agent.permissions.canUseSkills}
+              label="允许加载 Skills"
+              onCheckedChange={(checked) => onUpdate({
+                ...agent,
+                permissions: { ...agent.permissions, canUseSkills: checked }
+              })}
+            />
+            <SwitchRow
+              checked={agent.permissions.canWriteProposals}
+              label="允许生成写入提案"
+              onCheckedChange={(checked) => onUpdate({
+                ...agent,
+                permissions: { ...agent.permissions, canWriteProposals: checked }
+              })}
+            />
+          </div> : (
+            <div className="rounded-md border border-dashed px-3 py-2 text-xs leading-5 text-muted-foreground">
+              该 Agent 只消费调用方提供的结构化上下文并返回结构化结果，不应读取 Workspace、调用工具或产生写入提案。
+            </div>
+          )}
+          <Field label="系统提示词">
+            <Textarea
+              className="min-h-36 font-mono text-xs leading-5"
+              value={agent.systemPrompt}
+              onChange={(event) => onUpdate({ ...agent, systemPrompt: event.target.value })}
+            />
+          </Field>
+          {!systemAgent && agent.permissions.canInvokeTools ? (
+            <McpServerSelector agent={agent} runtimeSettings={runtimeSettings} onUpdate={onUpdate} />
+          ) : null}
+        </div>
+      </details>
     </>
   );
 }
@@ -466,9 +704,9 @@ function SkillPackageEditor({
             <Field label="说明">
               <Input value={skillPackage.description} onChange={(event) => onUpdate({ ...skillPackage, description: event.target.value })} />
             </Field>
-            <Field label="触发关键词">
+            <Field label="适用场景提示">
               <Input
-                placeholder="用逗号分隔，例如：标签, 推荐标签"
+                placeholder="用逗号分隔，例如：整理研究笔记, 生成阅读摘要"
                 value={skillPackage.triggers.join(', ')}
                 onChange={(event) => onUpdate({
                   ...skillPackage,
@@ -477,8 +715,8 @@ function SkillPackageEditor({
               />
             </Field>
             <div className="rounded-lg border border-border/70 bg-background p-3 text-xs text-muted-foreground">
-              <div className="font-medium text-foreground">调用方式</div>
-              <p className="mt-1 leading-5">匹配任务时，规划器会预加载此 Skill 的 SKILL.md；模型可据此调用已授权的工具。Skill 本身不绕过应用服务写入数据。</p>
+              <div className="font-medium text-foreground">选择方式</div>
+              <p className="mt-1 leading-5">这些短语只是提供给编排模型的语义线索，不执行固定关键词匹配。选中后才会加载 SKILL.md；Skill 本身不能绕过应用服务写入数据。</p>
             </div>
           </div>
         </TabsContent>
@@ -522,7 +760,7 @@ function McpServerSelector({
 }) {
   return (
     <TagSelector
-      label="Allowed MCP servers"
+      label="允许使用的 MCP 服务"
       options={runtimeSettings.mcpServers.map((server) => ({
         id: server.id,
         label: `${server.name}${server.enabled ? '' : ' (disabled)'}`
@@ -538,7 +776,7 @@ function McpServerSelector({
   );
 }
 
-function ToolPackageEditor({
+export function AgentToolRuntimeSection({
   onUpdateRuntimeSettings,
   runtimeSettings
 }: {
@@ -609,20 +847,20 @@ function ToolPackageEditor({
         <div className="flex min-w-0 items-center gap-2">
           <PlugZap className="shrink-0 text-muted-foreground" size={14} />
           <div className="min-w-0">
-            <div className="text-sm font-semibold">MCP / Tool Packages</div>
+            <div className="text-sm font-semibold">MCP 与工具入口</div>
             <div className="text-xs text-muted-foreground">
-              Register executable tool entry points. Skill scripts remain non-executable unless exposed here.
+              注册可执行工具入口。Skill 中的脚本只有通过 MCP 或受控工具包暴露后才能执行。
             </div>
           </div>
         </div>
         <Button size="xs" type="button" variant="outline" onClick={addMcpServer}>
           <Plus />
-          Add MCP
+          添加 MCP
         </Button>
       </div>
       {runtimeSettings.mcpServers.length === 0 ? (
         <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-          No MCP servers configured.
+          尚未配置 MCP 服务。
         </div>
       ) : (
         <div className="grid gap-2">
@@ -634,13 +872,13 @@ function ToolPackageEditor({
                   onChange={(event) => updateMcpServer(server.id, { name: event.target.value })}
                 />
                 <Input
-                  placeholder="command, e.g. npx @modelcontextprotocol/server-filesystem"
+                  placeholder="启动命令，例如 npx @modelcontextprotocol/server-filesystem"
                   value={server.command}
                   onChange={(event) => updateMcpServer(server.id, { command: event.target.value })}
                 />
                 <Button
                   size="icon-sm"
-                  title="Remove MCP server"
+                  title="移除 MCP 服务"
                   type="button"
                   variant="ghost"
                   onClick={() => removeMcpServer(server.id)}
@@ -649,7 +887,7 @@ function ToolPackageEditor({
                 </Button>
               </div>
               <Input
-                placeholder="Allowed tool names, comma separated"
+                placeholder="允许的工具名称，用逗号分隔"
                 value={server.allowedToolNames.join(', ')}
                 onChange={(event) =>
                   updateMcpServer(server.id, {
@@ -662,7 +900,7 @@ function ToolPackageEditor({
               />
               <SwitchRow
                 checked={server.enabled}
-                label="Enable this MCP server"
+                label="启用此 MCP 服务"
                 onCheckedChange={(checked) => updateMcpServer(server.id, { enabled: checked })}
               />
             </div>
@@ -793,17 +1031,24 @@ function Field({ children, label }: { children: ReactNode; label: string }) {
 
 function SwitchRow({
   checked,
+  description,
+  disabled = false,
   label,
   onCheckedChange
 }: {
   checked: boolean;
+  description?: string;
+  disabled?: boolean;
   label: string;
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background px-3 py-2">
-      <span className="text-sm">{label}</span>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    <label className={`flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background px-3 py-2 ${disabled ? 'opacity-60' : ''}`}>
+      <span className="min-w-0">
+        <span className="block text-sm">{label}</span>
+        {description ? <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">{description}</span> : null}
+      </span>
+      <Switch checked={checked} disabled={disabled} onCheckedChange={onCheckedChange} />
     </label>
   );
 }

@@ -15,6 +15,14 @@ import type {
 import type { AgentRuntimeSettings, SkillPackage } from '../types/agentRuntime';
 import type { SearchMode, SearchResults } from './workspaceApi';
 
+export type LlmApiProtocol = 'openai_compatible' | 'anthropic' | 'google';
+
+export function resolveLlmApiProtocol(
+  protocol: LlmApiProtocol | null | undefined
+): LlmApiProtocol {
+  return protocol ?? 'openai_compatible';
+}
+
 export type LlmSettings = {
   base_url: string;
   model: string;
@@ -24,6 +32,7 @@ export type LlmSettings = {
   temperature: number | null;
   top_p: number | null;
   max_output_tokens: number | null;
+  api_protocol: LlmApiProtocol;
 };
 
 export type LlmProfile = {
@@ -36,6 +45,7 @@ export type LlmProfile = {
   temperature: number | null;
   top_p: number | null;
   max_output_tokens: number | null;
+  api_protocol: LlmApiProtocol;
 };
 
 export type LlmSettingsState = {
@@ -168,6 +178,8 @@ export type AssistantToolTraceEvent = {
 };
 
 export type AssistantConversationMemory = {
+  decisions: string[];
+  entities: string[];
   last_user_goal: string | null;
   message_count: number;
   open_items: string[];
@@ -175,10 +187,12 @@ export type AssistantConversationMemory = {
   source_count: number;
   summary: string;
   updated_at: string;
+  user_preferences: string[];
 };
 
 export type AssistantMessagePart =
   | { type: 'text'; markdown: string }
+  | { type: 'reasoning'; text: string }
   | { type: 'context'; items: AssistantContextItem[] }
   | {
       composer?: AssistantComposerSnapshot | null;
@@ -377,6 +391,7 @@ export async function getLlmSettings(): Promise<LlmSettingsState> {
 
 export async function saveLlmSettings(settings: {
   apiKey?: string;
+  apiProtocol?: LlmApiProtocol;
   baseUrl: string;
   maxContextLength?: number;
   maxOutputTokens?: number;
@@ -396,7 +411,8 @@ export async function saveLlmSettings(settings: {
       max_context_length: settings.maxContextLength ?? null,
       temperature: settings.temperature ?? null,
       top_p: settings.topP ?? null,
-      max_output_tokens: settings.maxOutputTokens ?? null
+      max_output_tokens: settings.maxOutputTokens ?? null,
+      api_protocol: resolveLlmApiProtocol(settings.apiProtocol)
     }
   });
   publishLlmSettings(nextSettings);

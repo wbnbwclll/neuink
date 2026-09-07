@@ -29,9 +29,9 @@ describe('workspaceSurfaceReducer', () => {
     expect(surfaceKey({ kind: 'entry-trash', entryId: 'a' })).toBe('entry-trash:a');
   });
 
-  it('treats the legacy annotation surface and segment records as one workspace', () => {
-    expect(surfaceKey({ kind: 'annotations', entryId: 'a' })).toBe(
-      surfaceKey({ kind: 'segment-notes', entryId: 'a' })
+  it('uses one canonical surface for segment notes and annotations', () => {
+    expect(surfaceKey({ kind: 'segment-notes', entryId: 'a', mode: 'annotation' })).toBe(
+      'segment-records:a'
     );
   });
 

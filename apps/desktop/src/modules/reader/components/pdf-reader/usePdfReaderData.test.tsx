@@ -9,6 +9,27 @@ import type { LibraryEntry } from '../../../library/components/LibrarySidebar';
 import { usePdfReaderData } from './usePdfReaderData';
 
 describe('usePdfReaderData', () => {
+  it('retries the primary reader payload after a load failure', async () => {
+    const response: PdfReaderResponse = {
+      annotations: [],
+      pdf_path: 'C:/workspace/entries/entry-1/paper.pdf',
+      segment_notes: [],
+      segments: []
+    };
+    const onReadPdfReader = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('workspace read failed'))
+      .mockResolvedValueOnce(response);
+    const { result } = renderHook(() =>
+      usePdfReaderData({ entry: libraryEntry(), onReadPdfReader })
+    );
+
+    await waitFor(() => expect(result.current.loadState.status).toBe('error'));
+    act(() => result.current.retry());
+    await waitFor(() => expect(result.current.loadState.status).toBe('ready'));
+    expect(onReadPdfReader).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps the loaded PDF reader data mounted when annotations update locally', async () => {
     const response: PdfReaderResponse = {
       annotations: [],

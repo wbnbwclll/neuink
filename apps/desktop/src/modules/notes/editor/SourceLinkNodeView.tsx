@@ -88,7 +88,7 @@ export function SourceLinkNodeView({
     onOpenSourceLink && node.attrs.sourceEntryId && node.attrs.segmentUid
   );
   const sourceMeta = [
-    anchorId ? `Anchor ${anchorId}` : null,
+    anchorId ? `锚点 ${anchorId}` : null,
     node.attrs.page ? `第 ${node.attrs.page} 页` : null,
     node.attrs.segmentType ? `类型 ${node.attrs.segmentType}` : null,
     codeLanguage ? `语言 ${codeLanguage}` : null,
@@ -233,7 +233,7 @@ export function SourceLinkNodeView({
           className="inline-flex max-w-full items-center gap-1 rounded-sm border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[0.72em] font-semibold leading-none text-primary transition-colors hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
           title={
             canOpenSource
-              ? 'Click to preview. Ctrl/Cmd+Click jumps to the source.'
+              ? '单击预览，Ctrl/Cmd + 单击跳转到原文'
               : anchorId || UI_TERMS.sourceLink
           }
           type="button"
@@ -242,7 +242,7 @@ export function SourceLinkNodeView({
         >
           <ChevronRight size={11} aria-hidden="true" />
           <Link2 size={11} aria-hidden="true" />
-          <span className="truncate">{label || 'Source'}</span>
+          <span className="truncate">{label || '来源'}</span>
         </button>
       ) : null}
 
@@ -512,7 +512,7 @@ export function SourceLinkNodeView({
                 )
               ) : (
                 <span className="block rounded-md border border-dashed bg-muted/20 px-3 py-2">
-                No source snapshot saved for this link.
+                  这条来源链接还没有保存原文快照。
                 </span>
               )}
             </span>

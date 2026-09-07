@@ -326,23 +326,6 @@ export function createOptimisticMessage(
   };
 }
 
-export function createSyntheticConversationMessage(
-  role: ConversationMessage['role'],
-  content: string,
-  sourceLinks: ConversationSourceLink[] = [],
-  noteProposals: AssistantNoteProposal[] = []
-): ConversationMessage {
-  return {
-    message_id: `synthetic-${role}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    role,
-    content,
-    note_proposals: noteProposals,
-    parts: [],
-    source_links: sourceLinks,
-    created_at: new Date().toISOString()
-  };
-}
-
 export function buildAssistantMessageParts({
   agentRun,
   composerSnapshot,
@@ -352,6 +335,7 @@ export function buildAssistantMessageParts({
   entryMetaProposals = [],
   memory,
   noteProposals = [],
+  reasoning,
   tagProposals = [],
   plan,
   sourceLinks = [],
@@ -366,6 +350,7 @@ export function buildAssistantMessageParts({
   entryMetaProposals?: AssistantEntryMetaProposal[];
   memory?: AssistantConversationMemory | null;
   noteProposals?: AssistantNoteProposal[];
+  reasoning?: string;
   tagProposals?: AssistantTagProposal[];
   plan?: AssistantTaskPlan;
   sourceLinks?: ConversationSourceLink[];
@@ -444,6 +429,13 @@ export function buildAssistantMessageParts({
     });
   }
 
+  if (reasoning?.trim()) {
+    parts.push({
+      text: reasoning,
+      type: 'reasoning'
+    });
+  }
+
   for (const source of sourceLinks) {
     parts.push({
       source,
@@ -474,63 +466,6 @@ export function buildAssistantMessageParts({
   }
 
   return parts;
-}
-
-export function buildConversationMemory(
-  messages: ConversationMessage[]
-): AssistantConversationMemory | null {
-  const materialMessages = messages.filter((message) => !message.message_id.startsWith('client-'));
-  if (materialMessages.length < 2) {
-    return null;
-  }
-
-  const lastUserMessage = [...materialMessages]
-    .reverse()
-    .find((message) => message.role === 'user' && message.content.trim());
-  const sources = uniqueSourceLinks(
-    materialMessages.flatMap((message) =>
-      message.source_links.length > 0
-        ? message.source_links
-        : sourceLinksFromParts(message.parts ?? [])
-    )
-  );
-  const pendingNoteProposalCount = materialMessages
-    .flatMap((message) => noteProposalsFromMessage(message))
-    .filter((proposal) => proposal.status === 'pending' || proposal.status === 'applying').length;
-  const pendingEntryMetaProposalCount = materialMessages
-    .flatMap((message) =>
-      (message.parts ?? []).flatMap((part) =>
-        part.type === 'entry-meta-proposal' ? [part.proposal] : []
-      )
-    )
-    .filter((proposal) => proposal.status === 'pending' || proposal.status === 'applying').length;
-  const pendingProposalCount = pendingNoteProposalCount + pendingEntryMetaProposalCount;
-  const recentGoals = materialMessages
-    .filter((message) => message.role === 'user' && message.content.trim())
-    .slice(-3)
-    .map((message) => compactMemoryText(message.content, 72));
-  const openItems = [
-    ...latestConversationContextItemsFromMessages(materialMessages)
-      .slice(0, 3)
-      .map(contextItemLabel),
-    sources.length > 0 ? `${sources.length} cited source${sources.length === 1 ? '' : 's'}` : null,
-    pendingProposalCount > 0
-      ? `${pendingProposalCount} pending proposal${pendingProposalCount === 1 ? '' : 's'}`
-      : null
-  ].filter((item): item is string => Boolean(item));
-
-  return {
-    last_user_goal: lastUserMessage ? compactMemoryText(lastUserMessage.content, 160) : null,
-    message_count: materialMessages.length,
-    open_items: openItems,
-    pending_proposal_count: pendingProposalCount,
-    source_count: sources.length,
-    summary:
-      recentGoals.length > 0
-        ? recentGoals.join(' / ')
-        : `${materialMessages.length} messages in this conversation`,
-    updated_at: new Date().toISOString()
-  };
 }
 
 export function analyzeConversationLength(
@@ -748,11 +683,6 @@ export function upsertAssistantContextTarget(items: AssistantContextItem[], targ
     ),
     item
   ];
-}
-
-export function compactMemoryText(text: string, maxLength: number) {
-  const compact = text.replace(/\s+/g, ' ').trim();
-  return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}...` : compact;
 }
 
 export function patchConversationNoteProposal(

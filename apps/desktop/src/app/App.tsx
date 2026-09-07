@@ -44,9 +44,7 @@ import {
 import { WorkspaceTabsBar } from './WorkspaceTabsBar';
 import {
   clampWorkspaceSplitLeftWidth,
-  WORKSPACE_SPLIT_DIVIDER_WIDTH,
-  WORKSPACE_SPLIT_MIN_LEFT_WIDTH,
-  WORKSPACE_SPLIT_MIN_RIGHT_WIDTH
+  getWorkspaceSplitMinimums
 } from './workspaceSplit';
 import { AssistantPanel } from '../modules/assistant/components/AssistantPanel';
 import type { AssistantComposerDraft } from '../modules/assistant/components/AssistantComposerEditor';
@@ -122,6 +120,7 @@ import type {
   Job,
   SearchHit
 } from '../shared/ipc/workspaceApi';
+import type { SourceLink } from '../shared/types/domain';
 import { saveNoteAssetBytes, updateNote } from '../shared/ipc/workspaceApi';
 
 type PendingNoteTabClose = {
@@ -162,7 +161,7 @@ import {
   conversationToMarkdown,
   firstContentId,
   formatVectorStatus,
-  getDefaultWorkspaceSplitLeftWidth,
+  getWorkspaceSplitContainerWidth,
   noteIdFromContentId,
   readStoredBoolean,
   readStoredLibraryView,
@@ -559,6 +558,21 @@ export function App() {
     appShellRef.current?.style.setProperty('--app-workspace-left-width', `${width}px`);
   }, []);
 
+  const prepareWorkspaceSplit = useCallback((rightSurface: WorkspaceSurface) => {
+    if (surfaceLayout.right) {
+      return;
+    }
+    const containerWidth = getWorkspaceSplitContainerWidth();
+    const minimums = getWorkspaceSplitMinimums(surfaceLayout.left, rightSurface);
+    const nextWidth = clampWorkspaceSplitLeftWidth(
+      workspaceSplitLeftWidth ?? containerWidth / 2,
+      containerWidth,
+      minimums
+    );
+    workspaceSplitPreviewWidthRef.current = nextWidth;
+    setWorkspaceSplitLeftWidth(nextWidth);
+  }, [surfaceLayout.left, surfaceLayout.right, workspaceSplitLeftWidth]);
+
   useEffect(() => {
     const split = document.querySelector('.workspace-split');
     if (!(split instanceof HTMLElement)) {
@@ -574,7 +588,11 @@ export function App() {
         if (current === null) {
           return current;
         }
-        const nextWidth = clampWorkspaceSplitLeftWidth(current, containerWidth);
+        if (!surfaceLayout.right) {
+          return current;
+        }
+        const minimums = getWorkspaceSplitMinimums(surfaceLayout.left, surfaceLayout.right);
+        const nextWidth = clampWorkspaceSplitLeftWidth(current, containerWidth, minimums);
         workspaceSplitPreviewWidthRef.current = nextWidth;
         return nextWidth;
       });
@@ -584,7 +602,7 @@ export function App() {
     const observer = new ResizeObserver(clampStoredWidth);
     observer.observe(split);
     return () => observer.disconnect();
-  }, [surfaceLayout.right]);
+  }, [surfaceLayout.left, surfaceLayout.right]);
 
   const startSidebarResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -743,9 +761,22 @@ export function App() {
 
   useEffect(() => {
     persistUiScale(uiScale);
-    void applyUiScale(uiScale).catch((caught) => {
-      console.error('Failed to apply UI scale', caught);
-    });
+    let layoutRefreshFrame: number | null = null;
+    void applyUiScale(uiScale)
+      .then(() => {
+        layoutRefreshFrame = window.requestAnimationFrame(() => {
+          layoutRefreshFrame = null;
+          window.dispatchEvent(new Event('neuink:reader-surface-change'));
+        });
+      })
+      .catch((caught) => {
+        console.error('Failed to apply UI scale', caught);
+      });
+    return () => {
+      if (layoutRefreshFrame !== null) {
+        window.cancelAnimationFrame(layoutRefreshFrame);
+      }
+    };
   }, [uiScale]);
 
   useEffect(() => {
@@ -880,16 +911,17 @@ export function App() {
     contentId: string,
     pane?: WorkspacePaneId
   ) => {
+    const surface = entryContentSurface(entryId, contentId);
+    if (pane === 'right' && !surfaceLayout.right) {
+      prepareWorkspaceSplit(surface);
+    }
     dispatchSurface({
       type: 'open',
       pane,
-      surface: entryContentSurface(entryId, contentId)
+      surface
     });
     if (workspace.selectedEntryId !== entryId) {
       workspace.setSelectedEntryId(entryId);
-    }
-    if (pane === 'right' && !surfaceLayout.right && workspaceSplitLeftWidth === null) {
-      setWorkspaceSplitLeftWidth(getDefaultWorkspaceSplitLeftWidth());
     }
     setActiveContentByEntryId((current) =>
       current[entryId] === contentId ? current : { ...current, [entryId]: contentId }
@@ -903,15 +935,13 @@ export function App() {
 
   const openEntryTab = (entryId: string) => {
     const target = entries.find((entry) => entry.id === entryId) ?? null;
-    const contentId = target
-      ? activeContentByEntryId[entryId] ?? firstContentId(target)
-      : null;
-    if (!contentId) {
-      workspace.setSelectedEntryId(entryId);
+    if (!target) {
       return;
     }
 
-    openEntryContentTab(entryId, contentId);
+    setSidePanel('library');
+    setSidebarOpen(true);
+    openEntryContentTab(entryId, 'overview');
   };
 
   const openEntryTabToRight = (entryId: string) => {
@@ -1010,7 +1040,7 @@ export function App() {
     if (!targetEntryId) {
       return;
     }
-    const updated = await workspace.createMarkdownNote(targetEntryId, 'Untitled note');
+    const updated = await workspace.createMarkdownNote(targetEntryId, '未命名笔记');
     if (!updated) {
       return;
     }
@@ -1303,7 +1333,7 @@ export function App() {
             kind: 'llm',
             message,
             progress: { current: status === 'processing' ? 1 : 2, percent: status === 'processing' ? 50 : 100, total: 2 },
-            scope: { root: workspace.root },
+            scope: workspace.root ? { kind: 'workspace', root: workspace.root } : null,
             status,
             updated_at: updatedAt
           };
@@ -1493,7 +1523,7 @@ export function App() {
     }
     const segment = record.segment;
 
-    if (segment && record.segment_status === 'current') {
+    if (segment) {
       pdfJumpCounter.current += 1;
       setPdfJumpByEntryId((current) => ({
         ...current,
@@ -1524,9 +1554,18 @@ export function App() {
     entryId: string,
     noteId: string,
     title: string,
-    markdown: string
+    markdown: string,
+    links?: SourceLink[] | null,
+    expectedRevision?: string | null
   ) => {
-    const saved = await workspace.saveMarkdownNote(entryId, noteId, title, markdown);
+    const saved = await workspace.saveMarkdownNote(
+      entryId,
+      noteId,
+      title,
+      markdown,
+      links,
+      expectedRevision
+    );
     refreshMarkdownNote(entryId, noteId);
     return saved;
   };
@@ -1536,8 +1575,26 @@ export function App() {
     noteId: string,
     title: string
   ) => {
+    if (hasUnsavedMarkdownNote(entryId, noteId)) {
+      const saved = await saveMarkdownNoteBeforeClose(entryId, noteId);
+      if (!saved) {
+        notify({
+          tone: 'danger',
+          title: '重命名失败',
+          description: '请先回到正在编辑的笔记，确认内容已保存后再重试。'
+        });
+        throw new Error('笔记仍有未保存内容，已取消重命名。');
+      }
+    }
     const note = await workspace.readMarkdownNote(entryId, noteId);
-    return saveMarkdownNote(entryId, noteId, title, note.markdown);
+    return saveMarkdownNote(
+      entryId,
+      noteId,
+      title,
+      note.markdown,
+      note.links,
+      note.revision
+    );
   };
 
   const addAssistantContext = (
@@ -2018,8 +2075,8 @@ export function App() {
           onCloseOthers={(pane, surface) => dispatchSurface({ type: 'closeOthers', pane, key: surfaceKey(surface) })}
           onClosePane={(pane) => dispatchSurface({ type: 'closePane', pane })}
           onMove={(surface, pane, targetIndex) => {
-            if (pane === 'right' && !surfaceLayout.right && workspaceSplitLeftWidth === null) {
-              setWorkspaceSplitLeftWidth(getDefaultWorkspaceSplitLeftWidth());
+            if (pane === 'right' && !surfaceLayout.right) {
+              prepareWorkspaceSplit(surface);
             }
             dispatchSurface({ type: 'move', key: surfaceKey(surface), pane, targetIndex });
           }}

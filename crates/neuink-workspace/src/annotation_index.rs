@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use neuink_domain::{
-    Annotation, AnnotationSegmentSnapshot, EntryId, SegmentType, SegmentUid, SourceSegment, TagId,
+    Annotation, AnnotationAnchorKind, AnnotationSegmentSnapshot, EntryId, SegmentType, SegmentUid,
+    SourceSegment, TagId,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -29,6 +30,7 @@ pub struct AnnotationIndexRecord {
 #[serde(rename_all = "snake_case")]
 pub enum AnnotationSegmentStatus {
     Current,
+    PageAnchored,
     Orphaned,
     Missing,
 }
@@ -46,7 +48,9 @@ impl AnnotationIndexRecord {
             .as_ref()
             .map(AnnotationSegmentContext::from);
         let live_segment = segment.map(AnnotationSegmentContext::from);
-        let segment_status = if live_segment.is_some() {
+        let segment_status = if annotation.anchor_kind == AnnotationAnchorKind::PdfPage {
+            AnnotationSegmentStatus::PageAnchored
+        } else if live_segment.is_some() {
             AnnotationSegmentStatus::Current
         } else if snapshot_segment.is_some() {
             AnnotationSegmentStatus::Orphaned

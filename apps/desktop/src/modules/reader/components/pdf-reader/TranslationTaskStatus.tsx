@@ -19,7 +19,6 @@ type TranslationTaskStatusProps = {
   message?: string | null;
   onExport?: (() => void) | null;
   onPause?: (() => void) | null;
-  onRetryFailed?: (() => void) | null;
   translation: EntryTranslation | null;
 };
 
@@ -31,7 +30,6 @@ export function TranslationTaskStatus({
   message,
   onExport,
   onPause,
-  onRetryFailed,
   translation
 }: TranslationTaskStatusProps) {
   const [expanded, setExpanded] = useState(false);
@@ -78,7 +76,7 @@ export function TranslationTaskStatus({
           <div className="min-w-0 flex-1">
             <div className="truncate font-medium">{summary.title}</div>
             <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
-              {detail || summary.description}
+              {busy ? summary.description : detail || summary.description}
             </div>
           </div>
           <Button
@@ -108,13 +106,8 @@ export function TranslationTaskStatus({
               {translation.progress.failed} 个片段翻译失败，可稍后继续翻译。
             </div>
           ) : null}
-          {busy || onPause || onRetryFailed || (canExport && onExport) ? (
+          {busy || onPause || (canExport && onExport) ? (
             <div className="flex flex-wrap justify-end gap-2">
-              {!busy && onRetryFailed && translation?.progress.failed ? (
-                <Button size="sm" type="button" variant="outline" onClick={onRetryFailed}>
-                  重试失败部分
-                </Button>
-              ) : null}
               {!busy && canExport && onExport ? (
                 <Button size="sm" type="button" variant="outline" onClick={onExport}>
                   导出笔记
@@ -150,18 +143,18 @@ function summarizeTranslationTask({
   );
   const total = progress?.total ?? 0;
   const completed = progress
-    ? progress.translated + progress.skipped + progress.failed
+    ? progress.translated + progress.skipped
     : 0;
   const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : busy ? 8 : 100;
   const status = translation?.status;
   const hasPersistentStatus = status === 'partial' || status === 'failed' || status === 'running';
   const visible = busy || Boolean(message) || hasPersistentStatus || hasTranslation;
-  const title = message || statusTitle(status) || '全文翻译';
+  const title = busy ? '正在翻译全文' : message || statusTitle(status) || '全文翻译';
   const progressLabel = total > 0 ? `${completed}/${total}` : busy ? '进行中' : '已完成';
 
   if (busy || status === 'running') {
     return {
-      description: '正在处理全文翻译任务',
+      description: message || '正在处理全文翻译任务',
       icon: Loader2,
       iconClass: 'size-4 shrink-0 text-primary',
       percent,

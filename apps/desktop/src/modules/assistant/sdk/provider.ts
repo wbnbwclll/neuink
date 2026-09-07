@@ -1,7 +1,10 @@
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 
-import type { LlmProfile } from '@/shared/ipc/assistantApi';
+import type { LlmApiProtocol, LlmProfile } from '@/shared/ipc/assistantApi';
+import { resolveLlmApiProtocol } from '@/shared/ipc/assistantApi';
 
 export type ProviderModelInfo = {
   id: string;
@@ -15,42 +18,83 @@ export type ProviderModelInfo = {
 
 export type ProviderModelApiItem = {
   context_length?: unknown;
+  display_name?: unknown;
   id?: unknown;
   name?: unknown;
   top_provider?: { context_length?: unknown; max_completion_tokens?: unknown };
 };
 
 const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+const ANTHROPIC_VERSION = '2023-06-01';
 
 export function createNeuinkModel(settings: LlmProfile) {
-  const provider = createOpenAICompatible({
-    name: 'neuink',
-    baseURL: settings.base_url,
-    apiKey: settings.api_key ?? undefined,
-    fetch: tauriFetch
-  });
+  const apiKey = settings.api_key?.trim() || undefined;
+  const common = { apiKey, baseURL: settings.base_url, fetch: tauriFetch };
 
-  return provider(settings.model);
+  switch (resolveLlmApiProtocol(settings.api_protocol)) {
+    case 'anthropic':
+      return createAnthropic(common)(settings.model);
+    case 'google':
+      return createGoogleGenerativeAI(common)(settings.model);
+    default:
+      return createOpenAICompatible({ name: 'neuink', ...common })(settings.model);
+  }
 }
 
 export function generationSettings(settings: LlmProfile) {
+  const protocol = resolveLlmApiProtocol(settings.api_protocol);
   return {
-    maxOutputTokens: settings.max_output_tokens ?? undefined,
+    maxOutputTokens:
+      settings.max_output_tokens ?? (protocol === 'anthropic' ? 4_096 : undefined),
     temperature: settings.temperature ?? undefined,
     topP: settings.top_p ?? undefined
   };
 }
 
+const ANTHROPIC_MODELS_VERSION = '2023-06-01';
+
+type ProtocolAwareConnectionSettings = {
+  apiKey?: string;
+  apiProtocol?: LlmApiProtocol;
+  baseUrl: string;
+};
+
+function modelsRequestInit(
+  settings: ProtocolAwareConnectionSettings
+): { headers?: Record<string, string> } {
+  const apiKey = settings.apiKey?.trim();
+  switch (resolveLlmApiProtocol(settings.apiProtocol)) {
+    case 'anthropic':
+      return {
+        headers: apiKey
+          ? { 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_MODELS_VERSION }
+          : { 'anthropic-version': ANTHROPIC_MODELS_VERSION }
+      };
+    case 'google':
+      return apiKey ? { headers: { 'x-goog-api-key': apiKey } } : {};
+    default:
+      return apiKey ? { headers: { Authorization: `Bearer ${apiKey}` } } : {};
+  }
+}
+
+function modelsListUrl(settings: ProtocolAwareConnectionSettings) {
+  const base = settings.baseUrl.replace(/\/$/, '');
+  if (
+    resolveLlmApiProtocol(settings.apiProtocol) === 'google' &&
+    !base.endsWith('/models')
+  ) {
+    return `${base}/models?pageSize=1000`;
+  }
+  return `${base}/models`;
+}
+
 export async function testOpenAiCompatibleConnection(settings: {
   apiKey?: string;
+  apiProtocol?: LlmApiProtocol;
   baseUrl: string;
 }) {
-  const response = await tauriFetch(`${settings.baseUrl.replace(/\/$/, '')}/models`, {
-    headers: settings.apiKey
-      ? {
-          Authorization: `Bearer ${settings.apiKey}`
-        }
-      : undefined,
+  const response = await tauriFetch(modelsListUrl(settings), {
+    headers: modelsRequestInit(settings)?.headers,
     method: 'GET'
   });
 
@@ -61,14 +105,11 @@ export async function testOpenAiCompatibleConnection(settings: {
 
 export async function listOpenAiCompatibleModels(settings: {
   apiKey?: string;
+  apiProtocol?: LlmApiProtocol;
   baseUrl: string;
 }): Promise<ProviderModelInfo[]> {
-  const response = await tauriFetch(`${settings.baseUrl.replace(/\/$/, '')}/models`, {
-    headers: settings.apiKey
-      ? {
-          Authorization: `Bearer ${settings.apiKey}`
-        }
-      : undefined,
+  const response = await tauriFetch(modelsListUrl(settings), {
+    headers: modelsRequestInit(settings)?.headers,
     method: 'GET'
   });
 
@@ -84,8 +125,8 @@ export async function listOpenAiCompatibleModels(settings: {
   const data: ProviderModelApiItem[] =
     payload.data ??
     payload.models?.map((model) => ({
-      id: model.name,
-      name: model.name
+      id: stripGoogleModelPrefix(model.name),
+      display_name: stripGoogleModelPrefix(model.name)
     })) ??
     [];
 
@@ -95,6 +136,10 @@ export async function listOpenAiCompatibleModels(settings: {
     .sort((left, right) => left.id.localeCompare(right.id));
 
   return enrichModelsWithOpenRouterCatalog(models, settings.baseUrl);
+}
+
+function stripGoogleModelPrefix(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.replace(/^models\//, '') : undefined;
 }
 
 async function enrichModelsWithOpenRouterCatalog(
@@ -176,7 +221,12 @@ export function providerModelInfoFromApiItem(
         : undefined,
     metadataSource,
     modelContextLength,
-    name: typeof model.name === 'string' ? model.name : undefined,
+    name:
+      typeof model.display_name === 'string'
+        ? model.display_name
+        : typeof model.name === 'string'
+          ? model.name
+          : undefined,
     providerContextLength
   };
 }

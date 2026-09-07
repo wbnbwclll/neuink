@@ -84,6 +84,7 @@ function settings(assistantProfileId: string | null): LlmSettingsState {
   const profile = assistantProfileId
     ? {
         api_key: null,
+        api_protocol: 'openai_compatible' as const,
         base_url: 'https://example.test/v1',
         id: assistantProfileId,
         max_context_length: null,

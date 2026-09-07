@@ -42,10 +42,8 @@ import {
 } from "./assistantScope";
 import {
   buildAssistantMessageParts,
-  buildConversationMemory,
   createOptimisticMessage,
   createOptimisticMessageId,
-  createSyntheticConversationMessage,
   mergeToolTraceEvent,
   updateConversationMessageLocally,
 } from "./assistantPanelState";
@@ -239,6 +237,9 @@ export async function runAssistantPanelTask({
   let persistedConversationId: string | null = null;
   let persistedAssistantMessageId: string | null = null;
   let streamedAnswer = "";
+  let streamedReasoning = "";
+  let assistantToolEvents: AssistantToolTraceEvent[] = [];
+  let assistantNoteProposals: AssistantNoteProposal[] = [];
   let streamRenderTimer: number | null = null;
   try {
     const conversationMessages = conversation?.messages ?? [];
@@ -273,8 +274,6 @@ export async function runAssistantPanelTask({
     setHistoryOpen(false);
 
     const assistantMessageId = createOptimisticMessageId("assistant");
-    let assistantToolEvents: AssistantToolTraceEvent[] = [];
-    let assistantNoteProposals: AssistantNoteProposal[] = [];
     let lastDraftPersistedAt = 0;
     let draftPersistPromise: Promise<void> = Promise.resolve();
 
@@ -337,6 +336,7 @@ export async function runAssistantPanelTask({
       }
       lastDraftPersistedAt = now;
       const draftContent = streamedAnswer;
+      const draftReasoning = streamedReasoning;
       const draftToolEvents = assistantToolEvents;
       const draftNoteProposals = assistantNoteProposals;
       draftPersistPromise = draftPersistPromise
@@ -355,6 +355,7 @@ export async function runAssistantPanelTask({
               parts: buildAssistantMessageParts({
                 content: draftContent,
                 noteProposals: draftNoteProposals,
+                reasoning: draftReasoning,
                 toolEvents: draftToolEvents,
               }),
               tool_events: draftToolEvents,
@@ -378,6 +379,7 @@ export async function runAssistantPanelTask({
       const draftParts = buildAssistantMessageParts({
         content: streamedAnswer,
         noteProposals: assistantNoteProposals,
+        reasoning: streamedReasoning,
         toolEvents: assistantToolEvents,
       });
       const messageId = persistedAssistantMessageId ?? assistantMessageId;
@@ -481,6 +483,14 @@ export async function runAssistantPanelTask({
         streamedAnswer += delta;
         scheduleStreamingDraft();
       },
+      onAnswerReset: () => {
+        streamedAnswer = "";
+        scheduleStreamingDraft();
+      },
+      onReasoningDelta: (delta) => {
+        streamedReasoning += delta;
+        scheduleStreamingDraft();
+      },
       onNoteProposal: undefined,
       onToolEvent: (event) => {
         assistantToolEvents = mergeToolTraceEvent(assistantToolEvents, event);
@@ -488,6 +498,7 @@ export async function runAssistantPanelTask({
         const draftParts = buildAssistantMessageParts({
           content: streamedAnswer,
           noteProposals: assistantNoteProposals,
+          reasoning: streamedReasoning,
           toolEvents: assistantToolEvents,
         });
         const applyDraft = (current: Conversation | null) =>
@@ -541,17 +552,9 @@ export async function runAssistantPanelTask({
       agentRun: grounded.agentRun,
       content: grounded.answer,
       entryMetaProposals: finalEntryMetaProposals,
-      memory: buildConversationMemory([
-        ...currentConversation.messages,
-        createSyntheticConversationMessage("user", trimmedQuestion),
-        createSyntheticConversationMessage(
-          "assistant",
-          grounded.answer,
-          grounded.sources,
-          finalNoteProposals,
-        ),
-      ]),
+      memory: grounded.conversationMemory ?? null,
       noteProposals: finalNoteProposals,
+      reasoning: streamedReasoning,
       tagProposals: finalTagProposals,
       plan: grounded.plan,
       sourceLinks: grounded.sources,
@@ -642,12 +645,14 @@ export async function runAssistantPanelTask({
       const conversationId = persistedConversationId;
       const assistantMessageId = persistedAssistantMessageId;
       const errorMessage = caught instanceof Error ? caught.message : String(caught);
-      const fallbackContent = "";
+      const fallbackContent = streamedAnswer;
       const fallbackParts = buildAssistantMessageParts({
         agentRun: failedAgentRun,
         content: fallbackContent,
+        reasoning: streamedReasoning,
         taskState:
           caught instanceof AssistantHarnessError ? caught.taskState : undefined,
+        toolEvents: assistantToolEvents,
       });
       fallbackParts.push({
         message: errorMessage,
@@ -657,7 +662,7 @@ export async function runAssistantPanelTask({
         updateConversationMessageLocally(
           current,
           assistantMessageId,
-          { content: fallbackContent, parts: fallbackParts },
+          { content: fallbackContent, parts: fallbackParts, tool_events: assistantToolEvents },
           conversationId,
         ),
       );
@@ -666,7 +671,7 @@ export async function runAssistantPanelTask({
         conversation: updateConversationMessageLocally(
           getAssistantBackgroundRun()?.conversation ?? null,
           assistantMessageId,
-          { content: fallbackContent, parts: fallbackParts },
+          { content: fallbackContent, parts: fallbackParts, tool_events: assistantToolEvents },
           conversationId,
         ),
         error: errorMessage,
@@ -675,6 +680,7 @@ export async function runAssistantPanelTask({
       void updateConversationMessage(root, conversationId, assistantMessageId, {
         content: fallbackContent,
         parts: fallbackParts,
+        tool_events: assistantToolEvents,
       }).catch(() => undefined);
       if (failedAgentRun) {
         void saveAgentRun(root, {

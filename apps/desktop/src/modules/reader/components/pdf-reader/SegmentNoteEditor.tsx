@@ -107,6 +107,7 @@ export function SegmentNoteEditor({
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
+        underline: false,
         codeBlock: {
           HTMLAttributes: {
             class: 'rounded-md bg-muted px-3 py-2 font-mono text-xs'

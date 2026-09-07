@@ -84,7 +84,7 @@ describe('WorkspaceTabsBar pointer interaction', () => {
       right: { kind: 'reflow', entryId: 'a' },
       rightTabs: [{ kind: 'reflow', entryId: 'a' }]
     };
-    const { getByRole } = render(
+    const { getByLabelText, getByRole } = render(
       <TooltipProvider>
         <WorkspaceTabsBar
           entries={[{ id: 'a', title: 'Entry A' }]}
@@ -99,6 +99,7 @@ describe('WorkspaceTabsBar pointer interaction', () => {
       </TooltipProvider>
     );
 
+    expect(getByLabelText('阅读位置双向联动')).toBeTruthy();
     fireEvent.click(getByRole('button', { name: '交换左右分屏' }));
     expect(onSwap).toHaveBeenCalledOnce();
   });

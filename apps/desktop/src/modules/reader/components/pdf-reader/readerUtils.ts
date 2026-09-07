@@ -34,6 +34,38 @@ export function groupSegmentsByPage(
     });
   });
 
+  // MinerU v2 emits captions as inline items without their own bbox, so they
+  // would never hit-test. Synthesize a strip for them in the gap adjacent to
+  // their visual-group anchor (below figures, above tables).
+  segments
+    .filter(
+      (segment) =>
+        !normalizeBbox(segment.bbox) &&
+        (segment.block_role === "caption" || segment.block_role === "footnote") &&
+        segment.visual_group_id,
+    )
+    .forEach((segment) => {
+      const pageIdx = clamp(segment.page_idx, 0, pageCount - 1);
+      const regions = regionsByPage[pageIdx];
+      if (!regions) {
+        return;
+      }
+      const stripBbox = captionStripBbox(segment, regions);
+      if (!stripBbox) {
+        return;
+      }
+      regions.push({
+        bbox: stripBbox,
+        hoverGroupUid: segmentHoverGroupUid(segment),
+        id: segment.uid,
+        isContinuation: false,
+        relationGroupUid: segmentRelationGroupUid(segment),
+        pageIdx,
+        segment,
+        sourceSegment: segment,
+      });
+    });
+
   return realSegmentsByPage.map((pageSegments, pageIdx) => ({
     pageIdx,
     regions: regionsByPage[pageIdx].sort(compareRegionItems),
@@ -347,6 +379,55 @@ function segmentHoverGroupUid(segment: SourceSegment) {
   return segmentRelationGroupUid(segment) ?? segment.uid;
 }
 
+function captionStripBbox(
+  caption: SourceSegment,
+  regions: SegmentRegionItem[],
+): readonly [number, number, number, number] | null {
+  const groupId = caption.visual_group_id;
+  const anchorBboxes = regions
+    .filter(
+      (region) =>
+        region.sourceSegment.visual_group_id === groupId &&
+        region.sourceSegment.block_role !== "caption" &&
+        region.sourceSegment.block_role !== "footnote",
+    )
+    .map((region) => region.bbox);
+  if (anchorBboxes.length === 0) {
+    return null;
+  }
+
+  const x0 = Math.min(...anchorBboxes.map((bbox) => bbox[0]));
+  const x1 = Math.max(...anchorBboxes.map((bbox) => bbox[2]));
+  const anchorTop = Math.min(...anchorBboxes.map((bbox) => bbox[1]));
+  const anchorBottom = Math.max(...anchorBboxes.map((bbox) => bbox[3]));
+  // Only regions that horizontally overlap the anchor can bound the strip;
+  // columns beside the anchor must not shrink it.
+  const blockers = regions.filter(
+    (region) =>
+      region.sourceSegment.visual_group_id !== groupId &&
+      Math.min(region.bbox[2], x1) - Math.max(region.bbox[0], x0) > 10,
+  );
+
+  if (caption.raw_type === "table") {
+    // Table captions conventionally sit above the table body.
+    const limit = blockers
+      .filter((region) => region.bbox[3] <= anchorTop + 1)
+      .reduce((max, region) => Math.max(max, region.bbox[3]), 0);
+    if (limit >= anchorTop - 2) {
+      return null;
+    }
+    return [x0, limit, x1, anchorTop];
+  }
+
+  const limit = blockers
+    .filter((region) => region.bbox[1] >= anchorBottom - 1)
+    .reduce((min, region) => Math.min(min, region.bbox[1]), 1000);
+  if (limit <= anchorBottom + 2) {
+    return null;
+  }
+  return [x0, anchorBottom, x1, limit];
+}
+
 function segmentRelationGroupUid(segment: SourceSegment) {
   return segment.continuation_group_id ?? segment.visual_group_id ?? null;
 }
@@ -361,7 +442,7 @@ function compareRegionItems(left: SegmentRegionItem, right: SegmentRegionItem) {
 
 export function scrollToPage(pageIdx: number, container: HTMLElement | null) {
   if (!container) {
-    return;
+    return false;
   }
 
   const target = Array.from(
@@ -369,17 +450,57 @@ export function scrollToPage(pageIdx: number, container: HTMLElement | null) {
   ).find((element) => Number(element.dataset.pdfPageIndex) === pageIdx);
 
   if (!target) {
-    return;
+    return false;
   }
 
   const targetRect = target.getBoundingClientRect();
   const containerRect = container.getBoundingClientRect();
 
+  const targetTop = Math.max(
+    0,
+    container.scrollTop + targetRect.top - containerRect.top - 12,
+  );
+  // A page command should be deterministic in WebView2 and must not also move
+  // the reader horizontally when the PDF is zoomed or displayed as a spread.
+  container.scrollTo({ behavior: "auto", top: targetTop });
+  return true;
+}
+
+export function scrollToPdfRect(
+  pageIdx: number,
+  rect: readonly [number, number, number, number] | null | undefined,
+  container: HTMLElement | null,
+) {
+  if (!container || !rect) {
+    return false;
+  }
+
+  const page = Array.from(
+    container.querySelectorAll<HTMLElement>('[data-pdf-page-index]'),
+  ).find((element) => Number(element.dataset.pdfPageIndex) === pageIdx);
+  const surface = page?.querySelector<HTMLElement>('[data-pdf-page-surface]');
+  if (!surface) {
+    return false;
+  }
+
+  const [x0, y0, x1, y1] = rect;
+  const surfaceRect = surface.getBoundingClientRect();
+  const containerRect = container.getBoundingClientRect();
+  const centerX = surfaceRect.left + (((x0 + x1) / 2) / 1000) * surfaceRect.width;
+  const centerY = surfaceRect.top + (((y0 + y1) / 2) / 1000) * surfaceRect.height;
+
   container.scrollTo({
     behavior: "smooth",
-    left: container.scrollLeft + targetRect.left - containerRect.left,
-    top: container.scrollTop + targetRect.top - containerRect.top - 12,
+    left: Math.max(
+      0,
+      container.scrollLeft + centerX - containerRect.left - container.clientWidth / 2,
+    ),
+    top: Math.max(
+      0,
+      container.scrollTop + centerY - containerRect.top - container.clientHeight * 0.38,
+    ),
   });
+  return true;
 }
 
 export function findNearestSegmentUidInViewport(container: HTMLElement) {

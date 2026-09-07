@@ -1,42 +1,33 @@
 use neuink_config::LlmProfile;
-use serde::Deserialize;
-use serde_json::{json, Value};
 
 use super::types::{AgentProfile, AgentRuntimeSettings, RunAgentSubagentTaskRequest, SkillPackage};
 use super::util::trim_chars;
+use crate::commands::llm_http::{build_chat_request, parse_chat_response, ChatFallbacks};
 
 pub(crate) async fn complete_chat(
     profile: &LlmProfile,
     system_prompt: String,
     user_prompt: String,
 ) -> Result<String, String> {
-    let url = format!(
-        "{}/chat/completions",
-        profile.base_url.trim_end_matches('/')
-    );
-    let mut body = json!({
-        "model": profile.model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-    });
-    set_optional(&mut body, "temperature", profile.temperature);
-    set_optional(&mut body, "top_p", profile.top_p);
-    if let Some(max_tokens) = profile.max_output_tokens {
-        body["max_tokens"] = json!(max_tokens);
-    }
+    let (url, headers, body) = build_chat_request(
+        profile,
+        &system_prompt,
+        &user_prompt,
+        ChatFallbacks {
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+        },
+    )?;
 
     let client = reqwest::Client::new();
-    let mut request = client.post(url).json(&body);
-    if let Some(api_key) = profile
-        .api_key
-        .as_deref()
-        .filter(|key| !key.trim().is_empty())
-    {
-        request = request.bearer_auth(api_key);
-    }
-    let response = request.send().await.map_err(|error| error.to_string())?;
+    let response = client
+        .post(url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
     let status = response.status();
     if !status.is_success() {
         let message = response
@@ -47,16 +38,10 @@ pub(crate) async fn complete_chat(
     }
 
     let payload = response
-        .json::<ChatCompletionResponse>()
+        .text()
         .await
         .map_err(|error| error.to_string())?;
-    payload
-        .choices
-        .into_iter()
-        .find_map(|choice| choice.message.content)
-        .map(|content| content.trim().to_string())
-        .filter(|content| !content.is_empty())
-        .ok_or_else(|| "LLM response did not contain message content.".to_string())
+    parse_chat_response(profile.api_protocol, &payload)
 }
 
 pub(crate) fn build_system_prompt(
@@ -211,25 +196,4 @@ pub(crate) fn resolve_skill_packages(
         })
         .cloned()
         .collect()
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatCompletionResponse {
-    choices: Vec<ChatChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatChoice {
-    message: ChatMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatMessage {
-    content: Option<String>,
-}
-
-fn set_optional(body: &mut Value, key: &str, value: Option<f32>) {
-    if let Some(value) = value {
-        body[key] = json!(value);
-    }
 }

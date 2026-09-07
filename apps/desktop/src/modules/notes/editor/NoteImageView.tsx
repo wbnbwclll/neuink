@@ -12,14 +12,36 @@ export function NoteImageView({ editor, extension, node, selected, updateAttribu
   const resizeAnchorTopRef = useRef<number | null>(null);
   const resizeScrollContainerRef = useRef<HTMLElement | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
+  const resizeActiveRef = useRef(false);
 
-  useEffect(() => () => {
-    if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
+  useEffect(() => {
+    const finishResize = () => {
+      resizeActiveRef.current = false;
+      if (resizeFrameRef.current === null) {
+        resizeAnchorTopRef.current = null;
+        resizeScrollContainerRef.current = null;
+      }
+    };
+
+    window.addEventListener('pointerup', finishResize);
+    window.addEventListener('pointercancel', finishResize);
+    window.addEventListener('blur', finishResize);
+    return () => {
+      window.removeEventListener('pointerup', finishResize);
+      window.removeEventListener('pointercancel', finishResize);
+      window.removeEventListener('blur', finishResize);
+      resizeActiveRef.current = false;
+      resizeAnchorTopRef.current = null;
+      resizeScrollContainerRef.current = null;
+      if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = null;
+    };
   }, []);
 
   const beginResize = () => {
     const input = resizeInputRef.current;
     if (!input) return;
+    resizeActiveRef.current = true;
     resizeAnchorTopRef.current = input.getBoundingClientRect().top;
     resizeScrollContainerRef.current = findScrollContainer(input, editor.view.dom);
   };
@@ -37,6 +59,10 @@ export function NoteImageView({ editor, extension, node, selected, updateAttribu
         // The image height changes above this slider. Offset the editor scroll by the
         // same amount so the thumb remains under the pointer throughout the drag.
         resizeScrollContainerRef.current?.scrollBy({ top: delta });
+      }
+      if (!resizeActiveRef.current) {
+        resizeAnchorTopRef.current = null;
+        resizeScrollContainerRef.current = null;
       }
     });
   };
@@ -70,8 +96,6 @@ export function NoteImageView({ editor, extension, node, selected, updateAttribu
               value={width}
               onChange={(event) => setWidth(event.target.value)}
               onPointerDown={beginResize}
-              onPointerUp={() => { resizeAnchorTopRef.current = null; }}
-              onPointerCancel={() => { resizeAnchorTopRef.current = null; }}
             />
             <input aria-label="图片宽度百分比" className="h-6 w-14 rounded border px-1" max="100" min="10" step="1" type="number" value={width} onChange={(event) => setWidth(event.target.value)} />
             <span>%</span>

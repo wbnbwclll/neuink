@@ -75,7 +75,7 @@ describe('TranslationTaskDialog', () => {
 
     const checkboxes = getByRole('dialog').querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
     expect(Array.from(checkboxes).every((checkbox) => !checkbox.checked)).toBe(true);
-    fireEvent.click(checkboxes[1]);
+    fireEvent.click(getByRole('checkbox', { name: '选择第 1 页 段落' }));
     fireEvent.click(getByRole('button', { name: '翻译选中（1）' }));
 
     expect(onTranslate).toHaveBeenCalledWith([paragraph], 'pending');
@@ -98,10 +98,10 @@ describe('TranslationTaskDialog', () => {
     fireEvent.click(getByRole('button', { name: '段落 1' }));
 
     expect(getByRole('button', { name: '翻译选中（0）' })).toBeTruthy();
-    expect(getByRole('checkbox')).toHaveProperty('checked', false);
+    expect(getByRole('checkbox', { name: '选择第 1 页 段落' })).toHaveProperty('checked', false);
   });
 
-  it('treats legacy skipped blocks as pending and keeps the pending list visible', async () => {
+  it('keeps skipped blocks visible without making them retryable', async () => {
     const skipped = sourceSegment('skipped-1', 'page_header', 'Conference header');
     const { getByRole, getByText } = render(
       <TranslationTaskDialog
@@ -118,11 +118,33 @@ describe('TranslationTaskDialog', () => {
     });
     fireEvent.click(getByRole('button', { name: '待翻译 1' }));
 
-    expect(getByText('第 1 页 · 页眉')).toBeTruthy();
-    expect(getByText('待翻译')).toBeTruthy();
+    expect(getByText('第 1 页')).toBeTruthy();
+    expect(getByText('页眉')).toBeTruthy();
+    expect(getByText('已跳过')).toBeTruthy();
+    expect(getByRole('checkbox', { name: '选择第 1 页 页眉' })).toHaveProperty('disabled', true);
   });
 
-  it('shows the active batch message and scoped job progress', () => {
+  it('locks row selection while a translation task is running', async () => {
+    const { getByRole } = render(
+      <TranslationTaskDialog
+        busy
+        open
+        progress={{ current: 1, percent: 50, total: 2 }}
+        segments={[segment, sourceSegment('paragraph-2', 'paragraph', 'Second paragraph')]}
+        translation={null}
+        onOpenChange={vi.fn()}
+        onTranslate={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      const checkboxes = Array.from(getByRole('dialog').querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+      expect(checkboxes.length).toBe(3);
+      expect(checkboxes.every((checkbox) => checkbox.disabled)).toBe(true);
+    });
+  });
+
+  it('shows stable translation action and scoped job progress', () => {
     const { getByText } = render(
       <TranslationTaskDialog
         busy
@@ -136,7 +158,7 @@ describe('TranslationTaskDialog', () => {
       />
     );
 
-    expect(getByText('翻译批次 1/3 · 2/5')).toBeTruthy();
+    expect(getByText('正在翻译 · 2/5')).toBeTruthy();
   });
 
   it('hides persistent low-level errors and keeps failed blocks retryable', () => {

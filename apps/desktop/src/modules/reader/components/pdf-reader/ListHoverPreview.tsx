@@ -23,7 +23,7 @@ export function ListHoverPreview({
       }));
 
   if (items.length === 0) {
-    return <p className="whitespace-pre-wrap break-words text-sm leading-6">{text}</p>;
+    return <p className="whitespace-pre-wrap break-words text-[inherit] leading-[inherit]">{text}</p>;
   }
 
   return (
@@ -33,7 +33,7 @@ export function ListHoverPreview({
           const isLong = item.text.length > 420;
           return (
             <li
-              className="rounded-md border bg-background/70 px-2 py-1.5 text-sm leading-6 transition-colors hover:border-primary/40 hover:bg-primary/5"
+              className="rounded-md border bg-background/70 px-2 py-1.5 text-[inherit] leading-[inherit] transition-colors hover:border-primary/40 hover:bg-primary/5"
               key={`${item.marker ?? 'item'}-${index}`}
               onPointerEnter={() => onItemHover(regions[index]?.bbox ?? null)}
               onPointerLeave={() => onItemHover(null)}

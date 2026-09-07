@@ -15,6 +15,11 @@ import type { AgentInvocationPlan, AssistantTaskPlan } from '@/shared/types/assi
 import { DEFAULT_FEATURE_SKILL_IDS } from './featureSkills';
 
 const STORAGE_KEY = 'neuink.agentRuntime.v3';
+const SYSTEM_MANAGED_SUBAGENT_IDS = new Set([
+  'task-orchestrator-agent',
+  'memory-agent',
+  'skill-selector-agent'
+]);
 
 const DEFAULT_MAIN_TOOL_IDS: AgentToolId[] = [
   'create_entry',
@@ -62,7 +67,10 @@ function createMainAssistant(partial: Partial<MainAssistantProfile>): MainAssist
     allowedSkillPackageIds: partial.allowedSkillPackageIds ?? [...DEFAULT_FEATURE_SKILL_IDS],
     allowedSubagentIds:
       partial.allowedSubagentIds ??
-      ['skill-selector-agent', 'evidence-agent', 'patch-planner-agent'],
+      [
+        'evidence-agent',
+        'patch-planner-agent'
+      ],
     allowedMcpServerIds: partial.allowedMcpServerIds ?? [],
     description:
       partial.description ?? 'Neuink 全局主助手，负责直接响应用户、选择技能和委派子 agent。',
@@ -155,20 +163,36 @@ export const DEFAULT_AGENT_RUNTIME_SETTINGS: AgentRuntimeSettings = {
   mcpServers: [],
   subagents: [
     createSubagent({
-      id: 'skill-selector-agent',
-      name: 'SkillSelectorAgent',
-      outputKind: 'skill_selection',
-      description: '根据任务和 Skill Registry 元数据选择需要加载的 Skill。',
+      id: 'task-orchestrator-agent',
+      name: 'TaskOrchestratorAgent',
+      outputKind: 'task_contract',
+      description: '在隔离上下文中理解用户任务、解析延续关系并生成可验证的执行合同。',
       enabledToolIds: [],
       permissions: {
         canInvokeSubagents: false,
         canInvokeTools: false,
         canReadWorkspaceWide: false,
-        canUseSkills: true,
+        canUseSkills: false,
         canWriteProposals: false
       },
       systemPrompt:
-        'You are Neuink SkillSelectorAgent. Select Skills only from the supplied registry metadata. Return strict JSON and never execute the task.'
+        'You are Neuink TaskOrchestratorAgent. Understand the user request semantically from conversation memory, recent turns, typed UI context, and the supplied capability catalog. Produce only the requested structured task contract. Never execute tools, never route by keywords, never invent ids, and distinguish creating a new note from editing an existing note.'
+    }),
+    createSubagent({
+      id: 'memory-agent',
+      name: 'MemoryAgent',
+      outputKind: 'memory',
+      description: '把已完成回合压缩为可延续的语义记忆检查点。',
+      enabledToolIds: [],
+      permissions: {
+        canInvokeSubagents: false,
+        canInvokeTools: false,
+        canReadWorkspaceWide: false,
+        canUseSkills: false,
+        canWriteProposals: false
+      },
+      systemPrompt:
+        'You are Neuink MemoryAgent. Update a durable semantic checkpoint from the prior checkpoint and the newest conversation tail. Preserve goals, decisions, unresolved work, referenced entities, and stable user preferences. Do not invent facts.'
     }),
     createSubagent({
       id: 'evidence-agent',
@@ -292,9 +316,9 @@ function normalizeMainAssistant(value: unknown) {
   const normalized = createMainAssistant(value as Partial<MainAssistantProfile>);
   return {
     ...normalized,
-    allowedSubagentIds: [
-      ...new Set([...normalized.allowedSubagentIds, 'skill-selector-agent'])
-    ],
+    allowedSubagentIds: normalized.allowedSubagentIds.filter(
+      (id) => !SYSTEM_MANAGED_SUBAGENT_IDS.has(id)
+    ),
     enabledToolIds: [...new Set([...normalized.enabledToolIds, ...DEFAULT_MAIN_TOOL_IDS])]
   };
 }
@@ -306,6 +330,10 @@ function normalizeSubagents(value: unknown) {
     createSubagent({
       ...defaultSubagent,
       ...(byId.get(defaultSubagent.id) ?? {}),
+      enabled:
+        defaultSubagent.id === 'task-orchestrator-agent'
+          ? true
+          : byId.get(defaultSubagent.id)?.enabled ?? defaultSubagent.enabled,
       id: defaultSubagent.id,
       outputKind: defaultSubagent.outputKind,
       systemPrompt: byId.get(defaultSubagent.id)?.systemPrompt ?? defaultSubagent.systemPrompt
@@ -507,7 +535,7 @@ function deniedToolReason(
 
 export function selectAgentExecution(
   settings: AgentRuntimeSettings,
-  question: string,
+  _question: string,
   plan?: AssistantTaskPlan | null,
   preferredAgentId?: string | null,
   invocationPlan?: AgentInvocationPlan | null
@@ -517,8 +545,7 @@ export function selectAgentExecution(
   const agent = settings.mainAssistant;
   const packageIds = new Set([
     ...agent.allowedSkillPackageIds,
-    ...(invocationPlan?.skillIdsToLoad ?? []),
-    ...skillPackageIdsForQuestion(settings, question)
+    ...(invocationPlan?.skillIdsToLoad ?? [])
   ]);
   const skillPackages = settings.skillPackages.filter(
     (skillPackage) => skillPackage.enabled && packageIds.has(skillPackage.id)
@@ -527,15 +554,6 @@ export function selectAgentExecution(
     agent,
     skillPackages
   };
-}
-
-function skillPackageIdsForQuestion(settings: AgentRuntimeSettings, question: string) {
-  const lowerQuestion = question.toLowerCase();
-  return settings.skillPackages
-    .filter((skillPackage) =>
-      skillPackage.triggers.some((trigger) => lowerQuestion.includes(trigger.toLowerCase()))
-    )
-    .map((skillPackage) => skillPackage.id);
 }
 
 export function buildAgentSystemPrompt(
@@ -560,7 +578,7 @@ export function buildAgentSystemPrompt(
       ? `Available Skill Metadata:\n${skillPackages.map(skillPackageMetadataLine).join('\n')}`
       : 'Available Skill Metadata: none',
     preloadedSkills.length > 0
-      ? `Preloaded Skill Instructions (selected by SkillSelectorAgent for this task):\n${preloadedSkills
+      ? `Preloaded Skill Instructions (selected by TaskOrchestratorAgent for this task):\n${preloadedSkills
           .map((skillPackage) => formatPreloadedSkill(skillPackage))
           .join('\n\n')}`
       : '',
@@ -581,7 +599,8 @@ function formatPreloadedSkill(skillPackage: SkillPackage) {
 
 export function subagentOutputLabel(outputKind: SubagentOutputKind) {
   if (outputKind === 'patch_plan') return 'Markdown patch plan';
-  if (outputKind === 'skill_selection') return 'Skill selection';
+  if (outputKind === 'task_contract') return 'Task contract';
+  if (outputKind === 'memory') return 'Conversation memory';
   return 'Evidence';
 }
 

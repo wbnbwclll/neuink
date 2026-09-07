@@ -5,6 +5,7 @@ pub mod embedding;
 pub mod embedding_resources;
 pub mod entry;
 pub mod job;
+mod llm_http;
 pub mod pdf_reader;
 pub mod sciverse;
 pub mod search;
