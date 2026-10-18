@@ -116,6 +116,9 @@ function ChatMessageComponent({
   const toolErrorNotice = assistantToolErrorNotice({ streaming, hasAnswer: Boolean(content.trim()), runStatus: resolvedAgentRun?.status });
   const resolvedMemory = memoryFromParts(messageParts);
   const reasoning = reasoningFromParts(messageParts);
+  // A compaction checkpoint is a marker, not a reply: it carries no text, no run and no tools.
+  const checkpointOnly = message.role === 'assistant' && Boolean(resolvedMemory) && !content.trim()
+    && !streaming && !resolvedAgentRun && !resolvedPlan && resolvedToolEvents.length === 0 && !reasoning;
   const contextItems = contextItemsFromParts(messageParts);
   const contextPlan = contextPlanFromParts(messageParts);
   const isPlanningRequest = messageParts.some(part => part.type === 'context-snapshot' && part.composer?.executionMode === 'plan');
@@ -147,7 +150,8 @@ function ChatMessageComponent({
       >
       <div className={`mb-1 text-[11px] font-medium text-muted-foreground ${message.role === 'user' ? 'text-right' : ''}`}>{message.role === 'user' ? '你' : 'Neuink'}</div>
       {isPlanningRequest ? <div className="mb-1 text-[11px] text-muted-foreground">仅规划 · 只读</div> : null}
-      {message.role === 'assistant' && (streaming || resolvedAgentRun || resolvedPlan || resolvedMemory || resolvedToolEvents.length > 0 || reasoning) ? (
+      {checkpointOnly && resolvedMemory ? <MemorySummary memory={resolvedMemory} /> : null}
+      {message.role === 'assistant' && !checkpointOnly && (streaming || resolvedAgentRun || resolvedPlan || resolvedMemory || resolvedToolEvents.length > 0 || reasoning) ? (
         <ExecutionDetails key={message.message_id} awaitingApproval={awaitingApproval} streaming={streaming} hasAnswer={Boolean(content.trim())} run={resolvedAgentRun} events={resolvedToolEvents}>
       {resolvedAgentRun ? (
         <AgentRunSummary run={resolvedAgentRun} errorNotice={toolErrorNotice} onRetry={onRetryAgentRun} />

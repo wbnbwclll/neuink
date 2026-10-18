@@ -8,6 +8,7 @@ import { getAssistantBackgroundRuns, getAssistantMessageQueues, setAssistantBack
 import { requestOpenAssistantConversation } from './assistantConversationNavigation';
 import type { Conversation, ConversationMessage } from '@/shared/ipc/assistantApi';
 import type { AssistantEntryMetaProposal, AssistantNoteProposal, AssistantTagProposal } from '@/shared/types/assistant';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { NoteReviewProvider } from '../review/NoteReviewContext';
 import { NoteReviewPage } from '../review/NoteReviewPage';
 import type { LibraryEntry } from '@/modules/library/components/LibrarySidebar';
@@ -83,7 +84,7 @@ afterEach(() => { cleanup(); setAssistantBackgroundRun(null); setAssistantDebug(
 it('protects top-level run failures by default and exposes only safe diagnostics after opt-in', async () => {
   const raw = 'Timeout HTTP 504 Authorization: Bearer sk-private C:\\Users\\Alice\\notes.md REMOTE_BODY';
   vi.mocked(runAssistantHarness).mockRejectedValueOnce(new Error(raw));
-  const ui = render(<AssistantPanel {...props} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: '解释论文' } });
   fireEvent.click(ui.getByRole('button', { name: '发送' }));
@@ -105,7 +106,7 @@ it('pins a selected excerpt to its paper across tab changes and freezes the queu
   const a = paper('A'), b = paper('B');
   const selected = { id: 'selection:A:s', kind: 'segment' as const, entryId: 'A', entryTitle: a.title,
     segmentUid: 's', pageIdx: 3, text: 'Only the selected sentence', addedAt: '' };
-  const ui = render(<AssistantPanel {...props} entries={[a, b]} activeEntry={b} assistantContext={{ items: [selected] }} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} entries={[a, b]} activeEntry={b} assistantContext={{ items: [selected] }} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   expect(ui.container.querySelector('[data-material="composer"]')?.contains(ui.getByRole('button', { name: '发送' }))).toBe(true);
   expect(ui.getByRole('button', { name: '更换阅读对象：论文 A · 第 4 页选区' })).toBeTruthy();
@@ -116,7 +117,7 @@ it('pins a selected excerpt to its paper across tab changes and freezes the queu
   expect(pending.get('解释选区')!.options.currentSegment?.text).toBe(selected.text);
   fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: '继续解释选区' } });
   fireEvent.click(ui.getByRole('button', { name: '排队发送' }));
-  ui.rerender(<AssistantPanel {...props} entries={[a, b]} activeEntry={b} assistantContext={{ items: [] }} />);
+  ui.rerender(<TooltipProvider><AssistantPanel {...props} entries={[a, b]} activeEntry={b} assistantContext={{ items: [] }} /></TooltipProvider>);
   await act(async () => pending.get('解释选区')!.finish({ answer: '完成', sources: [] }));
   await waitFor(() => expect(pending.has('继续解释选区')).toBe(true));
   expect(pending.get('继续解释选区')!.options.currentEntry?.id).toBe('A');
@@ -126,7 +127,7 @@ it('pins a selected excerpt to its paper across tab changes and freezes the queu
 
 it('sends the chosen note instead of the visible paper and blocks a removed target', async () => {
   const a = paper('A'), b = paper('B');
-  const ui = render(<AssistantPanel {...props} entries={[a, b]} activeEntry={b} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} entries={[a, b]} activeEntry={b} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.click(ui.getByRole('button', { name: '更换阅读对象：论文 B' }));
   fireEvent.click(ui.getByRole('button', { name: '笔记' }));
@@ -137,7 +138,7 @@ it('sends the chosen note instead of the visible paper and blocks a removed targ
   expect(pending.get('整理我的笔记')!.options.currentNote?.noteId).toBe('note-A');
   expect(pending.get('整理我的笔记')!.options.currentEntry?.id).toBe('A');
   await act(async () => pending.get('整理我的笔记')!.finish({ answer: '完成', sources: [] }));
-  ui.rerender(<AssistantPanel {...props} entries={[b]} activeEntry={b} />);
+  ui.rerender(<TooltipProvider><AssistantPanel {...props} entries={[b]} activeEntry={b} /></TooltipProvider>);
   fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: '再整理一次' } });
   expect(ui.getByText('对象已不可用，请重新选择后发送。')).toBeTruthy();
   expect(ui.getByRole('button', { name: '发送' }).hasAttribute('disabled')).toBe(true);
@@ -148,7 +149,7 @@ it('uses a fixed tag and its descendants as the reading scope instead of the vis
   const rootTag: TagMeta = { id: 'topic', name: '时间序列', parent_id: null, created_at: '', updated_at: '' };
   const childTag: TagMeta = { id: 'forecast', name: '预测', parent_id: 'topic', created_at: '', updated_at: '' };
   const a = { ...paper('A'), tagIds: ['forecast'] }, b = paper('B');
-  const ui = render(<AssistantPanel {...props} entries={[a, b]} tags={[rootTag, childTag]} activeEntry={b} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} entries={[a, b]} tags={[rootTag, childTag]} activeEntry={b} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.click(ui.getByRole('button', { name: '更换阅读对象：论文 B' }));
   fireEvent.click(await ui.findByRole('option', { name: '时间序列 时间序列' }));
@@ -161,7 +162,7 @@ it('uses a fixed tag and its descendants as the reading scope instead of the vis
     tag_ids: ['topic', 'forecast'], tag_names: ['时间序列', '预测'], entry_ids: ['A'], entry_titles: ['论文 A']
   });
   await act(async () => pending.get('整理标签论文')!.finish({ answer: '完成', sources: [] }));
-  ui.rerender(<AssistantPanel {...props} entries={[a, b]} tags={[childTag]} activeEntry={b} />);
+  ui.rerender(<TooltipProvider><AssistantPanel {...props} entries={[a, b]} tags={[childTag]} activeEntry={b} /></TooltipProvider>);
   fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: '继续整理' } });
   expect(ui.getByText('对象已不可用，请重新选择后发送。')).toBeTruthy();
   expect(ui.getByRole('button', { name: '发送' }).hasAttribute('disabled')).toBe(true);
@@ -178,7 +179,7 @@ it('confirms tags only once from the saved proposal and never returns to an old 
     if (part.type === 'tag-proposal') part.proposal.status = 'applied';
     resolve();
   }; }));
-  const ui = render(<AssistantPanel {...props} onApplyTagProposal={apply} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} onApplyTagProposal={apply} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.click(ui.getByRole('button', { name: '聊天历史' }));
   fireEvent.click(await ui.findByRole('button', { name: /^标签对话/ }));
@@ -193,7 +194,7 @@ it('confirms tags only once from the saved proposal and never returns to an old 
 });
 
 it('automatically routes queued requests without exposing a mode selector or changing the frozen request', async () => {
-  const ui = render(<AssistantPanel {...props} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: '正在运行' } });
   fireEvent.click(ui.getByRole('button', { name: '发送' }));
@@ -218,9 +219,9 @@ it('confirms from review through the original write path without switching back 
       parts: [{ type: 'note-proposal', proposal }] }] } as Conversation);
   let finish!: (value: AssistantNoteProposal) => void;
   const apply = vi.fn(() => new Promise<AssistantNoteProposal>(resolve => { finish = resolve; }));
-  const ui = render(<NoteReviewProvider onOpen={() => {}} onShowAssistant={() => {}}>
+  const ui = render(<TooltipProvider><NoteReviewProvider onOpen={() => {}} onShowAssistant={() => {}}>
     <AssistantPanel {...props} onApplyNoteProposal={apply} /><NoteReviewPage proposalId="review-p" onOpenNote={() => {}} />
-  </NoteReviewProvider>);
+  </NoteReviewProvider></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.click(ui.getByRole('button', { name: '聊天历史' }));
   fireEvent.click(await ui.findByRole('button', { name: /^原对话/ }));
@@ -235,7 +236,7 @@ it('confirms from review through the original write path without switching back 
 });
 
 it('new chat detaches without aborting, reopening follows the running task, and completion releases only its own view', async () => {
-  const ui = render(<AssistantPanel {...props} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: '任务 A' } });
   fireEvent.click(ui.getByRole('button', { name: '发送' }));
@@ -263,7 +264,7 @@ it('new chat detaches without aborting, reopening follows the running task, and 
 });
 
 it('replaces the composer with explicit choices while waiting and restores its draft afterwards', async () => {
-  const ui = render(<AssistantPanel {...props} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: '整理阅读笔记' } });
   fireEvent.click(ui.getByRole('button', { name: '发送' }));
@@ -287,7 +288,7 @@ it('replaces the composer with explicit choices while waiting and restores its d
 });
 
 it('keeps a task running and saves its answer after the panel unmounts', async () => {
-  const ui = render(<AssistantPanel {...props} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: '后台任务' } });
   fireEvent.click(ui.getByRole('button', { name: '发送' }));
@@ -300,7 +301,7 @@ it('keeps a task running and saves its answer after the panel unmounts', async (
 });
 
 it('runs the queued follow-up in its original background conversation, not the newly selected one', async () => {
-  const ui = render(<AssistantPanel {...props} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   const submit = (question: string, button = '发送') => {
     fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: question } });
@@ -328,7 +329,7 @@ it('runs the queued follow-up in its original background conversation, not the n
 });
 
 it('edits and cancels multiple unsent requests without interrupting the active response', async () => {
-  const ui = render(<AssistantPanel {...props} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   const submit = (question: string, button = '排队发送') => {
     fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: question } });
@@ -362,7 +363,7 @@ it('edits and cancels multiple unsent requests without interrupting the active r
 });
 
 it('keeps stopped requests in the queue and requires explicit continuation', async () => {
-  const ui = render(<AssistantPanel {...props} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: 'stop first' } });
   fireEvent.click(ui.getByRole('button', { name: '发送' }));
@@ -381,7 +382,7 @@ it('keeps stopped requests in the queue and requires explicit continuation', asy
 });
 
 it('preserves editing text across conversation navigation and completes the remaining queue after unmount', async () => {
-  const ui = render(<AssistantPanel {...props} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: 'background first' } });
   fireEvent.click(ui.getByRole('button', { name: '发送' }));
@@ -410,7 +411,7 @@ it('preserves editing text across conversation navigation and completes the rema
 it.each(['apply', 'reject'] as const)('refreshes saved note %s decisions before an edited queued message runs', async decision => {
   const proposal: AssistantNoteProposal = { id: 'note-review', action: 'create', entryId: 'e', entryTitle: '论文',
     title: '阅读笔记', markdown: 'Summary', status: 'pending', createdAt: '', sources: [] };
-  const ui = render(<AssistantPanel {...props} onApplyNoteProposal={async value => ({ ...value, status: 'applied' })} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} onApplyNoteProposal={async value => ({ ...value, status: 'applied' })} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: 'prepare note' } });
   fireEvent.click(ui.getByRole('button', { name: '发送' }));
@@ -442,7 +443,7 @@ it.each([
       part.type === (kind === 'tag' ? 'tag-proposal' : 'entry-meta-proposal'))!;
     if (part.type === 'tag-proposal' || part.type === 'entry-meta-proposal') part.proposal.status = 'applied';
   };
-  const ui = render(<AssistantPanel {...props} onApplyTagProposal={apply} onApplyEntryMetaProposal={apply} />);
+  const ui = render(<TooltipProvider><AssistantPanel {...props} onApplyTagProposal={apply} onApplyEntryMetaProposal={apply} /></TooltipProvider>);
   await waitFor(() => expect(ui.getByRole('combobox', { name: '对话模型' }).textContent).toContain('test'));
   fireEvent.change(ui.getByLabelText('输入问题'), { target: { value: 'prepare mutation' } });
   fireEvent.click(ui.getByRole('button', { name: '发送' }));
