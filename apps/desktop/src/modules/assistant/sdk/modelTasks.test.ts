@@ -19,6 +19,23 @@ describe('request-wide model budget', () => {
     await expect(runJsonModelTask(options)).rejects.toThrow('budget exhausted');
     expect(generateText).toHaveBeenCalledOnce();
   });
+  it('charges real tokens for a compaction call without spending a loop turn', async () => {
+    const budget = new RunBudget(1);
+    vi.mocked(generateText).mockResolvedValue({ output: { summary: 'ok' }, finishReason: 'stop', usage: { inputTokens: 11, outputTokens: 7 } } as never);
+    const options = { budget, settings: {} as LlmProfile, name: 'agent_context_summary', description: 'summary', system: 'summarize', prompt: 'fixture', chargeTurn: false };
+    await runJsonModelTask(options);
+    expect(budget.snapshot()).toEqual({ turns: 0, toolCalls: 0, inputTokens: 11, outputTokens: 7 });
+    // The turn stays reserved for the task itself, so a second compaction still fits.
+    await runJsonModelTask(options);
+    expect(generateText).toHaveBeenCalledTimes(2);
+  });
+  it('reports the provider finish reason so a truncated summary is discarded upstream', async () => {
+    const budget = new RunBudget();
+    const onFinish = vi.fn();
+    vi.mocked(generateText).mockResolvedValue({ output: { summary: 'half a sen' }, finishReason: 'length', usage: {} } as never);
+    await runJsonModelTask({ budget, settings: {} as LlmProfile, name: 'agent_context_summary', description: 'summary', system: 'summarize', prompt: 'fixture', chargeTurn: false, onFinish });
+    expect(onFinish).toHaveBeenCalledWith('length');
+  });
   it('prevents another request after the reported-token ceiling without resetting on restore', () => {
     const budget = new RunBudget(24, 48, 2, 100);
     budget.usage(80, 20);

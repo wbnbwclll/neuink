@@ -3,7 +3,8 @@ import { generateText, Output } from 'ai';
 import { createNeuinkModel, generationSettings } from './provider';
 import type { RunBudget } from '../agent-core';
 
-export const MEMORY_PROMPT = 'Update a factual semantic checkpoint from the prior checkpoint and conversation. Preserve goals, decisions, unresolved work, referenced entities, and stable preferences. Do not invent facts.';
+// The compaction prompt lives with the summarizer in `conversationSummary`, so there is no
+// second copy here for a caller to pass in and let the two triggers drift apart.
 
 /** Fixed tasks have no tool registry, delegation, or autonomous execution loop. */
 export async function runJsonModelTask(options: {
@@ -14,9 +15,14 @@ export async function runJsonModelTask(options: {
   system: string;
   prompt: string;
   abortSignal?: AbortSignal;
+  /** Compaction is a bookkeeping call, not a model reply: it still pays for its real tokens
+   *  but must not consume a loop turn, which is reserved for the task itself. */
+  chargeTurn?: boolean;
+  onFinish?: (finishReason: string | undefined) => void;
 }) {
   options.abortSignal?.throwIfAborted();
-  options.budget?.turn();
+  if (options.chargeTurn === false) options.budget?.assertCanTurn();
+  else options.budget?.turn();
   await options.budget?.persist?.();
   const result = await generateText({
     ...generationSettings(options.settings),
@@ -31,6 +37,7 @@ export async function runJsonModelTask(options: {
   });
   options.abortSignal?.throwIfAborted();
   options.budget?.usage(result.usage?.inputTokens, result.usage?.outputTokens);
+  options.onFinish?.(result.finishReason);
   await options.budget?.persist?.();
   return result.output;
 }

@@ -5,6 +5,7 @@ import { createUserInputTool, USER_INPUT_INSTRUCTIONS } from './userInputTool';
 import { BROWSER_TAB_INSTRUCTIONS, browserTabPromptMetadata } from './browserTabTool';
 import type { BrowserTabTarget } from '@/shared/ipc/browserApi';
 import { bindExecutionIdentity, canReplayAssistantTool, type DurableExecution } from '../runtime/durableExecution';
+import { renderConversationTranscript } from '../runtime/conversationTranscript';
 import type { ModelMessage } from 'ai';
 
 import type {
@@ -263,7 +264,11 @@ export async function answerWithGroundedAgent({
       tools: runtime.tools,
       onTurn: onAnswerReset,
       onDelta,
-      onReasoningDelta
+      onReasoningDelta,
+      projection: {
+        restored: execution?.get('projection:main'),
+        onState: (state) => execution?.set('projection:main', state)
+      }
     }),
     tools: agentExecutors(runtime.tools, requestToolApproval),
     checkpoint: execution?.actor<ModelMessage>('main'),
@@ -277,7 +282,8 @@ export async function answerWithGroundedAgent({
       execution.set('sources', [...ledger.sources]);
       await execution.saveActor('main', checkpoint);
     } : undefined,
-    messages: [{ role: 'user', content: prompt }],
+    // The whole conversation is the run's transcript; the current request is its last turn.
+    messages: [...renderConversationTranscript(conversationHistory ?? []), { role: 'user', content: prompt }],
     budget,
     signal: abortSignal,
     maxTurns: agentLoopState.maxTurns,
