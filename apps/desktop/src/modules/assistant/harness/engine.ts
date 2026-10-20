@@ -46,7 +46,7 @@ import { observeAssistantContext } from './context';
 import { buildDirectExecution } from '../runtime/executionPolicy';
 import { routeAssistantRequest, routeSummary, type RequestRoute } from '../runtime/requestRouter';
 import {
-  appendConversationMemory,
+  latestConversationMemory,
   shouldUpdateConversationMemory,
   updateConversationMemory
 } from './conversationMemory';
@@ -256,6 +256,7 @@ async function executeAssistantHarness(options: RunAssistantHarnessOptions): Pro
       contextSnapshot: snapshot,
       browserTabTarget: currentSurface?.kind === 'browser' ? currentSurface.browserTab : null,
       conversationHistory,
+      conversationMemory: latestConversationMemory(conversationHistory),
       currentEntry: snapshot.active_entry
         ? { id: snapshot.active_entry.entry_id, title: snapshot.active_entry.entry_title }
         : currentEntry,
@@ -487,7 +488,9 @@ export function modelDrivenBrief({
   const taskObservation = latestTask?.type === 'task-state'
     ? `Previous task state: status=${latestTask.task.status}, goal=${JSON.stringify(latestTask.task.goal.normalizedGoal)}, proposals=${latestTask.task.proposalIds.length}. A later natural-language request may continue, correct, or replace it; decide from the conversation.`
     : '';
-  return appendConversationMemory([
+  // The conversation memory checkpoint is not part of this brief: it is sent as the first
+  // conversation turn by `answerWithGroundedAgent`, ahead of the replayed transcript.
+  return [
     'Use a model-driven Agent loop. Interpret all user replies as natural language; never require fixed phrases, regex slots, or magic retry wording.',
     'Answer directly when no external observation or side effect is needed. Naming, summarization, wording, planning, and deciding whether to ask are model-native cognition, not tools.',
     'Call tools only for workspace observation, deterministic computation, or an authorized side effect. For "name and create", choose the name internally and call create_entry once. For title suggestions only, answer without tools.',
@@ -504,7 +507,7 @@ export function modelDrivenBrief({
     taskObservation,
     contextPlan?.summary ? `UI context summary (informational only; the Agent decides semantic roles): ${contextPlan.summary}` : '',
     previousDiagram
-  ].filter(Boolean).join('\n\n'), history);
+  ].filter(Boolean).join('\n\n');
 }
 
 function formatMentionMap(

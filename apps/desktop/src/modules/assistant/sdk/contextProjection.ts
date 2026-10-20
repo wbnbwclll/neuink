@@ -24,6 +24,80 @@ export type ProjectionState = {
 type Boundary = { firstKeptIndex: number; memory: ConversationSummary; markers: string[] };
 type Anchor = { inputTokens: number; requestLength: number };
 
+/** One tool result can be far larger than the whole conversation; cap each one so evidence
+ *  cannot crowd the user's questions out of the summarizer's input. */
+const TOOL_RESULT_SNIPPET_CHARS = 600;
+
+/** Render dropped messages as a readable transcript. The summarizer needs conversation turns,
+ *  not the provider wire shape; sending raw JSON also made a truncated slice start mid-object. */
+export function renderMessagesForSummary(messages: readonly ModelMessage[], limit: number): string {
+  const turns: string[] = [];
+  for (const message of messages) {
+    switch (message.role) {
+      case 'user': {
+        const text = textOfContent(message.content);
+        if (text) turns.push(`User: ${text}`);
+        break;
+      }
+      case 'assistant': {
+        const text = textOfContent(message.content);
+        if (text) turns.push(`Assistant: ${text}`);
+        break;
+      }
+      case 'tool': {
+        const results = message.content.flatMap((part) => {
+          if (part.type !== 'tool-result') return [];
+          const text = toolOutputText(part.output).replace(/\s+/g, ' ').trim();
+          if (!text) return [];
+          return [`Tool result (${part.toolName}): ${text.length > TOOL_RESULT_SNIPPET_CHARS ? `${text.slice(0, TOOL_RESULT_SNIPPET_CHARS)}…` : text}`];
+        });
+        if (results.length > 0) turns.push(results.join('\n'));
+        break;
+      }
+    }
+  }
+  // Keep whole recent turns. A hard character slice would cut a turn in half; the newest part of
+  // the dropped region is the most useful continuation context when the budget is tight.
+  const kept: string[] = [];
+  let used = 0;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    const remaining = limit - used;
+    if (remaining < 200) break;
+    if (turn.length + 2 > remaining) {
+      if (kept.length === 0) kept.push(`${turn.slice(0, remaining - 1)}…`);
+      break;
+    }
+    kept.push(turn);
+    used += turn.length + 2;
+  }
+  return kept.reverse().join('\n\n');
+}
+
+function textOfContent(content: string | readonly { type: string; text?: string }[]): string {
+  if (typeof content === 'string') return content.trim();
+  return content
+    .flatMap(part => part.type === 'text' && typeof part.text === 'string' ? [part.text] : [])
+    .join('\n')
+    .trim();
+}
+
+function toolOutputText(output: unknown): string {
+  if (!output || typeof output !== 'object') return '';
+  const typed = output as { type?: unknown; value?: unknown };
+  if (typed.type === 'text' || typed.type === 'error-text') {
+    return typeof typed.value === 'string' ? typed.value : '';
+  }
+  if (typed.type === 'json' || typed.type === 'error-json') {
+    try {
+      return JSON.stringify(typed.value ?? '');
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
 /** Pi-style request projection: the canonical transcript and source ledger are never truncated. */
 export function contextCut(messages: readonly ModelMessage[], maxChars: number): number | undefined {
   // The turn that must survive is the current request, which is the last message.
@@ -111,10 +185,12 @@ export function createContextProjector(
       if (boundary && cut <= boundary.firstKeptIndex) return projectedFromBoundary(messages);
 
       // Summarize only what is newly dropped, on top of the previous summary.
-      const dropped = JSON.stringify(messages.slice(boundary ? boundary.firstKeptIndex : 0, cut));
+      const droppedMessages = messages.slice(boundary ? boundary.firstKeptIndex : 0, cut);
+      // Source markers are collected from the whole dropped region, not the truncated excerpt.
+      const droppedText = JSON.stringify(droppedMessages);
       // Bound the summarizer's own input. Full evidence is retained durably outside this projection.
       const excerptLimit = Math.max(1000, Math.floor(maxChars * 0.45));
-      const excerpt = dropped.length <= excerptLimit ? dropped : dropped.slice(-excerptLimit);
+      const excerpt = renderMessagesForSummary(droppedMessages, excerptLimit);
       // The same compaction the manual path and the end-of-run memory update use; only the
       // trigger, the input slice and the place the checkpoint is stored differ. It is
       // bookkeeping, so it must not consume a task turn.
@@ -131,7 +207,7 @@ export function createContextProjector(
       boundary = {
         firstKeptIndex: cut,
         memory,
-        markers: [...new Set([...(boundary?.markers ?? []), ...(dropped.match(/\[S\d+\]/g) ?? [])])]
+        markers: [...new Set([...(boundary?.markers ?? []), ...(droppedText.match(/\[S\d+\]/g) ?? [])])]
       };
       options?.onState?.(state());
 

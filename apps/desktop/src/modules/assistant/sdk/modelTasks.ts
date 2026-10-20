@@ -42,6 +42,38 @@ export async function runJsonModelTask(options: {
   return result.output;
 }
 
+/** A fixed task that returns prose. Unlike `runJsonModelTask` it does not request JSON output;
+ *  the caller owns validation of the text. */
+export async function runTextModelTask(options: {
+  budget?: RunBudget;
+  settings: LlmProfile;
+  system: string;
+  prompt: string;
+  abortSignal?: AbortSignal;
+  /** Compaction is a bookkeeping call, not a model reply: it still pays for its real tokens
+   *  but must not consume a loop turn, which is reserved for the task itself. */
+  chargeTurn?: boolean;
+}) {
+  options.abortSignal?.throwIfAborted();
+  if (options.chargeTurn === false) options.budget?.assertCanTurn();
+  else options.budget?.turn();
+  await options.budget?.persist?.();
+  const result = await generateText({
+    ...generationSettings(options.settings),
+    model: createNeuinkModel(options.settings),
+    system: options.system,
+    prompt: options.prompt,
+    abortSignal: options.abortSignal
+      ? AbortSignal.any([options.abortSignal, AbortSignal.timeout(120_000)])
+      : AbortSignal.timeout(120_000),
+    maxRetries: 0
+  });
+  options.abortSignal?.throwIfAborted();
+  options.budget?.usage(result.usage?.inputTokens, result.usage?.outputTokens);
+  await options.budget?.persist?.();
+  return { text: result.text, finishReason: result.finishReason };
+}
+
 /** Credentials belong to model profiles, never to tools or a child-agent instance. */
 export function resolveModelProfile(id: string | null | undefined, profiles: LlmProfile[], inherited?: LlmProfile): LlmProfile {
   if (id) {

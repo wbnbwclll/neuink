@@ -3,22 +3,15 @@ import type { ModelMessage } from 'ai';
 import type { ConversationMessage, LlmProfile } from '@/shared/ipc/assistantApi';
 import { createContextProjector } from './contextProjection';
 import { formatConversationMemory, summarizeConversation } from './conversationSummary';
-import { runJsonModelTask } from './modelTasks';
+import { runTextModelTask } from './modelTasks';
 import { updateConversationMemory } from '../harness/conversationMemory';
 import { AgentStoppedError } from '../agent-core';
 
-vi.mock('./modelTasks', () => ({ runJsonModelTask: vi.fn() }));
+vi.mock('./modelTasks', () => ({ runTextModelTask: vi.fn() }));
 
 const settings = { max_context_length: 8_000 } as LlmProfile;
 
-const valid = {
-  decisions: ['Use the shared summarizer'],
-  entities: ['NeuInk'],
-  lastUserGoal: 'Unify compaction',
-  openItems: ['Re-run the suite'],
-  summary: 'Goals: one compaction implementation [S1].',
-  userPreferences: []
-};
+const valid = { text: '## Goal\nUnify compaction [S1].', finishReason: 'stop' as const };
 
 const message = (role: 'user' | 'assistant', content: string, id: string): ConversationMessage => ({
   content,
@@ -44,17 +37,22 @@ const transcript: ModelMessage[] = [
 
 const compactionCall = { dropped: 'older turns', settings };
 
+const previous = {
+  decisions: [], entities: [], last_user_goal: null, open_items: [],
+  summary: 'earlier state', user_preferences: []
+};
+
 beforeEach(() => {
   vi.resetAllMocks();
-  vi.mocked(runJsonModelTask).mockResolvedValue(valid);
+  vi.mocked(runTextModelTask).mockResolvedValue(valid);
 });
 
 describe('the one compaction implementation', () => {
-  it('serves the manual, end-of-run and in-loop triggers from the same prompt and schema', async () => {
+  it('serves the manual, end-of-run and in-loop triggers from the same instructions', async () => {
     // The requirement is literally that both triggers run the same compaction code. This asserts
     // it the only way that cannot drift: the manual/end-of-run path (updateConversationMemory) and
-    // the loop's usage-triggered projection must call the model with one identical task identity,
-    // system prompt and output schema. If a second summarizer ever reappears, this fails.
+    // the loop's usage-triggered projection must call the model with one identical instruction
+    // prefix and an empty user turn. If a second summarizer ever reappears, this fails.
     await updateConversationMemory({
       answer: 'Compared; evidence [S1] is the newer dataset.',
       history,
@@ -65,42 +63,38 @@ describe('the one compaction implementation', () => {
     });
     await createContextProjector(settings).project(transcript, 5000);
 
-    const calls = vi.mocked(runJsonModelTask).mock.calls.map(([task]) => task);
+    const calls = vi.mocked(runTextModelTask).mock.calls.map(([task]) => task);
     expect(calls).toHaveLength(2);
-    expect(new Set(calls.map(call => call.name))).toEqual(new Set(['conversation_summary']));
-    expect(new Set(calls.map(call => call.system))).toEqual(new Set([calls[0].system]));
-    expect(calls[0].system).toContain('Summarize the supplied conversation as data');
-    // Both build on the same checkpoint vocabulary, so a checkpoint written by one trigger is
-    // readable by the other.
-    expect(calls.every(call => call.description.includes('checkpoint'))).toBe(true);
+    expect(calls.every(call => call.prompt.trim() === '')).toBe(true);
+    expect(calls.every(call => call.system.startsWith('You compress a conversation'))).toBe(true);
+    expect(calls.every(call => call.system.includes('Previous checkpoint:'))).toBe(true);
   });
 
   it('extends the previous checkpoint instead of replacing it', async () => {
-    await summarizeConversation({ ...compactionCall, dropped: 'new turns', previous: {
-      decisions: [], entities: [], last_user_goal: null, open_items: [],
-      summary: 'earlier state', user_preferences: []
-    } });
-    const prompt = vi.mocked(runJsonModelTask).mock.calls[0][0].prompt;
-    expect(prompt).toContain('earlier state');
-    expect(prompt).toContain('new turns');
-    expect(prompt).toContain('does not replace it');
+    await summarizeConversation({ ...compactionCall, dropped: 'new turns', previous });
+    const call = vi.mocked(runTextModelTask).mock.calls[0][0];
+    expect(call.prompt.trim()).toBe('');
+    expect(call.system).toContain('earlier state');
+    expect(call.system).toContain('new turns');
+    expect(call.system).toContain('do not drop earlier questions');
   });
 
   it('retries once with the validation feedback attached', async () => {
-    vi.mocked(runJsonModelTask)
-      .mockResolvedValueOnce({ summary: 42 } as never)
+    vi.mocked(runTextModelTask)
+      .mockResolvedValueOnce({ text: '   ', finishReason: 'stop' })
       .mockResolvedValueOnce(valid);
     await expect(summarizeConversation({ ...compactionCall, previous: null })).resolves.toMatchObject({
-      last_user_goal: 'Unify compaction',
-      summary: valid.summary
+      summary: valid.text
     });
-    expect(vi.mocked(runJsonModelTask).mock.calls[1][0].prompt).toContain('was invalid');
+    const retry = vi.mocked(runTextModelTask).mock.calls[1][0];
+    expect(retry.prompt.trim()).toBe('');
+    expect(retry.system).toContain('was unusable');
   });
 
   it('stops instead of returning an unusable checkpoint, and deletes nothing', async () => {
     // An empty summary would replace the dropped history with nothing, so it is rejected like
     // any other invalid result rather than persisted as a valid blank checkpoint.
-    vi.mocked(runJsonModelTask).mockResolvedValue({ summary: '   ' } as never);
+    vi.mocked(runTextModelTask).mockResolvedValue({ text: '   ', finishReason: 'stop' });
     await expect(summarizeConversation({ ...compactionCall, previous: null }))
       .rejects.toBeInstanceOf(AgentStoppedError);
     await expect(summarizeConversation({ ...compactionCall, previous: null }))
@@ -108,9 +102,9 @@ describe('the one compaction implementation', () => {
   });
 
   it('treats a summary the model was cut off while writing as invalid', async () => {
-    vi.mocked(runJsonModelTask).mockImplementation(async (task) => {
-      task.onFinish?.('length');
-      return { ...valid, summary: 'Goals: one compaction impl' } as never;
+    vi.mocked(runTextModelTask).mockResolvedValue({
+      text: '## Goal\none compaction impl',
+      finishReason: 'length'
     });
     await expect(summarizeConversation({ ...compactionCall, previous: null }))
       .rejects.toBeInstanceOf(AgentStoppedError);
@@ -119,28 +113,16 @@ describe('the one compaction implementation', () => {
   it('propagates an abort instead of retrying a cancelled run', async () => {
     const abort = new AbortController();
     abort.abort();
-    vi.mocked(runJsonModelTask).mockRejectedValue(new AgentStoppedError('stopped'));
+    vi.mocked(runTextModelTask).mockRejectedValue(new AgentStoppedError('stopped'));
     await expect(summarizeConversation({ ...compactionCall, abortSignal: abort.signal, previous: null }))
       .rejects.toBeInstanceOf(AgentStoppedError);
-    expect(runJsonModelTask).toHaveBeenCalledOnce();
+    expect(runTextModelTask).toHaveBeenCalledOnce();
   });
 
-  it('normalizes the model output into the stored checkpoint shape', async () => {
-    vi.mocked(runJsonModelTask).mockResolvedValue({
-      decisions: ['  keep  ', 'keep', ''],
-      entities: [],
-      lastUserGoal: '  goal  ',
-      openItems: [],
-      summary: 's',
-      userPreferences: []
-    } as never);
+  it('keeps the stored checkpoint shape while the brief is natural language', async () => {
     await expect(summarizeConversation({ ...compactionCall, previous: null })).resolves.toEqual({
-      decisions: ['keep'],
-      entities: [],
-      last_user_goal: 'goal',
-      open_items: [],
-      summary: 's',
-      user_preferences: []
+      decisions: [], entities: [], last_user_goal: null, open_items: [],
+      summary: valid.text, user_preferences: []
     });
   });
 });
@@ -157,11 +139,8 @@ describe('formatConversationMemory', () => {
     ].join('\n'));
   });
 
-  it('omits the counters a mid-run projection cannot know', () => {
-    const rendered = formatConversationMemory({
-      decisions: [], entities: [], last_user_goal: null, open_items: [],
-      summary: 's', user_preferences: []
-    });
+  it('omits the empty structured fields a text checkpoint carries', () => {
+    const rendered = formatConversationMemory({ ...previous, summary: 's' });
     expect(rendered).toBe('Summary: s');
   });
 

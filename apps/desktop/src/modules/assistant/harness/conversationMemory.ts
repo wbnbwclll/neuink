@@ -6,18 +6,9 @@ import type {
 
 import { lastMemoryCheckpointIndex } from '../runtime/conversationTranscript';
 import type { RunBudget } from '../agent-core';
-import { formatConversationMemory, summarizeConversation } from '../sdk/conversationSummary';
+import { summarizeConversation } from '../sdk/conversationSummary';
 
-export { formatConversationMemory };
-
-export function appendConversationMemory(
-  harnessBrief: string,
-  history: ConversationMessage[]
-) {
-  const memory = formatConversationMemory(latestConversationMemory(history));
-  return memory ? `${harnessBrief}\n\nConversation Memory Checkpoint:\n${memory}` : harnessBrief;
-}
-
+/** The newest checkpoint is sent as the first conversation turn by `answerWithGroundedAgent`. */
 export function latestConversationMemory(history: ConversationMessage[]) {
   for (const message of [...history].reverse()) {
     const part = [...(message.parts ?? [])].reverse()
