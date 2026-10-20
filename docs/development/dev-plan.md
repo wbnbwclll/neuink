@@ -1310,3 +1310,14 @@ Hover 即时反馈（2026-09-17）：按用户要求删除 PDF 600ms 冷却、�
 - 本地打包脚本测试通过；云端运行和正式 Release 发布需单独确认。
 - 修复发布检查：Mac 原生检查前无条件生成资源状态文件；新增源码多处版本/标签完整匹配校验，并在两端附件准备时复核。覆盖预发布后缀、版本不一致、错误标签不生成附件及工作流顺序回归；尚未执行云端构建，不自动改版本或发布。
 - 补充 macOS 15 Apple Silicon/Intel 原生 runner；PR 编译检查、主分支生成 ad-hoc 签名 .app.zip，保留权限与符号链接并校验资源与架构。三平台统一 Release 草稿，Mac 不携带 Windows 专用网页/字幕运行时。57 项本地打包测试通过，尚未完成 Mac 云端运行、Apple 公证或原生视觉验收。
+
+## 2026-10-13：上下文压缩（手动 compact 与用量触发）
+
+- 运行消息改为承载完整会话：主 Agent 的首条消息由 `runtime/conversationTranscript` 按真实 `ModelMessage[]` 轮次渲染，取代原先的 16k 字符尾部字符串。历史里的 tool-call／tool-result 不重放（工作区可能已变、`[Sx]` 属于上一轮的 SourceLedger）；任务状态仍由 harness brief 从同一份历史重新推导。
+- 请求投影改为用量锚定：`sdk/contextProjection` 以供应商已报告的 `usage.inputTokens` 加尾部估算，对模型窗口取 90% 判断是否压缩；无实测值或锚点失效时退化为全量估算。压缩按 actor 持久化单调边界与上一份摘要，只重新摘要新掉落的一段，新增 `chargeTurn: false` 让摘要调用不占主循环轮次。字符估算只决定一次裁剪保留多少尾部，与 token 口径不互换。
+- 手动 compact 复用同一份代码与同一个边界：点击输入框旁的占用圆圈即调用 `components/assistantCompaction`，与自动摘要共用 `memory` 检查点。压缩不删除任何历史消息，只把检查点之前的内容移出下一次请求；摘要失败不写入检查点，历史不变。占用圆圈与自动阈值共用 `sdk/contextBudget` 的常量，中文字符改按约 1.5 token/字计入，不再按英文比例低估近 5 倍。
+- 压缩实现收敛为一处：`sdk/conversationSummary` 的 `summarizeConversation` 是唯一的 prompt／schema／重试／截断守卫，手动压缩、结束记忆（两者经 `harness/conversationMemory` 的 `updateConversationMemory`，它现在只剩计数器与调用）与循环内投影三个入口都调用它，只在待摘要文本与检查点落点上有别。`sdk/modelTasks` 删除可传入的 `MEMORY_PROMPT`，调用方无法再各带一份 prompt 造成漂移；`ConversationSummary` 是模型产出的部分，`message_count` 等计数由知道它们的调用方补盖。
+- 截断与无效摘要改为失败即止：`finishReason: 'length'`、空摘要或 schema 校验失败都重试一次，仍失败则抛 `AgentStoppedError` 且不落盘（原先投影路径会降级成带标记的原文摘录，现已移除，只在预算用尽／不允许模型摘要时保留该降级）。`ProjectionState` 升到 v2，`summary: string` 换成 `memory: ConversationSummary`；旧状态是派生数据，直接丢弃并在下一轮重算，不做迁移。
+- `conversationSummary.test.ts` 断言两个入口调用模型时的任务名、system prompt 与 schema 一致，使“再加一份摘要 prompt”这一回归无法静默通过。
+- 并发按会话隔离：同一会话上运行、导出、删除、改名与压缩互斥；另一会话仍可运行。压缩中禁用再次触发与发送，失败只提示不改变历史。
+- 验证：新增 `contextBudget`、`contextProjection`、`conversationTranscript`、`assistantCompaction`、`assistantPanelState`、`AssistantContextRing`、`progress-ring` 测试，并在 `ChatMessage` 覆盖检查点渲染；前端全量 373 文件中 370 文件、2,423 项通过、3 项真实模型测试跳过，`tsc --noEmit` 通过。未调用真实模型，未做原生 Tauri 视觉验收：占用圆圈的 100%／125% 缩放、窄侧栏、键盘焦点与悬停提示观感未人工核对，颜色分档只在 jsdom 中断言类名。真实长对话的首次压缩时机与越线后每轮增量调用仍需 `npm run desktop:dev` 人工核对。

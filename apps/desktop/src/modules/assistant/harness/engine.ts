@@ -4,7 +4,7 @@ import type { RequestUserInput } from '../runtime/userInput';
 import { runDurableHarness } from './durableHarness';
 import type { DurableExecution } from '../runtime/durableExecution';
 import type { RunBudget } from '../agent-core';
-import { MEMORY_PROMPT, resolveModelProfile } from '../sdk/modelTasks';
+import { resolveModelProfile } from '../sdk/modelTasks';
 import type {
   AssistantContextSnapshot,
   AssistantToolTraceEvent,
@@ -47,7 +47,6 @@ import { buildDirectExecution } from '../runtime/executionPolicy';
 import { routeAssistantRequest, routeSummary, type RequestRoute } from '../runtime/requestRouter';
 import {
   appendConversationMemory,
-  buildConversationTail,
   shouldUpdateConversationMemory,
   updateConversationMemory
 } from './conversationMemory';
@@ -371,8 +370,7 @@ async function executeAssistantHarness(options: RunAssistantHarnessOptions): Pro
           pendingProposalCount: proposalIds.length,
           question,
           settings: memoryProfile,
-          sourceCount: grounded.sources.length,
-          systemPrompt: MEMORY_PROMPT
+          sourceCount: grounded.sources.length
         });
         emitHarnessEvent(onToolEvent, {
           id: `${runId}-memory`, status: 'done', toolName: 'agent.memory', summary: '对话摘要已整理。'
@@ -462,7 +460,8 @@ export function modelDrivenBrief({
   mentionScope: ScopeSnapshot;
   tagMentionScopes?: Record<string, ScopeSnapshot>;
 }) {
-  const transcript = buildConversationTail(history);
+  // The conversation itself is replayed as real model turns, not as a truncated
+  // string here; only the parts that must be re-derived live in this brief.
   const lastDiagram = [...history].reverse().flatMap(message => [...(message.parts ?? [])].reverse())
     .find(part => part.type === 'tool-result' && part.diagram);
   const previousDiagram = lastDiagram?.type === 'tool-result' && lastDiagram.diagram
@@ -504,7 +503,6 @@ export function modelDrivenBrief({
     historicalMentionMaps ? `Historical Typed Mention Maps available for continuation:\n${historicalMentionMaps}` : '',
     taskObservation,
     contextPlan?.summary ? `UI context summary (informational only; the Agent decides semantic roles): ${contextPlan.summary}` : '',
-    transcript ? `Recent conversation:\n${transcript}` : '',
     previousDiagram
   ].filter(Boolean).join('\n\n'), history);
 }

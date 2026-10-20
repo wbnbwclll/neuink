@@ -6,13 +6,16 @@ import type { AgentDriver, AgentTool, AgentToolCall } from '../agent-core/agent'
 import { AgentLocalLimitError, AgentStoppedError, AgentToolNotExecutedError } from '../agent-core/agent';
 import { createAgentToolFailure, isAgentToolFailure } from '../agent-core/toolFailure';
 import { createNeuinkModel, generationSettings } from './provider';
+import { resolveLlmApiProtocol } from '@/shared/ipc/assistantApi';
 import type { RunBudget } from '../agent-core';
-import { createContextProjector } from './contextProjection';
+import { createContextProjector, type ProjectionState } from './contextProjection';
+import { assistantContextCharBudget, estimateTokensFromText } from './contextBudget';
 import type { RequestToolApproval } from '../runtime/toolApproval';
 import { availableTurnTools, toolCallError } from './toolAvailability';
 import { researchFailureMessage } from './researchRecovery';
 import { TOOL_FAILURE_INSTRUCTIONS } from './toolFailurePolicy';
 import { canReplayAssistantTool } from '../runtime/durableExecution';
+import { createCaptureContext, dumpSdkRequest, dumpSdkResponse } from './promptDump';
 
 /** AI SDK is a single-turn provider adapter, never the owner of our agent loop. */
 export function createAgentDriver(options: {
@@ -23,29 +26,55 @@ export function createAgentDriver(options: {
   onTurn?: () => void;
   onDelta?: (text: string) => void;
   onReasoningDelta?: (text: string) => void;
+  /** Durable compaction boundary, keyed per actor by the caller. */
+  projection?: { restored?: unknown; onState?: (state: ProjectionState) => void };
 }): AgentDriver<ModelMessage> {
   const declarations: ToolSet = Object.fromEntries(Object.entries(options.tools).map(([name, definition]) => {
     const { execute: _execute, needsApproval: _approval, ...declaration } = definition;
     return [name, declaration];
   }));
-  const project = createContextProjector(options.settings, options.budget);
+  const projector = createContextProjector(options.settings, options.budget, options.projection);
+  let turnCount = 0;
   return {
     async turn(messages, signal, turnOptions) {
+      const requestLength = messages.length;
       const permitted = options.budget?.writesBlocked
         ? Object.fromEntries(Object.entries(declarations).filter(([name]) => canReplayAssistantTool(name)))
         : declarations;
       const availability = availableTurnTools(permitted, messages, turnOptions?.finalTurn);
       const system = [options.system, TOOL_FAILURE_INSTRUCTIONS, availability.instructions].filter(Boolean).join('\n\n');
-      const maxChars = Math.max(4_000, (options.settings.max_context_length ?? 64_000) - (options.settings.max_output_tokens ?? 4_096)) * 2;
-      const available = maxChars - system.length - JSON.stringify(availability.tools).length;
-      if (available < 2000) throw new AgentLocalLimitError('context_capacity', 'System instructions and tools exceed the model context budget.');
-      const projected = await project(messages, available, signal, !availability.finish);
+      // Two scales, never substituted for one another: the compaction trigger is measured in
+      // provider tokens, while this character budget only bounds how much transcript a cut keeps.
+      const toolsDeclaration = JSON.stringify(availability.tools);
+      const charBudget = assistantContextCharBudget(options.settings.max_context_length)
+        - system.length - toolsDeclaration.length;
+      if (charBudget < 2000) throw new AgentLocalLimitError('context_capacity', 'System instructions and tools exceed the model context budget.');
+      const overheadTokens = estimateTokensFromText(system + toolsDeclaration);
+      const projected = await projector.project(messages, charBudget, signal, !availability.finish, overheadTokens);
       const requestSignal = signal
         ? AbortSignal.any([signal, AbortSignal.timeout(120_000)])
         : AbortSignal.timeout(120_000);
       options.onTurn?.();
+      turnCount += 1;
+      // One capture id per round trip, threaded into the provider's fetch so the wire dumps and
+      // these two SDK-level dumps land under the same name.
+      const capture = createCaptureContext(turnCount);
+      if (capture) {
+        // Capture the request we are about to make, before the SDK rewrites it for the provider.
+        dumpSdkRequest(capture, {
+          model: options.settings.model,
+          protocol: resolveLlmApiProtocol(options.settings.api_protocol),
+          turn: turnCount,
+          finalTurn: Boolean(availability.finish),
+          system,
+          messages: projected,
+          toolChoice: availability.finish ? 'none' : 'auto',
+          generation: generationSettings(options.settings),
+          tools: availability.tools
+        });
+      }
       const response = streamText({
-        model: createNeuinkModel(options.settings),
+        model: createNeuinkModel(options.settings, capture),
         ...generationSettings(options.settings),
         system,
         messages: projected,
@@ -74,6 +103,20 @@ export function createAgentDriver(options: {
       const result = await response.response;
       const usage = await response.usage;
       options.budget?.usage(usage.inputTokens, usage.outputTokens);
+      projector.recordUsage(usage.inputTokens, requestLength);
+      // Capture the reply before the finish checks below can discard it.
+      if (capture) {
+        dumpSdkResponse(capture, {
+          model: options.settings.model,
+          turn: turnCount,
+          finalTurn: Boolean(availability.finish),
+          text,
+          finishReason: await response.finishReason,
+          usage,
+          calls,
+          messages: result.messages
+        });
+      }
       if (availability.finish && calls.length) {
         throw new AgentStoppedError('模型在总结阶段仍尝试调用工具，已安全停止，未执行这些操作。');
       }

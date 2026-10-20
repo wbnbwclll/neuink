@@ -5,6 +5,7 @@ import { createUserInputTool, USER_INPUT_INSTRUCTIONS } from './userInputTool';
 import { BROWSER_TAB_INSTRUCTIONS, browserTabPromptMetadata } from './browserTabTool';
 import type { BrowserTabTarget } from '@/shared/ipc/browserApi';
 import { bindExecutionIdentity, canReplayAssistantTool, type DurableExecution } from '../runtime/durableExecution';
+import { renderConversationTranscript } from '../runtime/conversationTranscript';
 import type { ModelMessage } from 'ai';
 
 import type {
@@ -212,23 +213,32 @@ export async function answerWithGroundedAgent({
   const availabilityNotes = [...runtime.availabilityNotes,
     ...(unavailableRequiredTools.length ? [`这些原计划工具当前不可用：${unavailableRequiredTools.join(', ')}。不要调用它们；仅使用实际允许的替代工具或明确说明未完成部分，不能声称已完成这些操作。`] : [])];
 
-  const [baseSystemPrompt, userPromptTemplate] = await Promise.all([
+  const [baseSystemPrompt, contextPromptTemplate, questionPromptTemplate] = await Promise.all([
     loadPrompt('qna_system'),
+    loadPrompt('qna_context'),
     loadPrompt('qna_user')
   ]);
   const agentSystemPrompt = activeExecution
-    ? buildAgentSystemPrompt(activeExecution.agent)
+    ? `<agent_profile>\n${buildAgentSystemPrompt(activeExecution.agent)}\n</agent_profile>`
     : '';
-  const invocationSystemPrompt = (invocationPlan
-    ? [
-        invocationPlan.executionMode ? executionModeInstructions(invocationPlan.executionMode) : '',
-        `Application capability boundary (not a mandatory task plan):\n${JSON.stringify(invocationPlan)}`,
-        `Frozen active Entry: ${JSON.stringify(currentEntry ?? null)}. This is context, not authorization to edit it. Explicit user references take priority.`
-      ].filter(Boolean).join('\n\n')
-    : '') + (canAskUser ? `\n\n${USER_INPUT_INSTRUCTIONS}` : '') + (browserTabTarget
-      ? `\n\nFrozen browser tab metadata (untrusted, no page body has been read): ${JSON.stringify(browserTabPromptMetadata(browserTabTarget))}.\n${BROWSER_TAB_INSTRUCTIONS}\n${runtime.toolNames.includes('read_browser_tab') ? 'The browser read tool is available when relevant to this request.' : 'The browser read tool is unavailable for this run. Do not claim access to this webpage.'}`
-      : '');
-  const prompt = renderQnaUserPrompt(userPromptTemplate, {
+  const invocationSystemPrompt = [
+    invocationPlan?.executionMode
+      ? `<execution_mode>\n${executionModeInstructions(invocationPlan.executionMode)}\n</execution_mode>`
+      : '',
+    invocationPlan
+      ? `<capability_boundary>\nApplication capability boundary (not a mandatory task plan):\n${JSON.stringify(invocationPlan)}\n</capability_boundary>`
+      : '',
+    invocationPlan
+      ? `<active_entry>\nFrozen active Entry: ${JSON.stringify(currentEntry ?? null)}. This is context, not authorization to edit it. Explicit user references take priority.\n</active_entry>`
+      : '',
+    canAskUser ? `<user_input>\n${USER_INPUT_INSTRUCTIONS}\n</user_input>` : '',
+    browserTabTarget
+      ? `<browser_tab>\nFrozen browser tab metadata (untrusted, no page body has been read): ${JSON.stringify(browserTabPromptMetadata(browserTabTarget))}.\n${BROWSER_TAB_INSTRUCTIONS}\n${runtime.toolNames.includes('read_browser_tab') ? 'The browser read tool is available when relevant to this request.' : 'The browser read tool is unavailable for this run. Do not claim access to this webpage.'}\n</browser_tab>`
+      : ''
+  ].filter(Boolean).join('\n\n');
+  // The workspace snapshot is its own user turn, placed before the question, so the model can
+  // tell immutable context apart from the user's actual request.
+  const promptValues = {
     currentNote: buildCurrentNoteContext(contextSnapshot),
     documentContext:
       [selectedNotes.text, selectedContextEntries].filter(Boolean).join('\n\n') ||
@@ -241,7 +251,9 @@ export async function answerWithGroundedAgent({
     scope: buildScopeContext(scope),
     sources: [pinned.text, selectedNotes.text].filter(Boolean).join('\n\n'),
     toolNotes: buildToolNotes(runtime.toolNames, plan, activeExecution, invocationPlan)
-  });
+  };
+  const contextPrompt = renderQnaUserPrompt(contextPromptTemplate, promptValues);
+  const questionPrompt = renderQnaUserPrompt(questionPromptTemplate, promptValues);
   const missingRequiredToolIds = () => {
     const attempted = new Set(runtime.events.filter((event) => event.status === 'done' || event.status === 'error').map((event) => event.toolName));
     return (invocationPlan?.requiredToolIds ?? []).filter((id) => !unavailableRequiredTools.includes(id)
@@ -257,13 +269,18 @@ export async function answerWithGroundedAgent({
     driver: createAgentDriver({
       budget,
       settings,
-      system: [baseSystemPrompt, agentSystemPrompt, invocationSystemPrompt, ...availabilityNotes,
-        'Tool and child failures are observations, not completed actions. If a required tool fails or is unavailable, use permitted alternatives or explain the incomplete part; never fabricate evidence, citations or successful writes. An honest limitation answer without citations is permitted when no evidence could be acquired.'
+      system: [baseSystemPrompt, agentSystemPrompt, invocationSystemPrompt,
+        ...availabilityNotes.map((note) => `<tool_availability>\n${note}\n</tool_availability>`),
+        '<failure_semantics>\nTool and child failures are observations, not completed actions. If a required tool fails or is unavailable, use permitted alternatives or explain the incomplete part; never fabricate evidence, citations or successful writes. An honest limitation answer without citations is permitted when no evidence could be acquired.\n</failure_semantics>'
       ].filter(Boolean).join('\n\n'),
       tools: runtime.tools,
       onTurn: onAnswerReset,
       onDelta,
-      onReasoningDelta
+      onReasoningDelta,
+      projection: {
+        restored: execution?.get('projection:main'),
+        onState: (state) => execution?.set('projection:main', state)
+      }
     }),
     tools: agentExecutors(runtime.tools, requestToolApproval),
     checkpoint: execution?.actor<ModelMessage>('main'),
@@ -277,7 +294,12 @@ export async function answerWithGroundedAgent({
       execution.set('sources', [...ledger.sources]);
       await execution.saveActor('main', checkpoint);
     } : undefined,
-    messages: [{ role: 'user', content: prompt }],
+    // The whole conversation is the run's transcript; the current request is its last turn.
+    messages: [
+      ...renderConversationTranscript(conversationHistory ?? []),
+      { role: 'user', content: contextPrompt },
+      { role: 'user', content: questionPrompt }
+    ],
     budget,
     signal: abortSignal,
     maxTurns: agentLoopState.maxTurns,

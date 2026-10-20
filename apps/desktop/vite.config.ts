@@ -5,6 +5,7 @@ import react from '@vitejs/plugin-react';
 import { configDefaults, defineConfig } from 'vitest/config';
 
 import { pdfJsAssetsPlugin } from './vite/pdfJsAssetsPlugin';
+import { promptDumpPlugin } from './vite/promptDumpPlugin';
 
 export default defineConfig({
   test: {
@@ -12,7 +13,7 @@ export default defineConfig({
     // Packaging scripts use Node's test runner, not Vitest's browser-oriented collection.
     exclude: [...configDefaults.exclude, '**/scripts/*.test.cjs']
   },
-  plugins: [react(), tailwindcss(), pdfJsAssetsPlugin()],
+  plugins: [react(), tailwindcss(), pdfJsAssetsPlugin(), promptDumpPlugin()],
   clearScreen: false,
   resolve: {
     alias: {
