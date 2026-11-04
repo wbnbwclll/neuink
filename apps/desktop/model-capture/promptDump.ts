@@ -8,7 +8,7 @@ import { asSchema } from 'ai';
  *   wire-response the raw HTTP response
  *   sdk-response  the SDK's normalized reply
  *
- * Files land in the folder configured in `vite/promptDumpPlugin.ts`. Captures contain the raw
+ * Files land in the folder configured in `vitePlugin.ts`. Captures contain the raw
  * system prompt, the transcript (including private note content) and the wire request body. They
  * are a local debugging aid, never a log destination. Credential headers are redacted first.
  */

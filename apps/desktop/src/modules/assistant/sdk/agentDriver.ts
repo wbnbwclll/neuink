@@ -6,7 +6,6 @@ import type { AgentDriver, AgentTool, AgentToolCall } from '../agent-core/agent'
 import { AgentLocalLimitError, AgentStoppedError, AgentToolNotExecutedError } from '../agent-core/agent';
 import { createAgentToolFailure, isAgentToolFailure } from '../agent-core/toolFailure';
 import { createNeuinkModel, generationSettings } from './provider';
-import { resolveLlmApiProtocol } from '@/shared/ipc/assistantApi';
 import type { RunBudget } from '../agent-core';
 import { createContextProjector, type ProjectionState } from './contextProjection';
 import { estimateTokensFromText, modelContextTokens, COMPACTION_TRIGGER_RATIO } from './contextBudget';
@@ -18,7 +17,7 @@ import { researchFailureMessage } from './researchRecovery';
 import { TOOL_FAILURE_INSTRUCTIONS } from './toolFailurePolicy';
 import { canReplayAssistantTool } from '../runtime/durableExecution';
 import { isPotentialRawModelToolCall, isRawModelToolCall } from './modelToolCallMarkup';
-import { createCaptureContext, dumpSdkRequest, dumpSdkResponse } from './promptDump';
+import { createModelCapture } from '../../../../model-capture/client';
 
 /** AI SDK is a single-turn provider adapter, never the owner of our agent loop. */
 export function createAgentDriver(options: {
@@ -45,7 +44,7 @@ export function createAgentDriver(options: {
   const projector = createContextProjector(options.settings, options.budget, { ...options.projection,
     initialMemory: options.initialMemory, initialUsage: options.initialUsage,
     requestIndex: options.runStartIndex ? options.runStartIndex - 1 : 0 });
-  let turnCount = 0;
+  const captureTurn = createModelCapture();
   return {
     projectionState: projector.snapshot,
     contextUsage: projector.contextUsage,
@@ -69,35 +68,18 @@ export function createAgentDriver(options: {
         ? AbortSignal.any([signal, AbortSignal.timeout(120_000)])
         : AbortSignal.timeout(120_000);
       options.onTurn?.();
-      turnCount += 1;
-      // One capture id per round trip, threaded into the provider's fetch so the wire dumps and
-      // these two SDK-level dumps land under the same name.
-      const capture = createCaptureContext(turnCount);
-      if (capture) {
-        // Capture the request we are about to make, before the SDK rewrites it for the provider.
-        dumpSdkRequest(capture, {
-          model: options.settings.model,
-          protocol: resolveLlmApiProtocol(options.settings.api_protocol),
-          turn: turnCount,
-          finalTurn: Boolean(availability.finish),
-          system,
-          messages: projected,
-          toolChoice: availability.finish ? 'none' : 'auto',
-          generation: generationSettings(options.settings),
-          tools: availability.tools
-        });
-      }
-      const response = streamText({
-        model: createNeuinkModel(options.settings, capture),
+      const request = {
         ...generationSettings(options.settings),
         system,
         messages: projected,
         tools: availability.tools,
-        toolChoice: availability.finish ? 'none' : 'auto',
+        toolChoice: availability.finish ? 'none' as const : 'auto' as const,
         abortSignal: requestSignal,
         onError: () => undefined, // Never let SDK diagnostics log credentials or raw request bodies.
         maxRetries: 0
-      });
+      };
+      const capture = captureTurn(options.settings, request);
+      const response = streamText({ ...request, model: createNeuinkModel(options.settings, capture?.fetch) });
       let text = '';
       let streamedChars = 0;
       const calls: AgentToolCall[] = [];
@@ -128,18 +110,7 @@ export function createAgentDriver(options: {
       const contextUsage = projector.contextUsage();
       if (contextUsage) options.onUsage?.(contextUsage);
       // Capture the reply before the finish checks below can discard it.
-      if (capture) {
-        dumpSdkResponse(capture, {
-          model: options.settings.model,
-          turn: turnCount,
-          finalTurn: Boolean(availability.finish),
-          text,
-          finishReason: await response.finishReason,
-          usage,
-          calls,
-          messages: result.messages
-        });
-      }
+      capture?.response({ text, finishReason: await response.finishReason, usage, calls, messages: result.messages });
       if (availability.finish && calls.length) {
         throw new AgentStoppedError('模型在总结阶段仍尝试调用工具，已安全停止，未执行这些操作。');
       }

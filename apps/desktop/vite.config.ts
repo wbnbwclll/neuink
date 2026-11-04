@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react';
 import { configDefaults, defineConfig } from 'vitest/config';
 
 import { pdfJsAssetsPlugin } from './vite/pdfJsAssetsPlugin';
-import { promptDumpPlugin } from './vite/promptDumpPlugin';
+import { promptDumpPlugin } from './model-capture/vitePlugin';
 
 export default defineConfig({
   test: {

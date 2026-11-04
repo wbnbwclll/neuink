@@ -4,8 +4,6 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import { mergeModelMetadata, modelMetadataIndex, positiveLimit, type ModelFacts } from './modelCatalog';
 import { loadPublicModelCatalog } from './modelCatalogStore';
-import { capturingFetch, type FetchLike } from './wireCapture';
-import type { CaptureContext } from './promptDump';
 
 import type { LlmApiProtocol, LlmProfile } from '@/shared/ipc/assistantApi';
 import { resolveLlmApiProtocol } from '@/shared/ipc/assistantApi';
@@ -32,13 +30,8 @@ export type ProviderModelApiItem = {
   top_provider?: { context_length?: unknown; max_completion_tokens?: unknown };
 };
 
-export function createNeuinkModel(settings: LlmProfile, capture?: CaptureContext) {
+export function createNeuinkModel(settings: LlmProfile, transport: typeof tauriFetch = tauriFetch) {
   const apiKey = settings.api_key?.trim() || undefined;
-  // The model is built per turn, so the capture id can close over the fetch instead of relying on
-  // module state that concurrent drivers would race over.
-  const transport = capture
-    ? capturingFetch(tauriFetch as unknown as FetchLike, capture.captureId)
-    : tauriFetch;
   const common = { apiKey, baseURL: settings.base_url, fetch: transport };
 
   switch (resolveLlmApiProtocol(settings.api_protocol)) {

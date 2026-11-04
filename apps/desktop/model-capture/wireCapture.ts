@@ -1,6 +1,6 @@
 import { dumpWire } from './promptDump';
 
-/** Matches what the AI SDK provider packages accept for their `fetch` setting. */
+/** Transport boundary shared with the provider's optional fetch injection. */
 export type FetchLike = (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>;
 
 // Headers that carry credentials; the wire dump must never write these to disk.

@@ -10,7 +10,7 @@ import { capturingFetch } from './wireCapture';
 const captureFor = (kind: string) =>
   dumpWire.mock.calls.find(([captured]) => captured === kind)?.[2] as Record<string, unknown> | undefined;
 
-describe('capturingFetch', () => {
+describe('model capture transport', () => {
   beforeEach(() => dumpWire.mockClear());
 
   it('captures both directions while leaving the response readable for the SDK', async () => {
