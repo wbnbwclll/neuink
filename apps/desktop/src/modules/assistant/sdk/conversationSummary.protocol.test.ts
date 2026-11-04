@@ -37,8 +37,8 @@ it.each(['openai', 'anthropic', 'google'] as const)('sends a real summary task t
   const payload = body.messages ?? body.contents;
   const serialized = JSON.stringify(payload);
   expect(serialized).toContain('My name is Lin');
-  expect(serialized).toContain('Create a continuation summary of ALL');
-  expect(serialized).toContain('End of conversation data. Perform the summarization task now');
+  expect(serialized).toContain('请整理下面的全部对话材料');
+  expect(serialized).toContain('历史材料到此结束。现在只执行摘要任务');
   const system = protocol === 'openai' ? (body.messages as Array<{ role: string; content: string }>).find(m => m.role === 'system')?.content
     : JSON.stringify(body.system ?? body.systemInstruction);
   expect(system).not.toContain('My name is Lin');

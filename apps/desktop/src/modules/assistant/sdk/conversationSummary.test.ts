@@ -64,8 +64,8 @@ describe('the one compaction implementation', () => {
 
     const calls = vi.mocked(runTextModelTask).mock.calls.map(([task]) => task);
     expect(calls.length).toBeGreaterThanOrEqual(2);
-    expect(calls.every(call => call.prompt.startsWith('Create a continuation summary of ALL'))).toBe(true);
-    expect(calls.every(call => call.system.startsWith('You compress a conversation'))).toBe(true);
+    expect(calls.every(call => call.prompt.startsWith('请整理下面的全部对话材料'))).toBe(true);
+    expect(calls.every(call => call.system.startsWith('你是 NeuInk 的对话记忆整理器'))).toBe(true);
     expect(calls.every(call => call.prompt.includes('previous_checkpoint'))).toBe(true);
     expect(calls.every(call => call.system === calls[0].system)).toBe(true);
   });
@@ -76,7 +76,7 @@ describe('the one compaction implementation', () => {
     expect(call.prompt).toContain('earlier state');
     expect(call.prompt).toContain('new turns');
     expect(call.system).not.toContain('new turns');
-    expect(call.system).toContain('do not discard earlier questions');
+    expect(call.system).toContain('不能因为新话题出现就遗忘早期信息');
   });
 
   it('retries once with the validation feedback attached', async () => {
@@ -88,7 +88,7 @@ describe('the one compaction implementation', () => {
     });
     const retry = vi.mocked(runTextModelTask).mock.calls[1][0];
     expect(retry.prompt.trim()).not.toBe('');
-    expect(retry.system).toContain('was unusable');
+    expect(retry.system).toContain('上一次输出未通过摘要校验');
   });
 
   it('stops instead of returning an unusable checkpoint, and deletes nothing', async () => {
@@ -124,7 +124,7 @@ describe('the one compaction implementation', () => {
       .mockResolvedValueOnce({ text: summaryResponse('A shorter brief preserving IMPORTANT_END.'), finishReason: 'stop' });
     const result = await summarizeConversation({ ...compactionCall, previous: null });
     expect(result.summary).toContain('IMPORTANT_END');
-    expect(vi.mocked(runTextModelTask).mock.calls[1][0].system).toContain('exceeds 4000 characters');
+    expect(vi.mocked(runTextModelTask).mock.calls[1][0].system).toContain('超过 4000 字符');
   });
 
   it('rejects persistently overlong summaries and supplies old structured preferences to the model', async () => {
@@ -145,9 +145,9 @@ describe('the one compaction implementation', () => {
     vi.mocked(runTextModelTask).mockResolvedValue({ text: '如果你有什么需要，随时告诉我。', finishReason: 'stop' });
     await expect(summarizeConversation({ ...compactionCall, dropped:
       'user: 我叫林同学。\nassistant: 记住了。\nuser: 介绍论文并生成思维导图。\nuser: 你好。', previous: null }))
-      .rejects.toThrow('not a summary response');
+      .rejects.toThrow('输出不是规定的摘要格式');
     expect(runTextModelTask).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(runTextModelTask).mock.calls[1][0].system).toContain('never continue');
+    expect(vi.mocked(runTextModelTask).mock.calls[1][0].system).toContain('不要继续历史对话');
   });
 
   it('quotes historical internal instructions and explicitly asks for a summary after the data', async () => {
@@ -156,7 +156,7 @@ describe('the one compaction implementation', () => {
     const call = vi.mocked(runTextModelTask).mock.calls[0][0];
     expect(call.system).not.toContain(dropped);
     expect(call.prompt).toContain(JSON.stringify(dropped));
-    expect(call.prompt).toContain('End of conversation data. Perform the summarization task now');
+    expect(call.prompt).toContain('历史材料到此结束。现在只执行摘要任务');
   });
 });
 
