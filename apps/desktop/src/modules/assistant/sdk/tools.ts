@@ -517,6 +517,7 @@ export async function createAssistantTools({
 
           return output.modelOutput;
         } catch (error) {
+          (options.abortSignal ?? abortSignal)?.throwIfAborted();
           if (fingerprint) loopGuard?.recordFailure(fingerprint);
           emit({
             error: errorMessage(error),
@@ -555,6 +556,7 @@ export async function createAssistantTools({
           currentNote,
           root
         });
+        (options.abortSignal ?? abortSignal)?.throwIfAborted();
         if ('snapshot' in output && output.snapshot) {
           const modelOutput = asObject(output.modelOutput);
           const entryId = optionalString(modelOutput.entry_id);
@@ -578,6 +580,7 @@ export async function createAssistantTools({
 
         return output.modelOutput;
       } catch (error) {
+        (options.abortSignal ?? abortSignal)?.throwIfAborted();
         emit({
           error: errorMessage(error),
           id: toolCallId,
@@ -617,6 +620,7 @@ export async function createAssistantTools({
           toolName: 'read_note'
         });
         const note = await readNote(root, entryId, noteId);
+        (options.abortSignal ?? abortSignal)?.throwIfAborted();
         const markdown = trimToBudget(note.markdown, Math.min(36_000, contextBudget));
         readNoteSnapshots.set(noteSnapshotKey(entryId, noteId), {
           markdown: note.markdown,

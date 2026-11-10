@@ -53,7 +53,7 @@ import { assistantContextCharBudget } from './contextBudget';
 import { createAssistantTools, type ToolRuntimeState } from './tools';
 import { mcpModelToolName } from './toolSchema';
 import { Agent, RunBudget, AgentLoopGuard, AgentLoopGuardError, createAgentLoopState } from '../agent-core';
-import { executionModeInstructions } from '../runtime/executionPolicy';
+import { canParallelAssistantTool, executionModeInstructions } from '../runtime/executionPolicy';
 import { answerLightweightChat } from './lightweightChat';
 
 import { PAPER_PRESENTATION_INSTRUCTIONS, paperRecords, presentedPaperRecords } from '../research/paperPresentation';
@@ -328,6 +328,7 @@ export async function answerWithGroundedAgent({
     tools: agentExecutors(runtime.tools, requestToolApproval),
     checkpoint: execution?.actor<ModelMessage>('main'),
     canReplayTool: canReplayAssistantTool,
+    canParallelTool: (name, input) => canParallelAssistantTool(name, input, runtime.observations),
     saveCheckpoint: async (checkpoint) => {
       if (execution) {
         execution.set('noteProposals', noteProposals);

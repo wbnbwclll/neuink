@@ -31,7 +31,7 @@ import {
   presentedPaperRecords
 } from '../research/paperPresentation';
 import { bindExecutionIdentity } from '../runtime/durableExecution';
-import { buildDirectExecution, executionModeInstructions } from '../runtime/executionPolicy';
+import { buildDirectExecution, canParallelAssistantTool, executionModeInstructions } from '../runtime/executionPolicy';
 import { SourceLedger } from '../runtime/sourceLedger';
 import { createCompiledTaskState, transitionTaskState } from '../runtime/taskState';
 import { finalizeVerifiedProposals } from '../runtime/verifiedProposal';
@@ -145,7 +145,7 @@ async function executeLocalAgent(inputOptions: RunAssistantHarnessOptions, sessi
       execution?.set('tagProposals', tagProposals);
       execution?.set('tools:local', runtime.snapshot());
       execution?.set('sources', [...ledger.sources]);
-    });
+    }, (name, input) => canParallelAssistantTool(name, input, runtime.observations));
     await bindExecutionIdentity(execution, 'local', { provider: session.provider, agent: main,
       tools: runtime.identityToolNames, mode: plan.executionMode });
     await checkpoint.save();
@@ -223,16 +223,17 @@ async function executeLocalAgent(inputOptions: RunAssistantHarnessOptions, sessi
           }
           const execute = executors[event.name];
           if (!execute) return {isError:true,content:[{type:'text',text:'当前工具不可用。'}]};
-          if (event.name === 'note_propose_patch') {
-            const input = protocolObject(event.input);
-            const entryId = typeof input.entry_id === 'string' ? input.entry_id : options.currentNote?.entryId ?? options.currentEntry?.id;
-            const noteId = typeof input.note_id === 'string' ? input.note_id : options.currentNote?.noteId;
-            if (!entryId || !noteId || !runtime.snapshot().readNotes.some(([key]) => key === noteSnapshotKey(entryId,noteId))) {
-              return {isError:true,content:[{type:'text',text:'本轮修改前必须先成功调用 read_note 或 read_current_note 读取目标笔记，再提交修改提案。'}]};
-            }
-          }
           try {
-            const output = await checkpoint.run(event.name, event.input, {id:event.id, signal:options.abortSignal}, execute);
+            const output = await checkpoint.run(event.name, event.input, {id:event.id, signal:options.abortSignal}, execute, () => {
+              // Check after earlier reads settle, not when concurrent MCP requests first arrive.
+              if (event.name !== 'note_propose_patch') return;
+              const input = protocolObject(event.input);
+              const entryId = typeof input.entry_id === 'string' ? input.entry_id : options.currentNote?.entryId ?? options.currentEntry?.id;
+              const noteId = typeof input.note_id === 'string' ? input.note_id : options.currentNote?.noteId;
+              if (!entryId || !noteId || !runtime.snapshot().readNotes.some(([key]) => key === noteSnapshotKey(entryId,noteId))) {
+                throw new AgentToolNotExecutedError('本轮修改前必须先成功调用 read_note 或 read_current_note 读取目标笔记，再提交修改提案。');
+              }
+            });
             options.abortSignal?.throwIfAborted();
             stream.pdfReading.observe(output);
             return {...(isAgentToolFailure(output) ? {isError:true} : {}),content:[{type:'text',text:JSON.stringify(output)}]};
