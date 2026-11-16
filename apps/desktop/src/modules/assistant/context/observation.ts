@@ -4,9 +4,13 @@ import type { AssistantActiveNote, AssistantComposerSnapshot, AssistantContext, 
 import type { WorkspaceContext, WorkspaceReference } from '@/shared/types/modelContext';
 
 export async function selectionContextRef(item: AssistantSegmentContextItem): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(item.text));
-  const revision = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const revision = await digestText(item.text);
   return `selection:${item.entryId}:${item.segmentUid}:${revision}`;
+}
+
+async function digestText(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 /** Extract metadata from already frozen host observations. Never reads a document or note body. */
@@ -46,12 +50,12 @@ export async function observeWorkspaceContext(options: {
     try { const parsed = new URL(browserTabTarget.url); if (['https:', 'http:'].includes(parsed.protocol)) url = parsed.origin + parsed.pathname; }
     catch { /* The browser tool validates the authoritative target before reading it. */ }
     browser = { url, title: browserTabTarget.title.slice(0, 1_000),
-      identity: `${browserTabTarget.id}:${browserTabTarget.navigationId ?? ''}` };
+      identity: await digestText(JSON.stringify([browserTabTarget.id, browserTabTarget.navigationId ?? ''])) };
   }
   return { version: 1,
     scope: { entries: scope.entry_ids.map((id, index) => ({ id, title: scope.entry_titles[index] ?? id })),
       tags: scope.tag_ids.map((id, index) => ({ id, name: scope.tag_names[index] ?? id })) },
-    active_entry: entry ? { ...entry, ...(contextSnapshot?.active_entry?.entry_id === entry.id && contextSnapshot.active_entry.revision
+    active_entry: entry ? { id: entry.id, title: entry.title, ...(contextSnapshot?.active_entry?.entry_id === entry.id && contextSnapshot.active_entry.revision
       ? { revision: contextSnapshot.active_entry.revision } : {}) } : null,
     active_note: note ? { entry_id: note.entryId, id: note.noteId, title: note.noteTitle,
       ...(contextSnapshot?.active_note?.entry_id === note.entryId && contextSnapshot.active_note.note_id === note.noteId && contextSnapshot.active_note.revision

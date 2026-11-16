@@ -45,3 +45,8 @@ export type ContextMemory = {
   context_baseline?: ContextBaseline;
   observed_markers?: string[];
 };
+
+export type NativeContextState = ContextBaseline & {
+  agent_profile: string;
+  capabilities: string[];
+};

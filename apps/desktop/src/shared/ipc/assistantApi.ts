@@ -196,7 +196,8 @@ export type AssistantConversationMemory = {
 
 export type AssistantMessagePart =
   | { type: 'model-transcript'; transcript: import('../types/modelTranscript').AssistantModelTranscript }
-  | { type: 'local-agent'; provider: 'claude' | 'codex' | 'opencode'; sessionId: string; initialized: boolean }
+  | { type: 'local-agent'; provider: 'claude' | 'codex' | 'opencode'; sessionId: string; initialized: boolean;
+      contextState?: import('../types/modelContext').NativeContextState }
   | { type: 'text'; markdown: string }
   | { type: 'reasoning'; text: string }
   | { type: 'context'; items: AssistantContextItem[] }

@@ -7,7 +7,7 @@ type ContextKind = 'workspace_context' | 'run_policy';
 export function contextJson(value: unknown): string {
   return JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
     ? Object.fromEntries(Object.keys(item).sort().filter(key => item[key] !== undefined).map(key => [key, item[key]]))
-    : item);
+    : item) ?? 'null';
 }
 
 export function workspaceMessage(workspace: WorkspaceContext): ModelMessage {
