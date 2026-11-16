@@ -51,7 +51,10 @@ export async function observeWorkspaceContext(options: {
   return { version: 1,
     scope: { entries: scope.entry_ids.map((id, index) => ({ id, title: scope.entry_titles[index] ?? id })),
       tags: scope.tag_ids.map((id, index) => ({ id, name: scope.tag_names[index] ?? id })) },
-    active_entry: entry, active_note: note ? { entry_id: note.entryId, id: note.noteId, title: note.noteTitle,
-      ...(contextSnapshot?.active_note?.revision ? { revision: contextSnapshot.active_note.revision } : {}) } : null,
+    active_entry: entry ? { ...entry, ...(contextSnapshot?.active_entry?.entry_id === entry.id && contextSnapshot.active_entry.revision
+      ? { revision: contextSnapshot.active_entry.revision } : {}) } : null,
+    active_note: note ? { entry_id: note.entryId, id: note.noteId, title: note.noteTitle,
+      ...(contextSnapshot?.active_note?.entry_id === note.entryId && contextSnapshot.active_note.note_id === note.noteId && contextSnapshot.active_note.revision
+        ? { revision: contextSnapshot.active_note.revision } : {}) } : null,
     browser, references, pinned_segments: pinned };
 }

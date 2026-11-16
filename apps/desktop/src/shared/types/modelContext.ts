@@ -15,7 +15,7 @@ export type WorkspaceReference = {
 export type WorkspaceContext = {
   version: 1;
   scope: { entries: Array<{ id: string; title: string }>; tags: Array<{ id: string; name: string }> };
-  active_entry: { id: string; title: string } | null;
+  active_entry: { id: string; title: string; revision?: string } | null;
   active_note: { entry_id: string; id: string; title: string; revision?: string } | null;
   browser: { title: string; url: string; identity?: string } | null;
   references: WorkspaceReference[];

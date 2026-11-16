@@ -36,4 +36,14 @@ describe('workspace observations', () => {
     expect(JSON.stringify(first)).not.toContain('private');
     expect(await observeWorkspaceContext({ ...input, browserTabTarget: { ...input.browserTabTarget, navigationId: 'two' } })).not.toEqual(first);
   });
+
+  it('uses metadata revisions to detect edits without including bodies', async () => {
+    const input = { scope, contextSnapshot: { metadata_only: true, active_entry: { entry_id: 'paper', entry_title: 'Paper',
+      has_pdf: true, parse_status: null, revision: 'v1' }, active_note: null, document: null, pinned_segments: [], warnings: [] } };
+    const first = await observeWorkspaceContext(input);
+    expect(first.active_entry?.revision).toBe('v1');
+    expect(await observeWorkspaceContext({ ...input, contextSnapshot: { ...input.contextSnapshot,
+      active_entry: { ...input.contextSnapshot.active_entry, revision: 'v2' } } })).not.toEqual(first);
+    expect((await observeWorkspaceContext({ ...input, currentEntry: { id: 'other', title: 'Other' } })).active_entry?.revision).toBeUndefined();
+  });
 });

@@ -182,6 +182,7 @@ async function executeAssistantHarness(options: RunAssistantHarnessOptions): Pro
       (route.path === 'lightweight_chat'
         ? { active_entry: null, active_note: null, document: null, pinned_segments: [], warnings: [] }
         : await getAssistantContextSnapshot({
+          metadataOnly: true,
       activeEntryId: observed.activeEntryId,
       activeNote: observed.activeNote,
       documentCharBudget: assistantContextCharBudget(settings.max_context_length),
