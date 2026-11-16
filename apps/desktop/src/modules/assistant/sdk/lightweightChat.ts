@@ -7,6 +7,7 @@ import { renderConversationContext } from '../runtime/conversationTranscript';
 import { loadPrompt, resolveLlmApiProtocol } from '@/shared/ipc/assistantApi';
 import { prepareContextRequest } from '../context/request';
 import { composeSystemPolicy } from '../context/policy';
+import { observeWorkspaceContext } from '../context/observation';
 import { createAgentDriver } from './agentDriver';
 import { hasAssistantToolMarkup } from './assistantAnswerMarkup';
 import type { answerWithGroundedAgent, GroundedAnswer } from './qna';
@@ -23,8 +24,9 @@ export async function answerLightweightChat(options: Parameters<typeof answerWit
   });
   const state = execution?.get<ReturnType<typeof createAgentLoopState>>('loop:main') ?? createAgentLoopState(question);
   const model = { profileId: settings.id, model: settings.model, protocol: resolveLlmApiProtocol(settings.api_protocol) };
+  const workspace = await observeWorkspaceContext(options);
   const prepared = prepareContextRequest({ history: renderConversationContext(options.conversationHistory ?? [], model,
-    options.conversationMemory), question,
+    options.conversationMemory), question, workspace,
     policy: { mode: 'act', write_policy: 'chat_only', source_policy: 'none', required_tools: [] } });
   const recording = createTranscriptRecorder({ execution, model, initialMessageCount: prepared.messages.length,
     inputMessages: prepared.inputMessages, sources: new Map(), firstNewMarker: 1, onTranscript: options.onModelTranscript });

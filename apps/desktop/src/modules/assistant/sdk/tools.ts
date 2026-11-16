@@ -167,6 +167,7 @@ type CreateAssistantToolsOptions = {
   browserTabTarget?: BrowserTabTarget | null;
   contextBudget?: number;
   conversationHistory?: ConversationMessage[];
+  tagMentionScopes?: Record<string, ScopeSnapshot>;
   currentEntry?: {
     id: string;
     title: string;
@@ -239,6 +240,7 @@ export async function createAssistantTools({
   browserTabTarget,
   contextBudget = assistantContextCharBudget(null),
   conversationHistory = [],
+  tagMentionScopes = {},
   currentEntry,
   currentNote,
   executionDepth = 0,
@@ -313,16 +315,17 @@ export async function createAssistantTools({
 
   if (enabledToolIds.has('read_context_reference')) {
     tools.read_context_reference = createContextReferenceTool({ assistantContext, history: conversationHistory,
+      scopes: [scope, ...Object.values(tagMentionScopes)],
       signal: abortSignal, addSource, emit, observe: output => {
         observations.push({ output, toolName: 'read_context_reference' });
         loopGuard?.recordSuccess(output);
       } });
   }
 
-  if (browserTabTarget && enabledToolIds.has('read_browser_tab') &&
+  if (enabledToolIds.has('read_browser_tab') &&
       activeExecution?.agent.kind === 'main_assistant' && executionDepth === 0) {
     tools.read_browser_tab = createBrowserTabTool({
-      target: browserTabTarget, contextBudget, abortSignal, loopGuard, emit,
+      target: browserTabTarget ?? null, contextBudget, abortSignal, loopGuard, emit,
       observe: output => observations.push({ output, toolName: 'read_browser_tab' })
     });
   }

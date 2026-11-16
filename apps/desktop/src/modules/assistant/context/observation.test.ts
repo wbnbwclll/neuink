@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AssistantContext, AssistantSegmentContextItem } from '@/shared/types/assistant';
-import { observeWorkspaceContext } from './observation';
+import { observeWorkspaceContext, scopeContextRef } from './observation';
 
 const scope = { entry_ids: ['paper'], entry_titles: ['Paper'], tag_ids: [], tag_names: [] };
 const selection: AssistantSegmentContextItem = { id: 'ui-id', kind: 'segment', entryId: 'paper', entryTitle: 'Paper',
@@ -45,5 +45,19 @@ describe('workspace observations', () => {
     expect(await observeWorkspaceContext({ ...input, contextSnapshot: { ...input.contextSnapshot,
       active_entry: { ...input.contextSnapshot.active_entry, revision: 'v2' } } })).not.toEqual(first);
     expect((await observeWorkspaceContext({ ...input, currentEntry: { id: 'other', title: 'Other' } })).active_entry?.revision).toBeUndefined();
+  });
+
+  it('keeps large library and tag catalogs behind frozen references', async () => {
+    const large = { entry_ids:Array.from({length:1000},(_,i)=>`paper-${i}`),
+      entry_titles:Array.from({length:1000},(_,i)=>`Paper ${i}`),tag_ids:['tag'],tag_names:['Tag'] };
+    const state = await observeWorkspaceContext({scope:large, tagMentionScopes:{tag:large},
+      composerSnapshot:{text:'Read [C1]',mentions:[{kind:'tag',id:'tag',marker:'[C1]',label:'Tag',
+        tagId:'tag',tagName:'Tag',entryId:'',entryTitle:'',charOffset:5}]}});
+    expect(JSON.stringify(state).length).toBeLessThan(1000);
+    expect(state.scope).toMatchObject({entries:[],entry_count:1000,context_ref:await scopeContextRef(large)});
+    expect(state.references[0]).toMatchObject({entry_count:1000,scope_ref:state.scope.context_ref});
+    expect(state.references[0].entry_ids).toBeUndefined();
+    const changed = await observeWorkspaceContext({scope:{...large,entry_titles:large.entry_titles.map((v,i)=>i===900?'Changed':v)}});
+    expect(changed.scope.context_ref).not.toBe(state.scope.context_ref);
   });
 });

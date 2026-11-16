@@ -3,6 +3,25 @@ import type { BrowserTabTarget } from '@/shared/ipc/browserApi';
 import type { AssistantActiveNote, AssistantComposerSnapshot, AssistantContext, AssistantSegmentContextItem } from '@/shared/types/assistant';
 import type { WorkspaceContext, WorkspaceReference } from '@/shared/types/modelContext';
 
+const INLINE_SCOPE_LIMIT = 20;
+
+export function scopeMetadata(scope: ScopeSnapshot) {
+  return { entries: scope.entry_ids.map((id, index) => ({ id, title: scope.entry_titles[index] ?? id })),
+    tags: scope.tag_ids.map((id, index) => ({ id, name: scope.tag_names[index] ?? id })) };
+}
+
+export async function scopeContextRef(scope: ScopeSnapshot) {
+  return `scope:${await digestText(JSON.stringify(scopeMetadata(scope)))}`;
+}
+
+async function observeScope(scope: ScopeSnapshot): Promise<WorkspaceContext['scope']> {
+  const metadata = scopeMetadata(scope);
+  if (metadata.entries.length <= INLINE_SCOPE_LIMIT && metadata.tags.length <= INLINE_SCOPE_LIMIT
+    && JSON.stringify(metadata).length <= 6000) return metadata;
+  return { entries: [], tags: [], entry_count: metadata.entries.length, tag_count: metadata.tags.length,
+    context_ref: await scopeContextRef(scope) };
+}
+
 export async function selectionContextRef(item: AssistantSegmentContextItem): Promise<string> {
   const revision = await digestText(item.text);
   return `selection:${item.entryId}:${item.segmentUid}:${revision}`;
@@ -36,12 +55,18 @@ export async function observeWorkspaceContext(options: {
     return { entry_id: item.entryId, segment_uid: item.segmentUid, revision: context_ref.slice(context_ref.lastIndexOf(':') + 1), context_ref };
   }));
   const references: WorkspaceReference[] = composerSnapshot?.mentions.length
-    ? composerSnapshot.mentions.map(mention => mention.kind === 'tag'
-      ? { ref: mention.marker, kind: 'tag', tag_id: mention.tagId ?? undefined, title: mention.tagName ?? mention.label,
-        entry_ids: (mention.tagId && options.tagMentionScopes?.[mention.tagId] || scope).entry_ids }
-      : { ref: mention.marker, kind: mention.kind, entry_id: mention.entryId, title: mention.contentTitle || mention.entryTitle,
+    ? await Promise.all(composerSnapshot.mentions.map(async mention => {
+      if (mention.kind === 'tag') {
+        const target = mention.tagId && options.tagMentionScopes?.[mention.tagId] || scope;
+        const metadata = await observeScope(target);
+        return { ref: mention.marker, kind: 'tag', tag_id: mention.tagId ?? undefined, title: mention.tagName ?? mention.label,
+          ...(metadata.context_ref ? { scope_ref: metadata.context_ref, entry_count: target.entry_ids.length }
+            : { entry_ids: target.entry_ids }) };
+      }
+      return { ref: mention.marker, kind: mention.kind, entry_id: mention.entryId, title: mention.contentTitle || mention.entryTitle,
         ...(mention.contentId ? { content_id: mention.contentId } : {}),
-        ...(mention.segmentUid ? { segment_uid: mention.segmentUid } : {}) })
+        ...(mention.segmentUid ? { segment_uid: mention.segmentUid } : {}) };
+    }))
     : (assistantContext?.items ?? []).filter(item => item.kind === 'entry').map(item => ({ kind: item.contentKind ?? 'entry',
       entry_id: item.entryId, title: item.contentTitle || item.entryTitle, ...(item.contentId ? { content_id: item.contentId } : {}) }));
   let browser: WorkspaceContext['browser'] = null;
@@ -53,8 +78,7 @@ export async function observeWorkspaceContext(options: {
       identity: await digestText(JSON.stringify([browserTabTarget.id, browserTabTarget.navigationId ?? ''])) };
   }
   return { version: 1,
-    scope: { entries: scope.entry_ids.map((id, index) => ({ id, title: scope.entry_titles[index] ?? id })),
-      tags: scope.tag_ids.map((id, index) => ({ id, name: scope.tag_names[index] ?? id })) },
+    scope: await observeScope(scope),
     active_entry: entry ? { id: entry.id, title: entry.title, ...(contextSnapshot?.active_entry?.entry_id === entry.id && contextSnapshot.active_entry.revision
       ? { revision: contextSnapshot.active_entry.revision } : {}) } : null,
     active_note: note ? { entry_id: note.entryId, id: note.noteId, title: note.noteTitle,

@@ -92,7 +92,7 @@ describe.each(['claude', 'codex', 'opencode'] as const)('%s web integration', pr
     vi.mocked(runLocalAgent).mockImplementation(async (request, _signal, _event, handle) => {
       const capabilities = JSON.parse(request.prompt).capabilities;
       expect(capabilities).toEqual(expect.arrayContaining(['search_web','read_webpage']));
-      expect(capabilities).not.toContain('read_browser_tab');
+      expect(capabilities).toContain('read_browser_tab');
       expect((await call(handle, 'read_webpage', { url: 12 })).isError).toBe(true);
       expect(runResearchTool).not.toHaveBeenCalled();
       expect((await call(handle, 'search_web', { query: 'public article' })).isError).not.toBe(true);

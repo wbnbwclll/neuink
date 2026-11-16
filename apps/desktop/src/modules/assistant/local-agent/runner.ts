@@ -26,6 +26,7 @@ import { verifyGroundedProposals } from '../harness/engine';
 import { observeWorkspaceContext } from '../context/observation';
 import { prepareNativeContextRequest } from '../context/nativeRequest';
 import { latestConversationMemory } from '../harness/conversationMemory';
+import { formatContextMemory } from '../context/checkpoint';
 import { createAgentRun, finishAgentRun } from '../harness/runState';
 import { AssistantVerificationError, verifyHarnessResult } from '../harness/verification';
 import {
@@ -113,6 +114,7 @@ async function executeLocalAgent(inputOptions: RunAssistantHarnessOptions, sessi
       restoredState: restoredState && { ...restoredState, readNotes: [] }, root:options.root, scope:options.scope, abortSignal:options.abortSignal,
       activeExecution:{agent:main}, runtimeSettings, currentEntry:options.currentEntry, currentNote:options.currentNote,
       contextSnapshot:snapshot, assistantContext:options.assistantContext, availableEntries:options.availableEntries,
+      tagMentionScopes:options.tagMentionScopes,
       browserTabTarget,
       conversationHistory:options.conversationHistory, sourceLedger:ledger, profiles:options.profiles,
       applicationActions:options.applicationActions, onCreateEntry:options.onCreateEntry,
@@ -164,8 +166,9 @@ async function executeLocalAgent(inputOptions: RunAssistantHarnessOptions, sessi
         workspace, policy:{ mode:plan.executionMode ?? 'act', write_policy:invocationPlan.writePolicy,
           source_policy:invocationPlan.sourcePolicy ?? 'mixed', required_tools:invocationPlan.requiredToolIds ?? [] },
         agentProfile:main.systemPrompt, capabilities:Object.keys(runtime.tools), question:options.question });
+      const memory = latestConversationMemory(options.conversationHistory ?? []);
       const bootstrap = session.initialized ? undefined : {
-        memory:latestConversationMemory(options.conversationHistory ?? []),
+        memory:memory ? formatContextMemory(memory) : undefined,
         conversation:buildConversationTail(options.conversationHistory ?? []) };
       contextCompacted = false;
       const result = await runLocalAgent({ runId: crypto.randomUUID(), root:options.root, conversationId:options.conversationId, sessionId:session.sessionId,

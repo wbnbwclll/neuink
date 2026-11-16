@@ -8,13 +8,16 @@ export type WorkspaceReference = {
   segment_uid?: string;
   tag_id?: string;
   entry_ids?: string[];
+  entry_count?: number;
+  scope_ref?: string;
   revision?: string;
   context_ref?: string;
 };
 
 export type WorkspaceContext = {
   version: 1;
-  scope: { entries: Array<{ id: string; title: string }>; tags: Array<{ id: string; name: string }> };
+  scope: { entries: Array<{ id: string; title: string }>; tags: Array<{ id: string; name: string }>;
+    entry_count?: number; tag_count?: number; context_ref?: string };
   active_entry: { id: string; title: string; revision?: string } | null;
   active_note: { entry_id: string; id: string; title: string; revision?: string } | null;
   browser: { title: string; url: string; identity?: string } | null;

@@ -34,6 +34,27 @@ beforeEach(() => {
   });
 });
 describe('cross-turn context through the real provider driver', () => {
+  it('keeps system and tool prefixes stable when switching from a paper to a browser and clearing it', async () => {
+    const runtimeSettings = structuredClone(DEFAULT_AGENT_RUNTIME_SETTINGS);
+    const base = { ...options, runtimeSettings, activeExecution:{agent:runtimeSettings.mainAssistant},
+      ...buildDirectExecution(runtimeSettings,'Explain the context') };
+    const models = [0,1,2].map(()=>scriptedModel([{text:'Context updated.'}]));
+    const history: ConversationMessage[] = [];
+    for (let index=0; index<models.length; index++) {
+      vi.mocked(createNeuinkModel).mockReturnValue(models[index]);
+      const question = `Continue ${index}`;
+      const result = await answerWithGroundedAgent({ ...base, question, conversationHistory:history,
+        currentEntry:index === 0 ? {id:'entry',title:'Paper'} : null,
+        browserTabTarget:index === 1 ? {id:'tab',url:'https://example.org/article',title:'Article',navigationId:'nav'} : null });
+      if (index>0) {
+        const previous = models[index-1].doStreamCalls[0];
+        expect(models[index].doStreamCalls[0].prompt.slice(0,previous.prompt.length)).toEqual(previous.prompt);
+        expect(models[index].doStreamCalls[0].tools).toEqual(previous.tools);
+      }
+      history.push(turn(question,'user'),turn(result.answer,'assistant',result.modelTranscript));
+    }
+  });
+
   it('preserves the exact prior request prefix and only emits a new workspace snapshot when it changes', async () => {
     const firstModel = scriptedModel([{ text: 'First answer.' }]);
     vi.mocked(createNeuinkModel).mockReturnValue(firstModel);
