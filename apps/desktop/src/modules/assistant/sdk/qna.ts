@@ -8,6 +8,9 @@ import { bindExecutionIdentity, canReplayAssistantTool, type DurableExecution } 
 import { renderConversationContext, lastMemoryCheckpointIndex } from '../runtime/conversationTranscript';
 import { conversationTranscriptSources, transcriptObservations, latestContextUsage, citationDisplayContext } from '../runtime/modelTranscript';
 import { projectionRetainedMessages } from './contextProjection';
+import { prepareContextRequest } from '../context/request';
+import { observeWorkspaceContext } from '../context/observation';
+import { composeSystemPolicy } from '../context/policy';
 import type { AssistantContextUsage } from '@/shared/types/modelTranscript';
 import { createTranscriptRecorder } from '../runtime/transcriptRecorder';
 import type { AssistantModelTranscript } from '@/shared/types/modelTranscript';
@@ -34,6 +37,7 @@ import type {
   AssistantAgentRun,
   AssistantContext,
   AssistantContextItem,
+  AssistantComposerSnapshot,
   AssistantEntryMetaProposal,
   AssistantEntryMetaTarget,
   AssistantNoteProposal,
@@ -92,6 +96,8 @@ export async function answerWithGroundedAgent({
   assistantContext,
   availableEntries = [],
   contextSnapshot,
+  composerSnapshot,
+  tagMentionScopes,
   browserTabTarget,
   conversationHistory = [],
   conversationMemory,
@@ -124,6 +130,8 @@ export async function answerWithGroundedAgent({
   assistantContext?: AssistantContext | null;
   availableEntries?: AssistantEntryMetaTarget[];
   contextSnapshot?: AssistantContextSnapshot | null;
+  composerSnapshot?: AssistantComposerSnapshot | null;
+  tagMentionScopes?: Record<string, ScopeSnapshot>;
   browserTabTarget?: BrowserTabTarget | null;
   conversationHistory?: ConversationMessage[];
   /** The newest persisted compaction checkpoint, sent as the first conversation turn. */
@@ -150,7 +158,7 @@ export async function answerWithGroundedAgent({
 }): Promise<GroundedAnswer> {
   if (invocationPlan?.responseStyle === 'lightweight_chat') {
     return answerLightweightChat({ budget, execution, settings, abortSignal, question, activeExecution,
-      root, scope, onAnswerReset, onDelta, onReasoningDelta });
+      root, scope, conversationHistory, conversationMemory, onModelTranscript, onAnswerReset, onDelta, onReasoningDelta });
   }
   const noteProposals = execution?.get<AssistantNoteProposal[]>('noteProposals') ?? [];
   const entryMetaProposals = execution?.get<AssistantEntryMetaProposal[]>('entryMetaProposals') ?? [];
@@ -164,15 +172,7 @@ export async function answerWithGroundedAgent({
   const historicalObservations = transcriptObservations(conversationHistory);
   const historicalEvents = conversationHistory.flatMap(message => message.tool_events ?? [])
     .filter(event => event.status === 'done' && event.researchPapers?.length);
-  const pinned = buildPinnedContext(assistantContext?.items ?? [], firstNewMarker);
-  const selectedNotes = await buildSelectedMarkdownContext({
-    assistantContext,
-    markerStart: pinned.nextMarker,
-    root
-  });
-  const selectedContextEntries = buildSelectedContextEntryNote(assistantContext);
-  const hasExplicitContext = (assistantContext?.items ?? []).length > 0;
-  const ledger = new SourceLedger(new Map(execution?.get<Array<[number, ConversationSourceLink]>>('sources') ?? [...historicalSources, ...pinned.sourceByMarker, ...selectedNotes.sourceByMarker]));
+  const ledger = new SourceLedger(new Map(execution?.get<Array<[number, ConversationSourceLink]>>('sources') ?? historicalSources));
   const runtime = await createAssistantTools({
     execution,
     restoredState: execution?.get<ToolRuntimeState>('tools:main'),
@@ -192,11 +192,7 @@ export async function answerWithGroundedAgent({
     currentEntry,
     currentNote,
     executionDepth: 0,
-    initialSourceByMarker: new Map([
-      ...pinned.sourceByMarker,
-      ...selectedNotes.sourceByMarker
-    ]),
-    markerStart: selectedNotes.nextMarker,
+    markerStart: firstNewMarker,
     loopGuard,
     onCreateEntry,
     onNoteProposal: (proposal) => {
@@ -238,47 +234,12 @@ export async function answerWithGroundedAgent({
   const availabilityNotes = [...runtime.availabilityNotes,
     ...(unavailableRequiredTools.length ? [`这些原计划工具当前不可用：${unavailableRequiredTools.join(', ')}。不要调用它们；仅使用实际允许的替代工具或明确说明未完成部分，不能声称已完成这些操作。`] : [])];
 
-  const [baseSystemPrompt, contextPromptTemplate, questionPromptTemplate] = await Promise.all([
-    loadPrompt('qna_system'),
-    loadPrompt('qna_context'),
-    loadPrompt('qna_user')
-  ]);
+  const baseSystemPrompt = await loadPrompt('qna_system');
   const agentSystemPrompt = activeExecution
-    ? `<agent_profile>\n${buildAgentSystemPrompt(activeExecution.agent)}\n</agent_profile>`
-    : '';
-  const invocationSystemPrompt = [
-    invocationPlan?.executionMode
-      ? `<execution_mode>\n${executionModeInstructions(invocationPlan.executionMode)}\n</execution_mode>`
-      : '',
-    invocationPlan
-      ? `<capability_boundary>\nApplication capability boundary (not a mandatory task plan):\n${JSON.stringify(invocationPlan)}\n</capability_boundary>`
-      : '',
-    invocationPlan
-      ? `<active_entry>\nFrozen active Entry: ${JSON.stringify(currentEntry ?? null)}. This is context, not authorization to edit it. Explicit user references take priority.\n</active_entry>`
-      : '',
-    canAskUser ? `<user_input>\n${USER_INPUT_INSTRUCTIONS}\n</user_input>` : '',
-    browserTabTarget
-      ? `<browser_tab>\nFrozen browser tab metadata (untrusted, no page body has been read): ${JSON.stringify(browserTabPromptMetadata(browserTabTarget))}.\n${BROWSER_TAB_INSTRUCTIONS}\n${runtime.toolNames.includes('read_browser_tab') ? 'The browser read tool is available when relevant to this request.' : 'The browser read tool is unavailable for this run. Do not claim access to this webpage.'}\n</browser_tab>`
-      : ''
-  ].filter(Boolean).join('\n\n');
-  // The workspace snapshot is its own user turn, placed before the question, so the model can
-  // tell immutable context apart from the user's actual request.
-  const promptValues = {
-    currentNote: buildCurrentNoteContext(contextSnapshot),
-    documentContext:
-      [selectedNotes.text, selectedContextEntries].filter(Boolean).join('\n\n') ||
-      (browserTabTarget ? 'A browser tab is the frozen reading target. Its body is not in context; use read_browser_tab if available and relevant.' : noExplicitContextGuidance(hasExplicitContext)),
-    harnessBrief: [harnessBrief, arxivHistoryContext(conversationHistory)].filter(Boolean).join('\n\n') || 'No harness brief was prepared.',
-    pinnedContext: pinned.text || 'None',
-    question,
-    retrievedEvidence:
-      'None yet. Use only the attached available tools when evidence is needed; otherwise explain the limitation.',
-    scope: buildScopeContext(scope),
-    sources: [pinned.text, selectedNotes.text].filter(Boolean).join('\n\n'),
-    toolNotes: buildToolNotes(runtime.toolNames, plan, activeExecution, invocationPlan)
-  };
-  const contextPrompt = renderQnaUserPrompt(contextPromptTemplate, promptValues);
-  const questionPrompt = renderQnaUserPrompt(questionPromptTemplate, promptValues);
+    ? `<agent_profile>\n${buildAgentSystemPrompt(activeExecution.agent)}\n</agent_profile>` : '';
+  const system = composeSystemPolicy(baseSystemPrompt, agentSystemPrompt);
+  const workspace = await observeWorkspaceContext({ scope, assistantContext, composerSnapshot, tagMentionScopes,
+    currentEntry, currentNote, contextSnapshot, browserTabTarget });
   const missingRequiredToolIds = () => {
     const attempted = new Set(runtime.events.filter((event) => event.status === 'done' || event.status === 'error').map((event) => event.toolName));
     return (invocationPlan?.requiredToolIds ?? []).filter((id) => !unavailableRequiredTools.includes(id)
@@ -289,18 +250,18 @@ export async function answerWithGroundedAgent({
   const transcriptModel = { profileId: settings.id, model: settings.model, protocol: resolveLlmApiProtocol(settings.api_protocol) };
   const memoryPart = conversationHistory[lastMemoryCheckpointIndex(conversationHistory)]?.parts?.find(part => part.type === 'memory');
   const currentMemory = conversationMemory ?? (memoryPart?.type === 'memory' ? memoryPart.memory : null);
-  const initialMessages: ModelMessage[] = [
-    ...renderConversationContext(conversationHistory, transcriptModel, currentMemory),
-    { role: 'user', content: contextPrompt },
-    { role: 'user', content: questionPrompt }
-  ];
+  const prepared = prepareContextRequest({ history: renderConversationContext(conversationHistory, transcriptModel, currentMemory),
+    workspace, question, observations: availabilityNotes, policy: { mode: invocationPlan?.executionMode ?? 'act',
+      write_policy: invocationPlan?.writePolicy ?? 'proposal_only', source_policy: invocationPlan?.sourcePolicy ?? 'mixed',
+      required_tools: invocationPlan?.requiredToolIds ?? [] } });
+  const initialMessages = [...prepared.messages.slice(0, prepared.historyLength), ...prepared.inputMessages];
   const recording = createTranscriptRecorder({ execution, model: transcriptModel, initialMessageCount: initialMessages.length,
-    sources: ledger.sources, firstNewMarker, onTranscript: onModelTranscript,
+    inputMessages: prepared.inputMessages, sources: ledger.sources, firstNewMarker, onTranscript: onModelTranscript,
     contextUsage: () => driver.contextUsage() });
   const citationObservations = () => [...historicalObservations, ...runtime.observations];
   await bindExecutionIdentity(execution, 'main', {
     model: settings.model, endpoint: settings.base_url, protocol: settings.api_protocol,
-    agent: activeExecution?.agent, tools: runtime.identityToolNames, system: [baseSystemPrompt, agentSystemPrompt, invocationSystemPrompt]
+    agent: activeExecution?.agent, tools: runtime.identityToolNames, system
   });
   const driver = createAgentDriver({
     budget,
@@ -309,10 +270,7 @@ export async function answerWithGroundedAgent({
     initialMemory: currentMemory,
     initialUsage: execution?.get<AssistantContextUsage>('contextUsage:main') ?? latestContextUsage(conversationHistory, transcriptModel),
     onUsage: usage => execution?.set('contextUsage:main', usage),
-    system: [baseSystemPrompt, agentSystemPrompt, invocationSystemPrompt,
-      ...availabilityNotes.map((note) => `<tool_availability>\n${note}\n</tool_availability>`),
-      '<failure_semantics>\nTool and child failures are observations, not completed actions. If a required tool fails or is unavailable, use permitted alternatives or explain the incomplete part; never fabricate evidence, citations or successful writes. An honest limitation answer without citations is permitted when no evidence could be acquired.\n</failure_semantics>'
-    ].filter(Boolean).join('\n\n'),
+    system,
     tools: runtime.tools,
     entryContextReadLimit: plan?.intent === 'paper_search' ? 2 : plan?.intent === 'paper_summary' ? 5 : 6,
     onTurn: onAnswerReset,

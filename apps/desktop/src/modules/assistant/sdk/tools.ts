@@ -4,6 +4,7 @@ import { jsonSchema, tool, type JSONSchema7, type ToolSet } from 'ai';
 import { AgentLocalLimitError, AgentStoppedError } from '../agent-core/agent';
 import { createAgentToolFailure, isAgentToolFailure } from '../agent-core/toolFailure';
 import { createBrowserTabTool } from './browserTabTool';
+import { createContextReferenceTool } from './contextReferenceTool';
 import { buildDiagramArtifact } from './diagramArtifact';
 import { PDF_TOOL_NAMES } from './pdfTools';
 import { assertResearchRetry } from './researchRecovery';
@@ -95,6 +96,7 @@ import {
 import { resolveModelProfile } from './modelTasks';
 
 const SUPPORTED_TOOL_NAMES = new Set([
+  'read_context_reference',
   ...PDF_TOOL_NAMES,
   'search_papers', 'arxiv_search', 'search_web', 'read_webpage', 'import_papers',
   'search_segments',
@@ -308,6 +310,14 @@ export async function createAssistantTools({
     runtimeSettings
   );
   const enabledToolIds = new Set<AgentToolId>(permissionAudit.allowedToolIds);
+
+  if (enabledToolIds.has('read_context_reference')) {
+    tools.read_context_reference = createContextReferenceTool({ assistantContext, history: conversationHistory,
+      signal: abortSignal, addSource, emit, observe: output => {
+        observations.push({ output, toolName: 'read_context_reference' });
+        loopGuard?.recordSuccess(output);
+      } });
+  }
 
   if (browserTabTarget && enabledToolIds.has('read_browser_tab') &&
       activeExecution?.agent.kind === 'main_assistant' && executionDepth === 0) {

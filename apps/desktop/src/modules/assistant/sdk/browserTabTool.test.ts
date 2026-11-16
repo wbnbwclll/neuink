@@ -124,8 +124,9 @@ describe('browser read inside the real main agent loop', () => {
     await answerWithGroundedAgent({ ...options(), settings: profile, question: '你好' });
     expect(readBrowserTab).not.toHaveBeenCalled();
     const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
-    expect(prompt).toContain('no page body has been read');
-    expect(prompt).toContain('untrusted source material');
+    expect(prompt).toContain('workspace_context');
+    expect(prompt).toContain('browser');
+    expect(prompt).not.toContain('Visible article evidence');
     expect(prompt).not.toMatch(/token=private|#secret|Visible article evidence/);
   });
 

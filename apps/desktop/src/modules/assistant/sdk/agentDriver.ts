@@ -20,6 +20,7 @@ import { arxivGateStatus, arxivGateMessage } from '@/shared/lib/arxivGateStatus'
 import { toolPaperSelections } from '../research/researchPaperSelection';
 import { isPotentialRawModelToolCall, isRawModelToolCall } from './modelToolCallMarkup';
 import { createModelCapture } from '../../../../model-capture/client';
+import { prepareTurnControl } from '../context/request';
 
 /** AI SDK is a single-turn provider adapter, never the owner of our agent loop. */
 export function createAgentDriver(options: {
@@ -39,7 +40,7 @@ export function createAgentDriver(options: {
   initialUsage?: AssistantContextUsage;
   onUsage?: (usage: AssistantContextUsage) => void;
 }): AgentDriver<ModelMessage> & { projectionState(): ProjectionState | undefined; contextUsage(): AssistantContextUsage | undefined } {
-  const declarations: ToolSet = Object.fromEntries(Object.entries(options.tools).map(([name, definition]) => {
+  const declarations: ToolSet = Object.fromEntries(Object.entries(options.tools).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([name, definition]) => {
     const { execute: _execute, needsApproval: _approval, ...declaration } = definition;
     return [name, declaration];
   }));
@@ -47,18 +48,24 @@ export function createAgentDriver(options: {
     initialMemory: options.initialMemory, initialUsage: options.initialUsage,
     requestIndex: options.runStartIndex ? options.runStartIndex - 1 : 0 });
   const captureTurn = createModelCapture();
+  const turnAvailability = (messages: readonly ModelMessage[], finalTurn = false) => {
+    const permitted = options.budget?.writesBlocked
+      ? Object.fromEntries(Object.entries(declarations).filter(([name]) => canReplayAssistantTool(name))) : declarations;
+    return availableTurnTools(permitted, messages.slice(options.runStartIndex ?? 0), finalTurn, options.entryContextReadLimit);
+  };
   return {
+    prepare(messages, turnOptions) {
+      const availability = turnAvailability(messages, turnOptions.finalTurn);
+      return prepareTurnControl(availability.finish, Object.keys(declarations).filter(name =>
+        !Object.prototype.hasOwnProperty.call(availability.tools, name)));
+    },
     projectionState: projector.snapshot,
     contextUsage: projector.contextUsage,
     async turn(messages, signal, turnOptions) {
       const requestLength = messages.length;
-      const permitted = options.budget?.writesBlocked
-        ? Object.fromEntries(Object.entries(declarations).filter(([name]) => canReplayAssistantTool(name)))
-        : declarations;
-      const availability = availableTurnTools(permitted, messages.slice(options.runStartIndex ?? 0), turnOptions?.finalTurn,
-        options.entryContextReadLimit);
-      const system = [options.system, TOOL_FAILURE_INSTRUCTIONS, availability.instructions].filter(Boolean).join('\n\n');
-      const toolsDeclaration = JSON.stringify(await Promise.all(Object.entries(availability.tools).map(async ([name, definition]) =>
+      const availability = turnAvailability(messages, turnOptions?.finalTurn);
+      const system = options.system;
+      const toolsDeclaration = JSON.stringify(await Promise.all(Object.entries(declarations).map(async ([name, definition]) =>
         ({ name, description: definition.description, parameters: await asSchema(definition.inputSchema).jsonSchema }))));
       const overheadTokens = estimateTokensFromText(system + toolsDeclaration);
       if (overheadTokens >= modelContextTokens(options.settings.max_context_length) * COMPACTION_TRIGGER_RATIO)
@@ -74,7 +81,7 @@ export function createAgentDriver(options: {
         ...generationSettings(options.settings),
         system,
         messages: projected,
-        tools: availability.tools,
+        tools: declarations,
         toolChoice: availability.finish ? 'none' as const : 'auto' as const,
         abortSignal: requestSignal,
         onError: () => undefined, // Never let SDK diagnostics log credentials or raw request bodies.
@@ -98,8 +105,10 @@ export function createAgentDriver(options: {
         if (part.type === 'error') throw part.error;
         if (part.type === 'tool-call') calls.push({
           id: part.toolCallId, name: part.toolName, input: part.input,
-          error: part.invalid ? toolCallError(part.toolName, part.error, availability.tools) : undefined,
-          errorCode: part.invalid ? Object.prototype.hasOwnProperty.call(availability.tools, part.toolName)
+          error: part.invalid || !Object.prototype.hasOwnProperty.call(availability.tools, part.toolName)
+            ? toolCallError(part.toolName, part.error, availability.tools) : undefined,
+          errorCode: part.invalid || !Object.prototype.hasOwnProperty.call(availability.tools, part.toolName)
+            ? Object.prototype.hasOwnProperty.call(availability.tools, part.toolName)
             ? 'TOOL_INVALID_ARGUMENTS' : 'TOOL_NOT_AVAILABLE' : undefined
         });
       }
@@ -110,6 +119,10 @@ export function createAgentDriver(options: {
       options.budget?.usage(usage.inputTokens, usage.outputTokens);
       projector.recordUsage(usage.inputTokens, requestLength);
       const contextUsage = projector.contextUsage();
+      if (contextUsage) {
+        contextUsage.cacheReadTokens = usage.inputTokenDetails?.cacheReadTokens;
+        contextUsage.cacheWriteTokens = usage.inputTokenDetails?.cacheWriteTokens;
+      }
       if (contextUsage) options.onUsage?.(contextUsage);
       // Capture the reply before the finish checks below can discard it.
       capture?.response({ text, finishReason: await response.finishReason, usage, calls, messages: result.messages });

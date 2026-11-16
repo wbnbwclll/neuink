@@ -34,6 +34,30 @@ beforeEach(() => {
   });
 });
 describe('cross-turn context through the real provider driver', () => {
+  it('preserves the exact prior request prefix and only emits a new workspace snapshot when it changes', async () => {
+    const firstModel = scriptedModel([{ text: 'First answer.' }]);
+    vi.mocked(createNeuinkModel).mockReturnValue(firstModel);
+    const input = { ...options, currentEntry: { id: 'entry', title: 'Paper' } };
+    const first = await answerWithGroundedAgent(input);
+    expect(first.modelTranscript?.version).toBe(2);
+    const history = JSON.parse(JSON.stringify([turn(options.question, 'user'), turn(first.answer, 'assistant', first.modelTranscript)]));
+    const secondModel = scriptedModel([{ text: 'Second answer.' }]);
+    vi.mocked(createNeuinkModel).mockReturnValue(secondModel);
+    const second = await answerWithGroundedAgent({ ...input, question: 'Follow-up', conversationHistory: history });
+    const original = firstModel.doStreamCalls[0].prompt;
+    expect(secondModel.doStreamCalls[0].prompt.slice(0, original.length)).toEqual(original);
+    expect(second.modelTranscript?.inputMessages).toEqual([{ role: 'user', content: 'Follow-up' }]);
+    expect(secondModel.doStreamCalls[0].tools).toEqual(firstModel.doStreamCalls[0].tools);
+    history.push(turn('Follow-up', 'user'), turn(second.answer, 'assistant', second.modelTranscript));
+    const thirdModel = scriptedModel([{ text: 'Changed target.' }]);
+    vi.mocked(createNeuinkModel).mockReturnValue(thirdModel);
+    const third = await answerWithGroundedAgent({ ...input, question: 'New paper', currentEntry: { id: 'other', title: 'Other' }, conversationHistory: history });
+    expect(third.modelTranscript?.inputMessages).toHaveLength(2);
+    const secondRequest = secondModel.doStreamCalls[0].prompt;
+    expect(thirdModel.doStreamCalls[0].prompt.slice(0, secondRequest.length)).toEqual(secondRequest);
+    expect(thirdModel.doStreamCalls[0].prompt[0]).toEqual(original[0]);
+  });
+
   it('replays the full result on the next request without re-executing the read or duplicating text', async () => {
     const firstModel = scriptedModel([
       { call: { name: 'read_segment_content', args: { entry_id: 'entry', segment_uid: 'segment' } } },

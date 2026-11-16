@@ -255,6 +255,8 @@ async function executeAssistantHarness(options: RunAssistantHarnessOptions): Pro
       contextSnapshot: snapshot,
       browserTabTarget: currentSurface?.kind === 'browser' ? currentSurface.browserTab : null,
       conversationHistory,
+      composerSnapshot,
+      tagMentionScopes,
       conversationMemory: latestConversationMemory(conversationHistory),
       currentEntry: snapshot.active_entry
         ? { id: snapshot.active_entry.entry_id, title: snapshot.active_entry.entry_title }

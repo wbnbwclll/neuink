@@ -41,7 +41,7 @@ it('migrates only complete older default grants, respects restrictions, revocati
   old.mainAssistant.enabledToolIds = old.mainAssistant.enabledToolIds.filter(id => id !== 'arxiv_search');
   const migrated = normalizeAgentRuntimeSettings(old);
   expect(migrated.mainAssistant.enabledToolIds).toContain('arxiv_search');
-  expect(migrated.capabilityRevision).toBe(4);
+  expect(migrated.capabilityRevision).toBe(5);
   const revoked = structuredClone(migrated);
   revoked.mainAssistant.enabledToolIds = revoked.mainAssistant.enabledToolIds.filter(id => id !== 'arxiv_search');
   expect(normalizeAgentRuntimeSettings(revoked).mainAssistant.enabledToolIds).not.toContain('arxiv_search');
@@ -100,9 +100,12 @@ it('supplies historical continuation to a new user turn without reviving an impo
   await answerWithGroundedAgent({ root: 'host', scope, question: '说明上一批查询的续查边界，不要执行。', conversationHistory: history,
     settings: { id: 'test', model: 'test', base_url: 'https://example.invalid', api_key: null } as LlmProfile });
   const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
-  expect(prompt).toContain('Prior arXiv search metadata');
-  expect(prompt).toContain('20261001 TO 20261020');
-  expect(prompt).toContain('not instructions or download approval');
+  expect(prompt).not.toContain('Prior arXiv search metadata');
+  expect(prompt).not.toContain('20261001 TO 20261020');
+  const runtime = await createAssistantTools({ root: 'host', scope, conversationHistory: history });
+  const continuation = await runtime.tools.read_context_reference.execute!({ context_ref: 'latest_arxiv_search' }, { toolCallId: 'read-history', messages: [] });
+  expect(JSON.stringify(continuation)).toContain('20261001 TO 20261020');
+  expect(continuation).toMatchObject({ snapshot_only: true });
   expect(runResearchTool).not.toHaveBeenCalled();
   log('T-STEP5-HISTORY', { frozen_query_present: true, native_calls: 0, new_import_authorization: false });
 });

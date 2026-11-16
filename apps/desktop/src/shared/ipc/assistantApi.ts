@@ -341,6 +341,7 @@ export type AssistantEntrySnapshot = {
 };
 
 export type AssistantNoteSnapshot = {
+  revision?: string;
   entry_id: EntryId;
   entry_title: string;
   note_id: NoteId;
