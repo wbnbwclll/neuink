@@ -4,7 +4,7 @@ import { AppearanceIcon } from '@/shared/components/AppearanceIcon';
 import type { WorkspaceSurface } from './workspaceSurface';
 import { resolveActivityNavigationItem, type SidePanel } from './activityBarState';
 
-const destinations: Array<SidePanel> = ['daily-dashboard', 'library', 'details', 'search', 'same-tag', 'assistant'];
+const destinations: SidePanel[] = ['daily-dashboard', 'library', 'details', 'search', 'same-tag', 'assistant'];
 
 export function ActivityNavigation({ focusedKind, activePanel, noteDetails, onOpenPage, onOpenRight, onSelectTool, onCloseSidebar }: {
   focusedKind: WorkspaceSurface['kind']; activePanel: SidePanel | null; noteDetails: boolean;
@@ -14,8 +14,7 @@ export function ActivityNavigation({ focusedKind, activePanel, noteDetails, onOp
   onCloseSidebar?: () => void;
 }) {
   const activeItem = resolveActivityNavigationItem(focusedKind, activePanel);
-  const displayedDestinations = destinations;
-  const activeIndex = activeItem === null ? -1 : displayedDestinations.indexOf(activeItem);
+  const activeIndex = activeItem === null ? -1 : destinations.indexOf(activeItem);
   const selectTool = (panel: SidePanel) => { if (activePanel === panel) onCloseSidebar?.(); else onSelectTool(panel); };
   const openPage = (page: 'library' | 'daily-dashboard' | 'settings') => {
     if (page !== 'settings' && activePanel === page) { onCloseSidebar?.(); return; }
@@ -43,8 +42,10 @@ export function ActivityNavigation({ focusedKind, activePanel, noteDetails, onOp
       <ActivityButton active={activeItem === 'assistant'} expanded={activePanel === 'assistant'} label="助手" onClick={() => selectTool('assistant')}>
         <AppearanceIcon kind="assistant"><MessageSquare size={18} aria-hidden="true" /></AppearanceIcon>
       </ActivityButton>
+
     </div>
     <div className="spacer" />
+
     <ActivityButton kind="page" active={focusedKind === 'settings'} label="设置" onClick={() => openPage('settings')} onContextMenu={() => onOpenRight('settings')}>
       <AppearanceIcon kind="settings"><Settings size={18} aria-hidden="true" /></AppearanceIcon>
     </ActivityButton>

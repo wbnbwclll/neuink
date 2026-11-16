@@ -7,18 +7,23 @@ pub mod browser;
 mod browser_isolation;
 pub mod conversation;
 pub mod deep_research;
+pub mod ideation;
 pub mod embedding;
 pub mod embedding_resources;
 pub mod entry;
 pub mod export;
+pub mod folding;
 pub mod job;
 pub mod mineru;
 mod llm_http;
 pub mod note_catalog;
+pub mod edit_recovery;
 pub mod onboarding;
 pub mod pdf_parse_queue;
 #[cfg(test)]
 mod pdf_parse_queue_tests;
+#[cfg(test)]
+mod entry_mineru_pdf_tests;
 pub mod pdf_reader;
 pub mod pdf_text;
 pub mod research;
@@ -32,9 +37,12 @@ pub mod tag_reading;
 #[cfg(test)]
 mod tag_tests;
 pub mod translation;
+pub mod translation_routing;
 pub mod workspace;
 pub mod daily;
 pub mod recommendations;
 pub mod zotero;
 
 pub mod import_preview;
+
+pub mod sentence_translation;

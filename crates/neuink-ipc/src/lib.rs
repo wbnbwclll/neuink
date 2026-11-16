@@ -2,6 +2,10 @@ pub mod commands;
 pub mod storage;
 pub mod translation_log;
 
+pub fn initialize_arxiv_gate<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    commands::research::arxiv_gate::initialize(app);
+}
+
 pub fn register_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     let handler: Box<dyn Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync> =
         Box::new(tauri::generate_handler![
@@ -11,6 +15,7 @@ pub fn register_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
             translation_log::log_translation_failure,
             translation_log::translation_log_directory,
             commands::daily::daily_workspace,
+            commands::ideation::ideation_workspace,
             commands::deep_research::deep_research,
             commands::recommendations::daily_recommendations,
             commands::local_agent::detect_claude_code,
@@ -28,6 +33,9 @@ pub fn register_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
             commands::pdf_text::cache_pdf_text,
             commands::research::get_research_settings,
             commands::selection_translation::get_selection_translation_settings,
+            commands::selection_translation::registry::get_translation_services,
+            commands::selection_translation::registry::save_translation_service,
+            commands::selection_translation::cancellation::cancel_service_translation,
             commands::selection_translation::save_selection_translation_settings,
             commands::selection_translation::translate_selection_service,
             commands::selection_translation::test_selection_translation_service,
@@ -36,9 +44,16 @@ pub fn register_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
             commands::research::cancel_research_call,
             commands::research::preview_research_import,
             commands::research::approve_research_import,
+            commands::research::preview_arxiv_import,
+            commands::research::approve_arxiv_import,
+            commands::research::run_arxiv_import,
             commands::translation::paragraph::read_paragraph_translations,
+            commands::sentence_translation::sentence_translation,
             commands::translation::paragraph::translate_paragraph,
             commands::translation::paragraph::set_paragraph_translation_view,
+            commands::folding::read_entry_folds,
+            commands::folding::upsert_entry_folds,
+            commands::folding::save_fold_translation,
             commands::export::inspect_paper_export,
             commands::export::preview_paper_export,
             commands::export::inspect_reading_export,
@@ -55,7 +70,15 @@ pub fn register_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
             commands::workspace::switch_workspace_root,
             commands::workspace::update_translation_automation_settings,
             commands::entry::create_entry,
+            commands::entry::check_pdf_duplicate,
+            commands::entry::inspect_title_consistency,
+            commands::entry::confirm_title_consistency,
+            commands::entry::apply_title_consistency,
             commands::entry::create_from_mineru_client_result,
+            commands::entry::check_mineru_zip_reading_pdf,
+            commands::entry::replace_entry_reading_pdf,
+            commands::entry::read_mineru_zip_origin_pdf,
+            commands::entry::read_entry_mineru_origin_pdf,
             commands::entry::create_note,
             commands::entry::create_note_source_link,
             commands::entry::delete_entry,
@@ -67,6 +90,9 @@ pub fn register_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
             commands::entry::import_and_parse_pdf,
             commands::entry::import_mineru_client_result,
             commands::entry::list_entries,
+            commands::entry::list_entry_sources,
+            commands::entry::set_entry_source_hidden,
+            commands::entry::copy_source_to_local,
             commands::entry::list_trashed_entries,
             commands::entry::list_trash_items,
             commands::entry::open_note_file,
@@ -112,6 +138,8 @@ pub fn register_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
             commands::settings::clear_llm_settings,
             commands::settings::delete_llm_profile,
             commands::settings::set_task_llm_profile,
+            commands::translation_routing::get_translation_routing,
+            commands::translation_routing::save_translation_routing,
             commands::assistant::list_tools,
             commands::assistant::read_agent_execution,
             commands::assistant::save_agent_execution,
@@ -167,6 +195,8 @@ pub fn register_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
             commands::tag::rename_tag,
             commands::tag::update_tag_description,
             commands::note_catalog::read_note_catalog,
+            commands::edit_recovery::edit_recovery,
+            commands::edit_recovery::edit_recovery_secrets,
             commands::note_catalog::inspect_note_sources,
             commands::tag_reading::read_tag_reading,
             commands::tag_note::tag_note,

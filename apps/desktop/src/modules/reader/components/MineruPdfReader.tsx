@@ -155,6 +155,7 @@ type MineruPdfReaderProps = {
     noteId: string,
   ) => Promise<NoteDocument>;
   onReadPdfReader: (entryId: string) => Promise<PdfReaderResponse>;
+  onRefreshEntries?: () => Promise<void>;
   onRetryPdfParse: (entryId: string) => Promise<void> | void;
   onStartPdfParse: (entryId: string) => Promise<void> | void;
   onCloseSidePane: () => void;
@@ -248,6 +249,7 @@ function MineruPdfReaderBody({
   onImportMarkdownNoteSegmentAsset,
   onReadMarkdownNote,
   onReadPdfReader,
+  onRefreshEntries,
   onRetryPdfParse,
   onStartPdfParse,
   onCloseSidePane,
@@ -326,7 +328,7 @@ function MineruPdfReaderBody({
   });
 
   const pdfPath = loadState.status === "ready" ? loadState.data.pdf_path : null;
-  const pdfBytesState = usePdfBytes(pdfPath);
+  const pdfBytesState = usePdfBytes(pdfPath, entry.pdfContentHash);
   const pdfState = usePdfDocument(
     pdfBytesState.status === "ready" ? pdfBytesState.bytes : null,
   );
@@ -442,6 +444,8 @@ function MineruPdfReaderBody({
     selectSegment,
     updateNoteText,
   } = useSegmentNoteDraft({
+    workspaceRoot,
+    onReveal: () => { setNoteMode('segment'); setSegmentOverlayOpen(true); },
     draftScopeKey: editorScopeKey,
     entryId: entry.id,
     notesBySegmentUid,
@@ -1036,6 +1040,9 @@ function MineruPdfReaderBody({
     <PaperReferencesProvider segments={segments} entryId={entry.id} workspaceRoot={workspaceRoot} pdfDocument={pdfState.status === "ready" ? pdfState.document : null} hoverEnabled={readerPreferences.paperReferenceHoverEnabled && !readingSession?.resizing}>
     <ReaderSurfaceFrame className="pdf-reader-surface bg-muted/30" toolbar={
       <ReaderToolbar
+        workspaceRoot={workspaceRoot}
+        titleCheckReloadKey={reloadKey}
+        onRefreshEntries={onRefreshEntries}
         navigation={<ReadingNavigationControls segments={segments} entryId={entry.id} workspaceRoot={workspaceRoot} />}
         currentPage={currentPageIdx + 1}
         effectivePageDisplayMode={effectivePageDisplayMode}
@@ -1292,7 +1299,7 @@ function MineruPdfReaderBody({
             onTranslateTextSelection={translateSelectedText}
             onToggleSegment={guardedToggleSegment}
             sentenceLinkEnabled={sentenceLinkEnabled}
-            sentenceHoverEnabled={readerPreferences.pdfSentenceHoverEnabled && !readingSession?.resizing}
+            sentenceHoverEnabled={readerPreferences.hoverPreviewEnabled && readerPreferences.pdfSentenceHoverEnabled && ((readerPreferences.hoverPreviewShowOriginal && readerPreferences.pdfSentenceHoverShowOriginal) || (readerPreferences.hoverPreviewShowTranslation && readerPreferences.pdfSentenceHoverShowTranslation)) && !readingSession?.resizing}
             onVisiblePageIndexesChange={setVisiblePageIndexes}
             altClickOpensNote={
               readerPreferences.segmentNoteOpenGesture === 'modifier' && !syncOnlyOnSegmentClick

@@ -14,6 +14,8 @@ function savedSurface(value: unknown): WorkspaceSurface | null {
   if (!record(value)) return null;
   const view = id(value.viewId) ? { viewId: value.viewId } : {};
   switch (value.kind) {
+    // Experimental ideation must be explicitly opened through the search command each session.
+    case 'ideation': return null;
     case 'external-import': case 'daily-dashboard': case 'library': case 'relations': case 'mineru-client-guide': case 'tag-editor':
       return { kind: value.kind };
     case 'tag-reading': case 'tag-details':
@@ -30,7 +32,7 @@ function savedSurface(value: unknown): WorkspaceSurface | null {
       return id(value.entryId) ? { kind: 'segment-notes', entryId: value.entryId, ...view,
         ...(id(value.segmentUid) ? { segmentUid: value.segmentUid } : {}),
         ...(value.mode === 'note' || value.mode === 'annotation' ? { mode: value.mode } : {}) } : null;
-    case 'source-links': case 'entry-trash':
+    case 'paper-cards': case 'source-links': case 'entry-trash':
       return id(value.entryId) ? { kind: value.kind, entryId: value.entryId } : null;
     case 'owned-note': {
       const target = value.target;

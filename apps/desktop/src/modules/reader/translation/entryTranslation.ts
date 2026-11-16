@@ -1,6 +1,9 @@
 import { generateText } from 'ai';
+import { normalizeSelectionText } from './normalizeSelectionText';
 import { logTranslationFailure } from '@/shared/ipc/translationLogApi';
 import { translateSelectionService } from '@/shared/ipc/selectionTranslationApi';
+import { getTranslationRouting, resolvedTranslationSource } from '@/shared/ipc/translationRoutingApi';
+import { translationSourceProfile } from './translationSource';
 
 import { getLlmSettings, readEntryAssistantContext } from '@/shared/ipc/assistantApi';
 import {
@@ -47,13 +50,15 @@ export async function translateTextSelection({
   root: string | null;
   text: string;
 }) {
-  const expandedText = expandEnglishLigatures(text.trim());
+  const expandedText = expandEnglishLigatures(normalizeSelectionText(text));
   const word = singleEnglishWord(expandedText);
   const sourceText = word ?? expandedText;
   if (!/[\p{L}\p{N}]/u.test(sourceText)) {
     throw new Error('没有可翻译的文字。');
   }
-  const localTranslation = word ? await translateLocalEnglishWord(word) : null;
+  const routing = await getTranslationRouting();
+  const source = resolvedTranslationSource(routing, word ? 'word' : 'selection');
+  const localTranslation = word && routing.local_dictionary_first ? await translateLocalEnglishWord(word) : null;
   if (localTranslation) return localTranslation;
   return runLocalBackgroundJob({
     idPrefix: 'selection-translation',
@@ -63,13 +68,13 @@ export async function translateTextSelection({
     successMessage: `选区翻译完成：${entryTitle}`,
     failureMessage: '选区翻译未完成，请返回原选区重试。'
   }, async () => {
-    const serviceTranslation = await translateSelectionService(sourceText);
-    if (serviceTranslation !== null) return serviceTranslation;
-    const settings = await getLlmSettings();
-    const profile = settings.translation_profile;
-    if (!profile) {
-      throw new Error('请先在模型设置里配置翻译模型。');
+    if (source.kind === 'selection_service' || source.kind === 'service') {
+      const serviceTranslation = await (source.kind === 'service' ? translateSelectionService(sourceText, source.provider) : translateSelectionService(sourceText));
+      if (serviceTranslation !== null) return serviceTranslation;
+      if (source.kind === 'service') throw new Error('翻译服务未返回译文，请检查配置。');
     }
+    const settings = await getLlmSettings();
+    const profile = translationSourceProfile(settings, source.kind === 'selection_service' ? { kind: 'default_model' } : source);
 
     return translateSelectionWithProfile(profile, {
       sourceText, word, entryTitle,
@@ -93,11 +98,9 @@ export async function translateEntrySegments({
   strategy?: TranslationRunStrategy;
   segments: SourceSegment[];
 }) {
+  const routing = await getTranslationRouting();
   const settings = await getLlmSettings();
-  const profile = settings.translation_profile;
-  if (!profile) {
-    throw new Error('请先在模型设置里配置全文翻译模型。');
-  }
+  const profile = translationSourceProfile(settings, resolvedTranslationSource(routing, 'document'));
 
   const candidates = segments.filter(shouldTranslateSegment);
   const skipped = segments.filter((segment) => !shouldTranslateSegment(segment));

@@ -102,29 +102,19 @@ describe('ReaderToolbar', () => {
       inlineAnnotationHoverEnabled: true, hoverPreviewShowAnnotation: false,
     }));
   });
-  it('keeps whole-sentence hover independent of the PDF preview switch', () => {
+  it('nests separate source and translation modes under their visibility switches', () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn();
     const onChange = vi.fn();
     const ui = renderWithTooltipProvider(<HoverPreviewControls preferences={buildPreferences()} onChange={onChange} />);
     fireEvent.click(screen.getByRole('button', { name: '悬停配置' }));
-    fireEvent.click(screen.getByRole('switch', { name: '整句悬停' }));
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ pdfSentenceHoverEnabled: false, hoverPreviewEnabled: true }));
+    expect(screen.queryByRole('switch', { name: '整句悬停' })).toBeNull();
+    fireEvent.click(screen.getByRole('switch', { name: '解析后原文逐句显示' }));
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ pdfSentenceHoverShowOriginal: false, pdfSentenceHoverShowTranslation: true }));
     ui.rerender(<TooltipProvider><HoverPreviewControls preferences={buildPreferences({ hoverPreviewEnabled: false })} onChange={onChange} /></TooltipProvider>);
-    const sentenceSwitch = screen.getByRole('switch', { name: '整句悬停' }) as HTMLButtonElement;
-    expect(sentenceSwitch.disabled).toBe(false);
-    fireEvent.click(sentenceSwitch);
-    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ pdfSentenceHoverEnabled: false, hoverPreviewEnabled: false }));
-  });
-  it('configures sentence original and translation independently from block preview', () => {
-    const onChange = vi.fn();
-    renderWithTooltipProvider(<HoverPreviewControls preferences={buildPreferences({ hoverPreviewEnabled: false })} onChange={onChange} />);
-    fireEvent.click(screen.getByRole('button', { name: '悬停配置' }));
-    const sentenceTranslation = screen.getByRole('switch', { name: '逐句译文' }) as HTMLButtonElement;
-    expect(sentenceTranslation.disabled).toBe(false);
-    fireEvent.click(sentenceTranslation);
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
-      hoverPreviewEnabled: false, pdfSentenceHoverShowOriginal: true, pdfSentenceHoverShowTranslation: false,
-    }));
-    expect((screen.getByRole('switch', { name: '整段译文' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('switch', { name: '译文逐句显示' }) as HTMLButtonElement).disabled).toBe(true);
+    ui.rerender(<TooltipProvider><HoverPreviewControls preferences={buildPreferences({ hoverPreviewShowTranslation: false })} onChange={onChange} /></TooltipProvider>);
+    expect((screen.getByRole('switch', { name: '译文逐句显示' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('译文已关闭')).toBeTruthy();
   });
   it('changes reference hover without changing segment or annotation preview', () => {
     const onChange = vi.fn();
@@ -282,7 +272,7 @@ describe('ReaderToolbar', () => {
 
     expect(screen.getByText('PDF 内容')).toBeTruthy();
     expect(screen.getByText('相对论笔记')).toBeTruthy();
-    expect(screen.getByText('einstein-paper.pdf')).toBeTruthy();
+    expect(screen.getByTitle('einstein-paper.pdf')).toBeTruthy();
     expect(screen.getByText('86 个区域')).toBeTruthy();
     expect(screen.getByText('/ 12')).toBeTruthy();
     expect(screen.getByText('已解析')).toBeTruthy();
@@ -392,7 +382,7 @@ describe('ReaderToolbar', () => {
     );
 
     const mode = screen.getByRole('button', { name: '译文' });
-    expect(mode.closest('.entry-content-header-actions')).toBeTruthy();
+    expect(mode.closest('.pdf-reader-display-controls')).toBeTruthy();
     expect(screen.queryByLabelText('阅读视图设置')).toBeNull();
     fireEvent.click(mode);
     expect(mode.getAttribute('aria-pressed')).toBe('true');

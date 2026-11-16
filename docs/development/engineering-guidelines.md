@@ -9,6 +9,20 @@
 3. 高风险写入必须可审查、可冲突检测、可恢复。
 4. 优先拆分高内聚模块，不为“未来可能需要”创建空抽象。
 
+## 分支与交付
+
+开发顺序为 `alpha → beta → main`：
+
+- `alpha`：最新功能开发与集成，功能分支从这里建立。`beta` 稳定性修复和 `main` 紧急修复及时回流，避免开发分支落后。
+- `beta`：接收用户确认保留的功能候选，固定交付提交号与范围，集中处理稳定性、数据兼容和实际使用效果；测试期间不混入无关的新功能。
+- `main`：接收已经在 beta 完成验收并获用户确认的候选，作为正式安装包、发布标签与官网部署的来源。
+
+每次 alpha 交付 beta，必须在开发计划中记录：来源提交号、功能保留清单、主动改变／移除／隐藏的行为与入口、已有数据兼容性、测试结果和已知限制。用户确认功能范围后才晋级；不能用“提交已包含”代替“功能已保留”。若 alpha 同时有未完成功能，从已确认的提交准备候选，或选择独立改动并重新验证，不把 alpha 最新 HEAD 整体自动合并。
+
+beta 晋级 main 前，补齐有关模块的自动化回归、原生 Tauri 关键使用流程及稳定性验证；记录真实模型／网络服务的实测范围与未验证项。原生视觉未验收、故障恢复缺口等不能因 CI 通过而被隐去，剩余限制须在交付时明确确认。CI 不自动晋级分支。
+
+`branch-validation.yml` 在 alpha/beta 的 push 和目标为 alpha/beta 的 pull request 上执行 Windows 前端、类型／构建、打包脚本与 Rust 服务测试，不生成公开安装包、不部署网站、不调用真实模型。它不替代原生交互、长时间运行和 macOS 验收，也不是 GitHub 服务端分支保护规则。
+
 ## 2. 模块边界
 
 - `neuink-domain` 不做文件、网络、UI 或 Tauri 工作；
@@ -77,11 +91,11 @@ npm run desktop:build
 
 ### 使用 D 盘现有资料调试阅读器
 
-Windows 开发版可以直接使用现有便携版资料。先关闭 `D:\NeuInk\Neuink.exe`，再运行 `npm --workspace apps/desktop run dev:d-data`。该命令默认读取 `D:\NeuInk\data`；如需其它目录，设置 `NEUINK_DEV_DATA_DIR` 为包含 `library` 的绝对路径。`npm --workspace apps/desktop run dev:d-data -- --check` 只检查路径；`npm --workspace apps/desktop run audit:sentences` 只读统计已保存的段落译文及逐句配对失败位置。
+本机日常使用和本地验收统一使用 `D:\NeuInk\portable\Neuink.exe`，桌面入口为“Neuink”。用户要求“启动”时默认打开这份独立程序，不启动开发服务器，也不另建日常测试副本。修复验证后，将新程序和配套资源直接更新到 `portable`，保留 `portable/data`；更新前关闭程序，备份将被替换的程序文件，并在启动前核对资料目录未被更新操作修改。
 
-开发版会直接写入这份资料，调试前按需要自行备份。它和便携版共用资料锁，不能同时打开。路径覆盖只在 debug 构建生效，正式版仍使用程序旁的 `data`。
+只有明确需要热更新或原生调试时，才先关闭便携程序，再运行 `npm --workspace apps/desktop run dev:d-data`。该命令默认读取仓库内 `portable/data`；如需其它目录，设置 `NEUINK_DEV_DATA_DIR` 为包含 `library` 的绝对路径。`npm --workspace apps/desktop run dev:d-data -- --check` 只检查路径；`npm --workspace apps/desktop run audit:sentences` 只读统计已保存的段落译文及逐句配对失败位置。开发版直接写入同一份资料，与便携版共用资料锁，不能同时打开。路径覆盖只在 debug 构建生效；日常独立程序使用程序旁的 `data`。
 
-本机日常测试默认使用此开发入口，不在每次修改后替换 D 盘便携版。桌面“Neuink 开发测试”快捷方式通过 `apps/desktop/scripts/start-dev-windows.ps1` 后台启动同一流程；重复点击不会创建第二个开发进程组，启动记录位于 `target/desktop-dev/launcher.log`。前端修改由 Vite 更新，原生修改由 Tauri 开发进程重新编译；关闭开发窗口后，下次仍从该快捷方式启动。源码和 D 盘资料均保持原位置。
+`apps/desktop/scripts/start-dev-windows.ps1` 保留为显式调试入口，重复运行会恢复已有开发窗口，启动记录位于 `target/desktop-dev/launcher.log`。它不作为日常桌面入口。前端修改由 Vite 更新，原生修改由 Tauri 开发进程重新编译。本地独立程序更新可以来自已验证的 `beta`，仅用于本机；这不授权合入 `main`、发布安装包或部署网站。
 
 ## 8. 文档规则
 

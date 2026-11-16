@@ -12,6 +12,12 @@ beforeEach(() => vi.stubGlobal('ResizeObserver', class { observe() {} unobserve(
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const callbacks = () => ({ onOpenPage: vi.fn(), onOpenRight: vi.fn(), onSelectTool: vi.fn(), onCloseSidebar: vi.fn() });
 
+it('keeps research ideation out of the activity rail even when it is open', () => {
+  render(<TooltipProvider><ActivityNavigation {...callbacks()} focusedKind="ideation" activePanel="ideation" noteDetails={false} /></TooltipProvider>);
+  expect(screen.queryByRole('button', { name: '研究构思' })).toBeNull();
+  expect(within(screen.getByRole('group', { name: '工作区导航' })).getAllByRole('button')).toHaveLength(6);
+});
+
 it('shares one persistent highlight across all six destinations and gives the visible sidebar priority', () => {
   const props = { ...callbacks(), noteDetails: false };
   const view = render(<TooltipProvider><ActivityNavigation {...props} focusedKind="daily-dashboard" activePanel="assistant" /></TooltipProvider>);

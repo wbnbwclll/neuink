@@ -21,13 +21,16 @@ export const assistantTaskStatusLabels: Record<AssistantDockTask['status'], stri
 };
 
 export function jobTitle(job: Job) {
+  if (job.id.startsWith('ideation-recommend:')) return '研究卡片推荐';
+  if (job.id.startsWith('ideation-compose:')) return '研究思路整理';
+  if (job.id.startsWith('ideation-report:')) return '研究报告生成';
   if (job.id.startsWith('research-import:')) return '论文下载与添加';
   if (job.id.startsWith('sciverse-import:')) return 'Sciverse 论文保存';
   if (job.id.startsWith('selection-translation:')) return '选区翻译';
   if (job.id.startsWith('single-segment-translation:')) return '片段翻译';
   const labels: Record<Job['kind'], string> = {
     index_build: '索引构建', llm: '模型任务', parser: 'PDF 解析', pdf_import: 'PDF 导入',
-    translation: '全文翻译', paragraph_translation: '段落翻译', vectorize: '向量构建',
+    translation: '全文翻译', paragraph_translation: '段落翻译', vectorize: '向量构建', folding: '阅读详略',
   };
   return labels[job.kind] ?? '后台任务';
 }
