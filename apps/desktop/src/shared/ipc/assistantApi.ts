@@ -172,9 +172,11 @@ export type AssistantToolTraceEvent = {
 };
 
 export type AssistantConversationMemory = {
+  context_baseline?: import('../types/modelContext').ContextBaseline;
+  observed_markers?: string[];
   /** Automatic compaction summarizes a prefix and keeps this complete recent suffix verbatim. */
   retained_context?: {
-    version: 1;
+    version: 1 | 2;
     messages: import('ai').ModelMessage[];
     profileId: string;
     model: string;

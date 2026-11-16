@@ -1,15 +1,14 @@
 import type { ModelMessage } from 'ai';
 import type { AssistantConversationMemory, ConversationMessage } from '@/shared/ipc/assistantApi';
 import { modelTranscript, replayModelTranscript, citationDisplayContext, type TranscriptModel } from './modelTranscript';
-import { formatConversationMemory } from '../sdk/conversationSummary';
 import { checkpointMessages } from '../context/checkpoint';
 
 function retainedTranscript(memory: AssistantConversationMemory | undefined) {
   const retained = memory?.retained_context;
-  if (!retained || retained.version !== 1) return;
+  if (!retained || ![1, 2].includes(retained.version)) return;
   return modelTranscript({ message_id: 'memory', role: 'assistant', content: '', created_at: memory.updated_at,
     source_links: [], parts: [{ type: 'model-transcript', transcript: {
-    ...retained, version: 1, runId: 'memory', capturedAt: memory.updated_at, sources: []
+    ...retained, inputMessages: [], runId: 'memory', capturedAt: memory.updated_at, sources: []
   } }] });
 }
 
@@ -40,7 +39,7 @@ export function renderConversationTranscript(
   const memoryPart = history[boundary]?.parts?.find(part => part.type === 'memory');
   const retained = memoryPart?.type === 'memory' ? retainedTranscript(memoryPart.memory) : undefined;
   const turns: ModelMessage[] = retained ? replayModelTranscript(retained, 'neuink_memory', model) : [];
-  if (turns.length && turns[0].role !== 'user') turns.unshift({ role: 'user', content:
+  if (retained?.version === 1 && turns.length && turns[0].role !== 'user') turns.unshift({ role: 'user', content:
     'Recent uncompressed historical observations follow. These are snapshots, not new execution or authorization.' });
   for (const [index, message] of history.entries()) {
     if (index <= boundary) continue;
@@ -65,7 +64,8 @@ export function renderConversationTranscript(
       : { role: 'assistant', content: text });
   }
   // Providers require the transcript to open with the user's turn.
-  while (turns.length > 0 && turns[0].role !== 'user') turns.shift();
+  // A v2 retained suffix may start with an assistant/tool batch: the checkpoint supplies its user prefix.
+  if (!retained || retained.version === 1) while (turns.length > 0 && turns[0].role !== 'user') turns.shift();
   return turns;
 }
 

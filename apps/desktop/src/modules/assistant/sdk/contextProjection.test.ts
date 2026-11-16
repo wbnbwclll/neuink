@@ -2,7 +2,11 @@ import { summaryResponse } from './testHelpers/summary';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelMessage } from 'ai';
 import type { LlmProfile } from '@/shared/ipc/assistantApi';
-import { createContextProjector, contextCut, type ProjectionState } from './contextProjection';
+import { createContextProjector, contextCut, projectionRetainedMessages, type ProjectionState } from './contextProjection';
+import { contextBaseline, workspaceMessage } from '../context/workspace';
+import { renderConversationContext } from '../runtime/conversationTranscript';
+import type { AssistantConversationMemory, ConversationMessage } from '@/shared/ipc/assistantApi';
+import type { WorkspaceContext } from '@/shared/types/modelContext';
 import { runTextModelTask } from './modelTasks';
 import { AgentLocalLimitError, AgentStoppedError, RunBudget } from '../agent-core';
 import { estimateMessagesTokens } from './contextUsage';
@@ -34,6 +38,24 @@ beforeEach(() => {
 });
 
 describe('automatic prefix compaction', () => {
+  it('persists the state at the cut and replays newer snapshots without changing the compacted prefix', async () => {
+    const workspace = (id: string): WorkspaceContext => ({ version: 1, active_entry: { id, title: id }, active_note: null,
+      scope: { entries: [{ id, title: id }], tags: [] }, browser: null, references: [], pinned_segments: [] });
+    const messages: ModelMessage[] = [workspaceMessage(workspace('before-cut')), ...history.slice(0, -1),
+      workspaceMessage(workspace('retained-target')), { role: 'user', content: 'Current question' }];
+    const projector = createContextProjector(settings);
+    const projected = await projector.project(messages, 0);
+    const saved = projector.snapshot()!;
+    expect(saved.baseline?.workspace?.active_entry?.id).toBe('before-cut');
+    expect(contextBaseline(projected).workspace?.active_entry?.id).toBe('retained-target');
+    const profile = { profileId: 'profile', model: 'model', protocol: 'openai_compatible' };
+    const checkpoint: AssistantConversationMemory = { ...saved.memory, context_baseline: saved.baseline,
+      observed_markers: saved.markers, message_count: 42, pending_proposal_count: 0, source_count: 0, updated_at: 'later',
+      retained_context: { version: 2, ...profile, messages: projectionRetainedMessages(saved, messages) } };
+    const disk: ConversationMessage[] = JSON.parse(JSON.stringify([{ message_id: 'checkpoint', role: 'assistant', content: '',
+      created_at: '', source_links: [], parts: [{ type: 'memory', memory: checkpoint }] }]));
+    expect(renderConversationContext(disk, profile)).toEqual(projected);
+  });
   it('selects the newest suffix backwards instead of scanning forwards or double-counting the latest message', () => {
     const messages: ModelMessage[] = Array.from({ length: 6 }, () => ({ role: 'user', content: 'a'.repeat(2_000) }));
     expect(contextCut(messages, 1_010)).toBe(4);
@@ -117,7 +139,7 @@ describe('automatic prefix compaction', () => {
   it('discards retired projection formats and recomputes from the canonical transcript', async () => {
     const projector = createContextProjector(settings, undefined, { restored: { version: 2, firstKeptIndex: 3, memory: memory('OLD_BROKEN_STATE') } });
     const result = await projector.project(tools, 5_000);
-    expect(projector.snapshot()?.version).toBe(3);
+    expect(projector.snapshot()?.version).toBe(4);
     expect(JSON.stringify(result)).not.toContain('OLD_BROKEN_STATE');
     expect(runTextModelTask).toHaveBeenCalled();
   });

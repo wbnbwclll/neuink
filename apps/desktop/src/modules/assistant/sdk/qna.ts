@@ -354,11 +354,13 @@ export async function answerWithGroundedAgent({
   const displayContext = citationDisplayContext(recording.current?.displaySourceMarkers);
   const compactedMemory: AssistantConversationMemory | undefined = projection ? {
     ...projection.memory,
+    context_baseline: projection.baseline,
+    observed_markers: projection.markers,
     message_count: conversationHistory.filter(message => !message.message_id.startsWith('client-')).length + 2,
     pending_proposal_count: noteProposals.length + entryMetaProposals.length + tagProposals.length,
     source_count: ledger.sources.size,
     updated_at: new Date().toISOString(),
-    retained_context: { version: 1, ...transcriptModel,
+    retained_context: { version: 2, ...transcriptModel,
       messages: JSON.parse(JSON.stringify([...projectionRetainedMessages(projection, agent.messages),
         ...(displayContext ? [displayContext] : [])])) as ModelMessage[] }
   } : undefined;
