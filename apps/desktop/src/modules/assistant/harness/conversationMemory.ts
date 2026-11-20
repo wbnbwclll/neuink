@@ -4,8 +4,7 @@ import type {
   LlmProfile
 } from '@/shared/ipc/assistantApi';
 
-import { lastMemoryCheckpointIndex, renderConversationTranscript, renderConversationContext } from '../runtime/conversationTranscript';
-import { contextBaseline } from '../context/workspace';
+import { lastMemoryCheckpointIndex, renderConversationTranscript } from '../runtime/conversationTranscript';
 import { renderMessagesForSummary } from '../sdk/summaryTranscript';
 import type { RunBudget } from '../agent-core';
 import { summarizeConversation } from '../sdk/conversationSummary';
@@ -76,7 +75,6 @@ export async function updateConversationMemory({
   const materialMessageCount = history.filter((message) => !message.message_id.startsWith('client-')).length;
   return {
     ...summary,
-    context_baseline: contextBaseline(renderConversationContext(history)),
     observed_markers: [...new Set([...(latestConversationMemory(history)?.observed_markers ?? []),
       ...[...conversationTranscriptSources(history).keys()].map(marker => `[S${marker}]`)])],
     message_count: materialMessageCount,

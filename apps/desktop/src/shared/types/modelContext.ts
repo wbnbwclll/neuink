@@ -32,8 +32,7 @@ export type RunContextPolicy = {
   required_tools: string[];
 };
 
-export type ContextBaseline = {
-  version: 1;
+export type ContextState = {
   workspace?: WorkspaceContext;
   policy?: RunContextPolicy;
 };
@@ -45,11 +44,11 @@ export type ContextMemory = {
   last_user_goal: string | null;
   open_items: string[];
   user_preferences: string[];
-  context_baseline?: ContextBaseline;
   observed_markers?: string[];
 };
 
-export type NativeContextState = ContextBaseline & {
+export type NativeContextState = ContextState & {
+  version: 1;
   agent_profile: string;
   capabilities: string[];
 };

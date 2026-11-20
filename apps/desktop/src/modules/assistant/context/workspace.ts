@@ -1,5 +1,5 @@
 import type { ModelMessage } from 'ai';
-import type { ContextBaseline, RunContextPolicy, WorkspaceContext } from '@/shared/types/modelContext';
+import type { ContextState, RunContextPolicy, WorkspaceContext } from '@/shared/types/modelContext';
 
 type ContextKind = 'workspace_context' | 'run_policy';
 
@@ -55,18 +55,21 @@ export function validRunPolicy(value: unknown): value is RunContextPolicy {
     && policy.required_tools.every(tool => typeof tool === 'string');
 }
 
-export function validBaseline(value: unknown): value is ContextBaseline {
-  if (!value || typeof value !== 'object') return false;
-  const state = value as ContextBaseline;
-  return state.version === 1 && (state.workspace === undefined || validWorkspace(state.workspace))
-    && (state.policy === undefined || validRunPolicy(state.policy));
+/** Replay the last valid host messages verbatim; never consult live UI or summary metadata. */
+export function latestContextMessages(messages: readonly ModelMessage[]): ModelMessage[] {
+  let workspace: ModelMessage | undefined, policy: ModelMessage | undefined;
+  for (let index = messages.length - 1; index >= 0 && (!workspace || !policy); index--) {
+    const message = messages[index];
+    if (!workspace && validWorkspace(readContextMessage(message, 'workspace_context'))) workspace = message;
+    if (!policy && validRunPolicy(readContextMessage(message, 'run_policy'))) policy = message;
+  }
+  return [...(workspace ? [workspace] : []), ...(policy ? [policy] : [])];
 }
 
-/** Fold only host-authored observations. A pasted lookalike user message is ordinary text. */
-export function contextBaseline(messages: readonly ModelMessage[], initial?: ContextBaseline): ContextBaseline {
-  const state: ContextBaseline = { version: 1, ...(initial?.workspace ? { workspace: initial.workspace } : {}),
-    ...(initial?.policy ? { policy: initial.policy } : {}) };
-  for (const message of messages) {
+/** Read only host-authored observations. Pasted lookalike user messages are ordinary text. */
+export function latestContextState(messages: readonly ModelMessage[]): ContextState {
+  const state: ContextState = {};
+  for (const message of latestContextMessages(messages)) {
     const workspace = readContextMessage(message, 'workspace_context');
     if (validWorkspace(workspace)) state.workspace = workspace;
     const policy = readContextMessage(message, 'run_policy');

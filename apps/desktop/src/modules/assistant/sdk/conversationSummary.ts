@@ -9,7 +9,7 @@ import { estimateTokensFromText, modelContextTokens } from './contextBudget';
  *  stamped on afterwards, so the summary text stays identical wherever it is produced. */
 export type ConversationSummary = Omit<
   AssistantConversationMemory,
-  'message_count' | 'pending_proposal_count' | 'source_count' | 'updated_at' | 'retained_context' | 'context_baseline' | 'observed_markers'
+  'message_count' | 'pending_proposal_count' | 'source_count' | 'updated_at' | 'retained_context' | 'observed_markers'
 >;
 
 /** Stay within the ceiling `contextProjection` accepts, so a checkpoint survives

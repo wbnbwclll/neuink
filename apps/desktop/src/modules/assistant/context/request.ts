@@ -1,6 +1,6 @@
 import type { ModelMessage } from 'ai';
 import type { RunContextPolicy, WorkspaceContext } from '@/shared/types/modelContext';
-import { contextBaseline, contextJson, runPolicyMessage, workspaceMessage } from './workspace';
+import { latestContextState, contextJson, runPolicyMessage, workspaceMessage } from './workspace';
 
 /** The sole assembly point for new user turns. Earlier model messages are never rewritten. */
 export function prepareContextRequest(options: {
@@ -10,7 +10,7 @@ export function prepareContextRequest(options: {
   question: string;
   observations?: readonly string[];
 }) {
-  const previous = contextBaseline(options.history);
+  const previous = latestContextState(options.history);
   const inputMessages: ModelMessage[] = [];
   if (options.workspace && contextJson(previous.workspace) !== contextJson(options.workspace))
     inputMessages.push(workspaceMessage(options.workspace));
