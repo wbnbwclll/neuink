@@ -44,12 +44,12 @@ Sciverse 检索先由 `sdk/sciverseOutput` 做确定性整理：精确重复片�
 
 ## 上下文工程
 
-固定规则置于顶部，工作区首次发送小型元数据快照，此后仅在变化时追加；正文、完整目录和历史产物按需由工具读取。compact 保存摘要、边界处状态基线及近期原文；不再拼接 Previous task state 或每轮重复的流程说明。文件职责、总结存储位置、旧数据兼容及缓存限制见 [上下文工程说明](../../../../../docs/development/assistant-context.md)。
+固定规则置于顶部，工作区首次发送小型元数据快照，此后仅在变化时追加；正文、完整目录和历史产物按需由工具读取。compact 保存摘要及近期原文，并在近期原文之后补发一次本轮冻结的工作区和执行策略；不再拼接 Previous task state 或每轮重复的流程说明。文件职责、总结存储位置、旧数据兼容及缓存限制见 [上下文工程说明](../../../../../docs/development/assistant-context.md)。
 
 ## 模块边界
 
 - `agent-core/`：与供应商无关的 Agent 实例、顺序工具循环、完整消息历史、共享运行树预算和取消、循环与无进展保护；
-- `context/`：精简状态观察、追加式请求拼接、固定规则和 compact 基线格式；
+- `context/`：精简状态观察、追加式请求拼接、固定规则和 compact 摘要格式；
 - `harness/`：主循环装配、元数据初始化、Verifier 与 AgentRun；
 - `runtime/`：只读 Subagent、共享 SourceLedger、TaskState、Verified Proposal 和窄应用命令；
 - `sdk/`：单轮 Provider 适配、无工具的固定模型任务、带 JSON Schema 校验的业务工具；AI SDK 不拥有执行循环；
@@ -67,7 +67,7 @@ Sciverse 检索先由 `sdk/sciverseOutput` 做确定性整理：精确重复片�
 - 压缩统一调用 `sdk/conversationSummary.summarizeConversation`。手动压缩在本地原始历史齐全时重新读取全部历史（含完整工具调用／结果），修复旧摘要遗漏；导入的仅摘要会话则合并旧摘要与保留消息。自动压缩从最新消息向前累计 token，保留目标为模型窗口 25%（最多 32k token）的近期后缀和当前请求，只摘要更早的前缀，完整工具批次不可拆分。长输入按容量分块，逐块合并旧摘要，所有块成功后才推进覆盖边界；指令保留在 system，历史与旧摘要通过 JSON 引用置于明确的用户摘要任务中，避免历史内部指令被当成当前任务。模型必须返回 conversation_summary 包裹的摘要，校验后只保存正文；普通回复、空摘要、超长或截断输出重试一次仍失败则保留原检查点并停止。移除结束时 8,000 字符自动更新摘要的旁路，仅在请求投影达到 90% 容量或用户手动操作时压缩。自动检查点保存摘要及 `retained_context`，重启后保留近期原文；手动检查点不保留后缀。原始聊天与工具记录始终保存在本机。
 - 模型推理流、任务计划、执行状态是独立概念。等待响应显示“正在处理”，只读计划／工具／子任务／记忆按真实阶段显示；折叠只影响展示，总耗时包含整个任务。Provider 仍接收 reasoning 增量；尚未提供跨协议思考强度配置，不能将只读计划开关称作“深度思考”。
 - 主、子 Agent 使用同一个 `Agent` 内核，独立消息上下文；整次请求共享 24 个任务模型轮次、48 次工具调用预算和取消信号，压缩摘要不占任务轮次，供应商报告的摘要 input/output tokens 仍计入共享 token 预算。主 Agent 最多 12 轮，子 Agent 最多 8 轮、深度最多 2；恢复不重置预算。累计供应商已报告的 input/output tokens，达到 512,000 后拒绝下一次模型调用；这不是预付费额度控制，不能精确统计断流后供应商未报告的用量。
-- Provider 保留供应商的 reasoning/signature 元数据，每次请求超时 120 秒。`sdk/contextUsage` 按实际模型消息、系统指令及解析后的工具 schema 估算输入，排除 UI 状态、重复证据账本与签名元数据。用同一 profile/model/protocol 的实测输入 token 校准估算；连续请求以实测值加投影增量计算，供应商缺失 usage 时保留校准，只重算当前投影，不重新计入已压缩历史。占用圆圈复用同一消息投影和校准，运行前未知的工具开销仍是估算。`ProjectionState` v4 持久化边界、摘要、工作区基线与用量，兼容 v3 恢复；其他旧派生状态丢弃重算。初始请求、摘要与最近完整批次仍超容量时明确停止，原 transcript、SourceLedger 和提案不裁剪。
+- Provider 保留供应商的 reasoning/signature 元数据，每次请求超时 120 秒。`sdk/contextUsage` 按实际模型消息、系统指令及解析后的工具 schema 估算输入，排除 UI 状态、重复证据账本与签名元数据。用同一 profile/model/protocol 的实测输入 token 校准估算；连续请求以实测值加投影增量计算，供应商缺失 usage 时保留校准，只重算当前投影，不重新计入已压缩历史。占用圆圈复用同一消息投影和校准，运行前未知的工具开销仍是估算。`ProjectionState` v5 持久化边界、摘要、状态补发位置与用量，兼容 v3/v4 恢复并忽略旧基线。补发位置固定，后续消息继续追加；状态重发也计入容量检查。其他旧派生状态丢弃重算。初始请求、摘要与最近完整批次仍超容量时明确停止，原 transcript、SourceLedger 和提案不裁剪。
 - API Key 只属于安装级 LLM profile。主助手可以指定 profile；子助手未指定时继承父模型，指定但不存在时失败。Tool 不拥有模型 Key；MCP/Sciverse/Parser 的凭据与模型凭据不同。
 - 对话摘要使用 `runTextModelTask`，结构化固定模型任务使用 `runJsonModelTask`，均无工具和子 Agent。推荐标签使用 Rust 固定任务策略直接调用模型，不由用户选择模板。宿主要求每级标签及理由使用简体中文，专有名词可附中文说明保留原文；校验拒绝没有汉字的层级或理由，不做自动翻译重试。旧英文标签及缓存推荐不自动改名，须重新生成推荐。标签输出 schema 为 `{tags: [{path, dimension, reason, confidence}]}`，只推荐、不执行修改。翻译保留 Rust `TranslationPipeline`、共享 `llm_http`、调度、缓存和重试，不绕入 Agent 循环。
 - 能力由 Agent、可选只读 Subagent 和受权限约束的 Tools 组成；MCP 只负责连接外部工具。翻译、标签推荐是宿主固定业务服务，条目属性修改和笔记生成由主 Agent 使用原子工具与溯源能力完成。配置规范化丢弃不支持的工具和旧扩展字段；不读取或执行已退役的用户扩展文件，也不删除用户文件。
