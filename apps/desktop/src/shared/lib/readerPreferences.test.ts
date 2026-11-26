@@ -2,11 +2,36 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { persistReaderPreferences, readStoredReaderPreferences } from './readerPreferences';
+import { equalReaderPreferences, persistReaderPreferences, readStoredReaderPreferences } from './readerPreferences';
 
 beforeEach(() => window.localStorage.clear());
 
 describe('reader preferences', () => {
+  it('defaults to PDF opening with missing or invalid stored preferences', () => {
+    expect(readStoredReaderPreferences().openEntryPdfByDefault).toBe(true);
+    for (const stored of [{ hoverPreviewEnabled: false }, { openEntryPdfByDefault: 'false' }]) {
+      window.localStorage.setItem('neuink.reader.preferences', JSON.stringify(stored));
+      expect(readStoredReaderPreferences().openEntryPdfByDefault).toBe(true);
+    }
+  });
+  it('persists either PDF opening choice and detects preference changes', () => {
+    const original = readStoredReaderPreferences();
+    const disabled = { ...original, openEntryPdfByDefault: false };
+    expect(equalReaderPreferences(original, disabled)).toBe(false);
+    persistReaderPreferences(disabled);
+    expect(readStoredReaderPreferences()).toEqual(disabled);
+    persistReaderPreferences(original);
+    expect(readStoredReaderPreferences()).toEqual(original);
+  });
+  it('keeps existing readers in continuous mode and persists an explicit book choice', () => {
+    window.localStorage.setItem('neuink.reader.preferences', JSON.stringify({pageDisplayMode:'dual'}));
+    expect(readStoredReaderPreferences().pageTurningMode).toBe('scroll');
+    persistReaderPreferences({...readStoredReaderPreferences(),pageTurningMode:'book'});
+    expect(readStoredReaderPreferences().pageTurningMode).toBe('book');
+    expect(readStoredReaderPreferences().pageDisplayMode).toBe('dual');
+    window.localStorage.setItem('neuink.reader.preferences', JSON.stringify({pageTurningMode:'unknown'}));
+    expect(readStoredReaderPreferences().pageTurningMode).toBe('scroll');
+  });
   it('keeps automatic selection translation disabled for existing users', () => {
     window.localStorage.setItem(
       'neuink.reader.preferences',
@@ -21,6 +46,58 @@ describe('reader preferences', () => {
     persistReaderPreferences({ ...preferences, autoTranslateTextSelection: true });
 
     expect(readStoredReaderPreferences().autoTranslateTextSelection).toBe(true);
+  });
+
+  it('enables sentence hover for existing readers and saves its separate choice', () => {
+    window.localStorage.setItem('neuink.reader.preferences', JSON.stringify({ hoverPreviewEnabled: true }));
+    const original = readStoredReaderPreferences();
+    expect(original.pdfSentenceHoverEnabled).toBe(true);
+    const disabled = { ...original, pdfSentenceHoverEnabled: false };
+    expect(equalReaderPreferences(original, disabled)).toBe(false);
+    persistReaderPreferences(disabled);
+    expect(readStoredReaderPreferences().pdfSentenceHoverEnabled).toBe(false);
+  });
+
+  it('keeps sentence preview content independent of block preview', () => {
+    window.localStorage.setItem('neuink.reader.preferences', JSON.stringify({ hoverPreviewEnabled: false }));
+    const original = readStoredReaderPreferences();
+    expect(original.pdfSentenceHoverShowOriginal).toBe(true);
+    expect(original.pdfSentenceHoverShowTranslation).toBe(true);
+    const translationOnly = { ...original, pdfSentenceHoverShowOriginal: false };
+    expect(equalReaderPreferences(original, translationOnly)).toBe(false);
+    persistReaderPreferences(translationOnly);
+    expect(readStoredReaderPreferences()).toEqual(translationOnly);
+  });
+
+  it('migrates the old shared annotation hover choice, then persists independent choices', () => {
+    window.localStorage.setItem('neuink.reader.preferences', JSON.stringify({
+      hoverPreviewEnabled: true, hoverPreviewShowAnnotation: false,
+    }));
+    expect(readStoredReaderPreferences().inlineAnnotationHoverEnabled).toBe(false);
+    window.localStorage.setItem('neuink.reader.preferences', JSON.stringify({
+      hoverPreviewEnabled: false, hoverPreviewShowAnnotation: true,
+    }));
+    expect(readStoredReaderPreferences().inlineAnnotationHoverEnabled).toBe(false);
+
+    const original = readStoredReaderPreferences();
+    const inlineOnly = { ...original, inlineAnnotationHoverEnabled: true, hoverPreviewShowAnnotation: false };
+    expect(equalReaderPreferences(original, inlineOnly)).toBe(false);
+    persistReaderPreferences(inlineOnly);
+    expect(readStoredReaderPreferences()).toEqual(inlineOnly);
+
+    const segmentOnly = { ...inlineOnly, inlineAnnotationHoverEnabled: false, hoverPreviewShowAnnotation: true };
+    persistReaderPreferences(segmentOnly);
+    expect(readStoredReaderPreferences()).toEqual(segmentOnly);
+  });
+  it('keeps reference hover independent of PDF and annotation previews', () => {
+    const original = readStoredReaderPreferences();
+    const disabled = { ...original, hoverPreviewEnabled: false, inlineAnnotationHoverEnabled: false,
+      paperReferenceHoverEnabled: false };
+    persistReaderPreferences(disabled);
+    expect(readStoredReaderPreferences()).toEqual(disabled);
+    expect(equalReaderPreferences(original, disabled)).toBe(false);
+    window.localStorage.setItem('neuink.reader.preferences', JSON.stringify({ hoverPreviewEnabled: false }));
+    expect(readStoredReaderPreferences().paperReferenceHoverEnabled).toBe(true);
   });
 
   it('defaults pageDisplayMode to single', () => {

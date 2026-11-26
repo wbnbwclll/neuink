@@ -1,17 +1,12 @@
 import {
   Check,
-  ClipboardCopy,
-  Highlighter,
-  Languages,
   Loader2,
-  MessageSquareText,
   Send,
-  Star,
-  X
+  Star
 } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import { useContext, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useReaderSelectionPriority } from '@/components/ui/hover-interactions';
 
 import { cn } from '@/lib/utils';
 import { useToast } from '@/shared/hooks/useToast';
@@ -23,6 +18,12 @@ import type {
 } from '@/shared/types/domain';
 
 import { describeTranslationFailure } from '../../translation/translationErrorMessage';
+import { ReadingSelectionToolbarControls } from './ReadingSelectionToolbarControls';
+import { ReadingSelectionToolbarContext } from './readingSelectionToolbarContext';
+import { useSelectionToolbarPosition } from './useSelectionToolbarPosition';
+import { SelectionTranslationPanel } from './SelectionTranslationPanel';
+import type { ApplyTextSelectionAnnotation } from './textSelectionAnnotation';
+export { calculateFloatingToolbarLayout } from './selectionToolbarLayout';
 
 const HIGHLIGHT_COLORS: Array<{
   color: AnnotationHighlightColor;
@@ -44,50 +45,103 @@ export type PendingPdfTextSelection = {
   selection: Omit<AnnotationTextSelection, 'color'>;
 };
 
-export function PdfTextSelectionToolbar({
-  autoTranslate = false,
-  pending,
-  onApply,
-  onClose,
-  onTranslate
-}: {
+export type PdfTextSelectionToolbarProps = {
   autoTranslate?: boolean;
+  visible?: boolean;
   pending: PendingPdfTextSelection | null;
-  onApply: (input: {
-    content: string;
-    importance: AnnotationImportance;
-    segment: SourceSegment;
-    selection: AnnotationTextSelection;
-  }) => Promise<void> | void;
+  onApply?: ApplyTextSelectionAnnotation;
   onClose: () => void;
   onTranslate?: (input: { segment: SourceSegment; text: string }) => Promise<string>;
-}) {
+  onAsk?: (input: { segment: SourceSegment; text: string }, intent: 'ask' | 'explain') => void;
+};
+
+export function PdfTextSelectionToolbar(props: PdfTextSelectionToolbarProps) {
+  const host = useContext(ReadingSelectionToolbarContext);
+  const owner = useId();
+  useEffect(() => { host?.publish(owner, props); }, [host, owner, props.pending, props.visible, props.autoTranslate, props.onApply, props.onClose, props.onTranslate, props.onAsk]);
+  useEffect(() => () => host?.release(owner), [host, owner]);
+  return host ? null : <PdfTextSelectionToolbarContent {...props} />;
+}
+
+export function PdfTextSelectionToolbarContent({
+  autoTranslate = false,
+  visible = true,
+  pending: incomingPending,
+  onApply,
+  onClose,
+  onTranslate,
+  onAsk
+}: PdfTextSelectionToolbarProps) {
   const { notify } = useToast();
   const [panel, setPanel] = useState<ExpandedPanel>(null);
   const [comment, setComment] = useState('');
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const saveRequestRef = useRef<symbol | null>(null);
   const [translating, setTranslating] = useState(false);
   const [translation, setTranslation] = useState<string | null>(null);
+  const [translationError, setTranslationError] = useState<string | null>(null);
   const [color, setColor] = useState<AnnotationHighlightColor>('yellow');
   const [importance, setImportance] = useState<AnnotationImportance>('normal');
   const translationRequestRef = useRef(0);
   const autoTranslatedSelectionKeyRef = useRef('');
   const toolbarRef = useRef<HTMLDivElement | null>(null);
-  const [layout, setLayout] = useState<FloatingToolbarLayout | null>(null);
+  const retained = useRef<PendingPdfTextSelection | null>(null);
+  if (incomingPending) retained.current = incomingPending;
+  const position = useSelectionToolbarPosition(toolbarRef, incomingPending ?? retained.current, visible, `${panel}:${translating}:${translation}`);
+  const pending = incomingPending ?? (position.pinned ? retained.current : null);
+  const { layout } = position;
+  useReaderSelectionPriority(Boolean(pending) && visible);
+  const close = () => {
+    position.reset();
+    retained.current = null;
+    translationRequestRef.current += 1;
+    saveRequestRef.current = null;
+    setSaving(false);
+    onClose();
+  };
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  useEffect(() => {
+    if (!pending || !visible) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeRef.current();
+    };
+    // Native text selection leaves focus in the reader, not in this portal.
+    // The toolbar also owns Escape while pinned and waiting for a new selection.
+    document.addEventListener('keydown', escape);
+    return () => document.removeEventListener('keydown', escape);
+  }, [Boolean(pending), visible]);
+  useEffect(() => {
+    const dismiss = () => closeRef.current();
+    window.addEventListener('neuink:reader-surface-change', dismiss);
+    return () => {
+      translationRequestRef.current += 1;
+      saveRequestRef.current = null;
+      window.removeEventListener('neuink:reader-surface-change', dismiss);
+    };
+  }, []);
   const selectionKey = pending
-    ? `${pending.segment.uid}:${pending.selection.page_idx}:${pending.selection.text}`
+    ? JSON.stringify([pending.segment.uid, pending.selection.page_idx, pending.selection.text, pending.selection.rects])
     : '';
+  const selectionKeyRef = useRef(selectionKey);
+  selectionKeyRef.current = selectionKey;
 
   useEffect(() => {
     translationRequestRef.current += 1;
-    setPanel(null);
+    setPanel(current => position.pinned ? current : null);
     setComment('');
     setTranslation(null);
+    setTranslationError(null);
     setTranslating(false);
     setSaving(false);
+    setSaveError(null);
+    saveRequestRef.current = null;
     setColor('yellow');
     setImportance('normal');
-    setLayout(null);
     if (!selectionKey) {
       autoTranslatedSelectionKeyRef.current = '';
     }
@@ -96,7 +150,7 @@ export function PdfTextSelectionToolbar({
   useEffect(() => {
     if (
       !autoTranslate ||
-      !pending ||
+      !incomingPending ||
       !onTranslate ||
       !selectionKey ||
       autoTranslatedSelectionKeyRef.current === selectionKey
@@ -108,8 +162,9 @@ export function PdfTextSelectionToolbar({
     const requestId = ++translationRequestRef.current;
     setPanel('translation');
     setTranslation(null);
+    setTranslationError(null);
     setTranslating(true);
-    void onTranslate({ segment: pending.segment, text: pending.selection.text })
+    void onTranslate({ segment: incomingPending.segment, text: incomingPending.selection.text })
       .then((translatedText) => {
         if (translationRequestRef.current === requestId) {
           setTranslation(translatedText);
@@ -117,12 +172,7 @@ export function PdfTextSelectionToolbar({
       })
       .catch((caught) => {
         if (translationRequestRef.current === requestId) {
-          setPanel(null);
-          notify({
-            tone: 'danger',
-            title: '选中文字自动翻译失败',
-            description: describeTranslationFailure(caught)
-          });
+          setTranslationError(describeTranslationFailure(caught));
         }
       })
       .finally(() => {
@@ -132,89 +182,56 @@ export function PdfTextSelectionToolbar({
       });
   }, [autoTranslate, notify, onTranslate, pending, selectionKey]);
 
-  useLayoutEffect(() => {
-    if (!pending || typeof window === 'undefined') {
-      return;
-    }
-
-    let frame = 0;
-    const toolbar = toolbarRef.current;
-    const updateLayout = () => {
-      window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        const element = toolbarRef.current;
-        if (!element) {
-          return;
-        }
-        const viewport = window.visualViewport;
-        setLayout(
-          calculateFloatingToolbarLayout({
-            anchor:
-              pending.anchorRect ?? {
-                bottom: pending.position.y,
-                left: pending.position.x,
-                right: pending.position.x,
-                top: pending.position.y
-              },
-            contentHeight: element.scrollHeight,
-            contentWidth: element.getBoundingClientRect().width,
-            viewport: {
-              height: viewport?.height ?? window.innerHeight,
-              left: viewport?.offsetLeft ?? 0,
-              top: viewport?.offsetTop ?? 0,
-              width: viewport?.width ?? window.innerWidth
-            }
-          })
-        );
-      });
-    };
-
-    const resizeObserver = toolbar && typeof ResizeObserver !== 'undefined'
-      ? new ResizeObserver(updateLayout)
-      : null;
-    if (toolbar) {
-      resizeObserver?.observe(toolbar);
-    }
-    updateLayout();
-    window.addEventListener('resize', updateLayout);
-    window.visualViewport?.addEventListener('resize', updateLayout);
-    window.visualViewport?.addEventListener('scroll', updateLayout);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      resizeObserver?.disconnect();
-      window.removeEventListener('resize', updateLayout);
-      window.visualViewport?.removeEventListener('resize', updateLayout);
-      window.visualViewport?.removeEventListener('scroll', updateLayout);
-    };
-  }, [panel, pending, selectionKey, translating, translation]);
-
-  if (!pending || typeof document === 'undefined') {
+  if (!pending || !visible || typeof document === 'undefined') {
     return null;
   }
 
   // Translation is intentionally non-blocking: highlighting, annotation and copy
   // remain available while the selected text is being translated.
-  const busy = saving;
-  const apply = async (content: string) => {
+  const busy = saving || !incomingPending;
+  const apply = async (content: string, contentMode?: 'append') => {
+    if (!onApply || !incomingPending || saveRequestRef.current) return;
+    const applyingSelection = selectionKey;
+    const request = Symbol();
+    saveRequestRef.current = request;
+    const isCurrent = () => saveRequestRef.current === request && selectionKeyRef.current === applyingSelection;
     setSaving(true);
+    setSaveError(null);
     try {
-      await onApply({
+      const saved = await onApply({
         content: content.trim(),
+        ...(contentMode ? { contentMode } : {}),
         importance,
         segment: pending.segment,
         selection: { ...pending.selection, color }
       });
-      onClose();
+      if (!isCurrent()) return;
+      if (saved === false) {
+        setSaveError('批注保存失败，请重试。');
+        return;
+      }
+      if (position.pinned) {
+        setPanel(null);
+        setComment('');
+        onClose();
+      } else close();
+    } catch {
+      if (isCurrent()) setSaveError('批注保存失败，请重试。');
     } finally {
-      setSaving(false);
+      if (isCurrent()) {
+        saveRequestRef.current = null;
+        setSaving(false);
+      }
     }
   };
   const translate = async () => {
-    if (!onTranslate || translating) {
+    if (!onTranslate || !incomingPending || translating) {
       return;
     }
-    const requestId = ++translationRequestRef.current;
     setPanel('translation');
+    if (translation !== null) return;
+    const requestId = ++translationRequestRef.current;
+    setTranslationError(null);
     setTranslation(null);
     setTranslating(true);
     try {
@@ -227,12 +244,7 @@ export function PdfTextSelectionToolbar({
       }
     } catch (caught) {
       if (translationRequestRef.current === requestId) {
-        setPanel(null);
-        notify({
-          tone: 'danger',
-          title: '选中文字翻译失败',
-          description: describeTranslationFailure(caught)
-        });
+        setTranslationError(describeTranslationFailure(caught));
       }
     } finally {
       if (translationRequestRef.current === requestId) {
@@ -252,65 +264,36 @@ export function PdfTextSelectionToolbar({
   return createPortal(
     <div
       ref={toolbarRef}
-      className="fixed z-[100] w-[min(23rem,calc(100vw-1rem))] overflow-y-auto overscroll-contain rounded-lg border bg-popover p-2 shadow-xl"
+      data-material="reader-popover"
+      data-reading-selection-toolbar
+      data-pinned={position.pinned ? 'true' : 'false'}
+      className="fixed z-[var(--z-reader-selection)] w-[min(23rem,calc(100vw-1rem))] overflow-y-auto overscroll-contain rounded-lg border bg-popover p-2 shadow-xl"
       data-placement={layout?.placement}
       role="dialog"
+      aria-label="选区操作"
       style={{
         left: layout?.left ?? pending.position.x,
         maxHeight: layout?.maxHeight ?? 'calc(100vh - 1rem)',
+        maxWidth: layout?.maxWidth,
         opacity: layout ? 1 : 0,
         pointerEvents: layout ? 'auto' : 'none',
         top: layout?.top ?? pending.position.y,
       }}
       onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); } }}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-foreground">
-          <Highlighter size={14} aria-hidden="true" />
-          <span className="truncate">已选 {pending.selection.text.length} 个字符</span>
-        </div>
-        <button
-          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          title="关闭选区工具"
-          type="button"
-          onClick={onClose}
-        >
-          <X size={14} aria-hidden="true" />
-        </button>
-      </div>
+      <ReadingSelectionToolbarControls text={pending.selection.text} saving={saving} translating={translating}
+        translationFailed={Boolean(translationError)} panel={panel} onClose={close}
+        pinned={position.pinned} onTogglePin={position.toggle} dragHandleProps={position.handleProps}
+        selectionAvailable={Boolean(incomingPending)}
+        onTranslate={onTranslate ? () => void translate() : undefined}
+        onAsk={onAsk ? intent => { if (incomingPending) onAsk({ segment:incomingPending.segment, text:incomingPending.selection.text }, intent); } : undefined}
+        onHighlight={onApply ? () => void apply('') : undefined}
+        onAnnotate={onApply ? () => { if (incomingPending) setPanel(current => current === 'annotation' ? null : 'annotation'); } : undefined}
+        onCopy={() => void copy(pending.selection.text.replace(/\n+/g, ' '), '选中文字已复制')} />
 
-      <div className="mt-2 grid grid-cols-[auto_auto_1fr_auto] gap-1.5 border-t pt-2">
-        <ActionButton
-          disabled={saving || translating || !onTranslate}
-          icon={translating ? <Loader2 className="animate-spin" size={13} /> : <Languages size={13} />}
-          label="翻译"
-          selected={panel === 'translation'}
-          onClick={() => void translate()}
-        />
-        <ActionButton
-          disabled={busy}
-          icon={<Highlighter size={13} />}
-          label="仅高亮"
-          onClick={() => void apply('')}
-        />
-        <ActionButton
-          disabled={busy}
-          icon={<MessageSquareText size={13} />}
-          label="高亮并批注"
-          selected={panel === 'annotation'}
-          onClick={() => setPanel((current) => current === 'annotation' ? null : 'annotation')}
-        />
-        <button
-          aria-label="复制选中文字"
-          className="grid size-8 place-items-center rounded border hover:bg-muted disabled:opacity-50"
-          disabled={busy}
-          title="复制选中文字"
-          type="button"
-          onClick={() => void copy(pending.selection.text.replace(/\n+/g, ' '), '选中文字已复制')}
-        >
-          <ClipboardCopy size={14} aria-hidden="true" />
-        </button>
-      </div>
+      {position.pinned && !incomingPending ? <p className="mt-2 text-xs text-muted-foreground">已固定，选择其他文字可更新内容。</p> : null}
 
       {translating && panel !== 'translation' ? (
         <div className="mt-2 inline-flex w-full items-center gap-2 rounded-md bg-muted/50 px-2 py-1.5 text-[11px] text-muted-foreground">
@@ -319,7 +302,7 @@ export function PdfTextSelectionToolbar({
         </div>
       ) : null}
 
-      <div className="mt-2 flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1.5">
+      {onApply ? <div className="mt-2 flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1.5">
         <span className="text-[11px] text-muted-foreground">高亮颜色</span>
         <div className="flex items-center gap-1.5" aria-label="高亮颜色">
           {HIGHLIGHT_COLORS.map((item) => (
@@ -340,34 +323,18 @@ export function PdfTextSelectionToolbar({
             </button>
           ))}
         </div>
-      </div>
+      </div> : null}
 
       {panel === 'translation' ? (
-        <div className="mt-2 grid gap-2 border-t pt-2">
-          <div className="text-[11px] font-semibold text-muted-foreground">快速翻译</div>
-          <div className="max-h-36 overflow-auto whitespace-pre-wrap rounded-md bg-muted/50 p-2 text-sm leading-6">
-            {translating ? (
-              <span className="inline-flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="animate-spin" size={14} />正在翻译选中文字…
-              </span>
-            ) : translation || '暂无译文'}
-          </div>
-          {translation ? (
-            <div className="flex justify-end">
-              <button
-                className="inline-flex h-7 items-center gap-1 rounded border px-2 text-xs hover:bg-muted"
-                type="button"
-                onClick={() => void copy(translation, '译文已复制')}
-              >
-                <ClipboardCopy size={13} />复制译文
-              </button>
-            </div>
-          ) : null}
-        </div>
+        <SelectionTranslationPanel translation={translation} error={translationError} translating={translating}
+          saving={saving} disabled={busy} onCopy={text => void copy(text, '译文已复制')}
+          onAnnotate={onApply ? text => void apply(text, 'append') : undefined} />
       ) : null}
 
-      {panel === 'annotation' ? (
-        <div className="mt-2 grid gap-2 border-t pt-2">
+      {saveError ? <p role="alert" className="mt-2 text-xs text-destructive">{saveError}</p> : null}
+
+      {onApply && panel === 'annotation' ? (
+        <div data-material="annotation-paper" data-paper-color={color} className="mt-2 grid gap-2 border-t pt-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] font-semibold text-muted-foreground">选区批注重要性</span>
             <div className="flex items-center gap-0.5" aria-label="重要性星级">
@@ -423,88 +390,5 @@ export function PdfTextSelectionToolbar({
       ) : null}
     </div>,
     document.body
-  );
-}
-
-type FloatingToolbarLayout = {
-  left: number;
-  maxHeight: number;
-  placement: 'above' | 'below';
-  top: number;
-};
-
-export function calculateFloatingToolbarLayout({
-  anchor,
-  contentHeight,
-  contentWidth,
-  viewport
-}: {
-  anchor: { bottom: number; left: number; right: number; top: number };
-  contentHeight: number;
-  contentWidth: number;
-  viewport: { height: number; left: number; top: number; width: number };
-}): FloatingToolbarLayout {
-  const margin = 8;
-  const gap = 8;
-  const viewportRight = viewport.left + viewport.width;
-  const viewportBottom = viewport.top + viewport.height;
-  const width = Math.min(contentWidth, Math.max(0, viewport.width - margin * 2));
-  const left = clamp(
-    (anchor.left + anchor.right - width) / 2,
-    viewport.left + margin,
-    Math.max(viewport.left + margin, viewportRight - margin - width)
-  );
-  const availableBelow = Math.max(0, viewportBottom - margin - anchor.bottom - gap);
-  const availableAbove = Math.max(0, anchor.top - gap - (viewport.top + margin));
-  const placement: FloatingToolbarLayout['placement'] =
-    contentHeight <= availableBelow || (availableBelow >= availableAbove && contentHeight > availableAbove)
-      ? 'below'
-      : 'above';
-  const availableHeight = placement === 'below' ? availableBelow : availableAbove;
-  const maxHeight = Math.max(0, availableHeight);
-  const visibleHeight = Math.min(contentHeight, maxHeight);
-  const idealTop = placement === 'below'
-    ? anchor.bottom + gap
-    : anchor.top - gap - visibleHeight;
-  const top = clamp(
-    idealTop,
-    viewport.top + margin,
-    Math.max(viewport.top + margin, viewportBottom - margin - visibleHeight)
-  );
-
-  return { left, maxHeight, placement, top };
-}
-
-function clamp(value: number, minimum: number, maximum: number) {
-  return Math.min(Math.max(value, minimum), maximum);
-}
-
-function ActionButton({
-  disabled,
-  icon,
-  label,
-  onClick,
-  selected = false
-}: {
-  disabled: boolean;
-  icon: ReactNode;
-  label: string;
-  onClick: () => void;
-  selected?: boolean;
-}) {
-  return (
-    <button
-      aria-pressed={selected}
-      className={cn(
-        'inline-flex h-8 items-center justify-center gap-1 rounded border px-2 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50',
-        selected && 'border-primary/40 bg-primary/10 text-primary'
-      )}
-      disabled={disabled}
-      type="button"
-      onClick={onClick}
-    >
-      {icon}
-      {label}
-    </button>
   );
 }

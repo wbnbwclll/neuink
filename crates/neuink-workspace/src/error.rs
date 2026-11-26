@@ -5,6 +5,14 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
     #[error("{0}")]
+    Onboarding(String),
+    #[error("{0}")]
+    PdfQueue(String),
+    #[error("{0}")]
+    PdfText(String),
+    #[error("{0}")]
+    ParagraphTranslation(String),
+    #[error("{0}")]
     TagReading(String),
     #[error(transparent)]
     Domain(#[from] neuink_domain::DomainError),
@@ -20,6 +28,8 @@ pub enum WorkspaceError {
     NoteMissing(String),
     #[error("note changed after it was opened: {0}")]
     NoteRevisionConflict(String),
+    #[error("segment note changed after the proposal was created")]
+    SegmentNoteConflict(String),
     #[error("invalid note document: {0}")]
     InvalidNoteDocument(String),
     #[error("tag already exists under the same parent: {0}")]

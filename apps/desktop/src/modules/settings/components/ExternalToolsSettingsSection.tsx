@@ -1,8 +1,11 @@
-import { TabsContent } from '@/components/ui/tabs';
-import { cn } from '@/lib/utils';
+import { SettingsPage } from './SettingsPrimitives';
 import { SciverseSettingsSection } from '@/modules/sciverse/components/SciverseSettingsSection';
+import { ResearchSettingsSection } from './ResearchSettingsSection';
+import { AssistantDebugSetting } from './AssistantDebugSetting';
+import { LocalAgentSettingsSection } from './LocalAgentSettingsSection';
 
 import { AgentToolRuntimeSection } from './AgentSettingsSection';
+import { ADVANCED_ASSISTANT_SETTINGS_VISIBLE } from '../settingsCatalog';
 import type { SettingsPanelLayoutProps } from './SettingsPanelLayout';
 
 export function ExternalToolsSettingsSection({
@@ -13,25 +16,14 @@ export function ExternalToolsSettingsSection({
   const active = props.activeSettingsTab === 'external-tools';
 
   return (
-    <TabsContent
-      forceMount
-      value="external-tools"
-      className="m-0 min-h-0 overflow-auto bg-background px-5 py-4"
-    >
-      <div className={cn('settings-panel-content-inner', 'grid gap-4')}>
-        <div>
-          <h2 className="text-base font-semibold">外部工具与 MCP</h2>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            统一管理外部检索服务和 Agent 可调用的 MCP 工具入口。凭据保存在系统凭据库中。
-          </p>
-        </div>
-
-        <SciverseSettingsSection active={active} />
-        <AgentToolRuntimeSection
+    <SettingsPage tab="external-tools" title="检索与工具" description="管理论文和网页检索、本地 Agent 及诊断选项。">
+        <LocalAgentSettingsSection active={active} workspaceRoot={props.workspaceRoot} />
+        <ResearchSettingsSection active={active}><SciverseSettingsSection active={active} /></ResearchSettingsSection>
+        <AssistantDebugSetting />
+        {ADVANCED_ASSISTANT_SETTINGS_VISIBLE && <fieldset data-setting-id="tools-mcp" tabIndex={-1} disabled={props.runtimeUnavailable} className="min-w-0"><AgentToolRuntimeSection
           runtimeSettings={props.runtimeSettings}
           onUpdateRuntimeSettings={props.onUpdateRuntimeSettings}
-        />
-      </div>
-    </TabsContent>
+        /></fieldset>}
+    </SettingsPage>
   );
 }

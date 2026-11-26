@@ -1,9 +1,23 @@
-# Assistant Module
+# Assistant Module — Runtime v4
 
 ## 职责
 
+每次用户发起任务时，宿主重新读取工具目录，取用户启用、Agent 授权、执行模式和可用实现的交集，再冻结本次运行的工具集。每轮模型请求从这份实际声明生成权威工具名单，并附带名称、描述及 JSON 参数 schema；模型只负责选择调用，不读取本地配置文件，也不能自行启用工具。检索／导入说明按实际可用工具生成。任务中途修改配置不扩充正在执行任务的权限，下一次新任务生效。
+
+`sdk/toolAvailability` 从完整 checkpoint transcript 推导收尾策略：一次运行累计 6 次外部搜索后不再暴露搜索工具，仍可使用已授权的阅读／提案工具；连续 3 次工具失败后仅总结。内核将个人／共享模型轮次的最后一轮保留给总结，收尾期间拒绝任何新工具调用；上下文压缩不能消耗最后的总结预算。工具不存在、参数无效与实际服务失败分别反馈，参数失败不执行服务、不默默改名或类型转换。预算限制不能绕过已有引用验证、来源策略或写入确认；模型拒绝收尾或仍不满足强制合同则明确失败，不伪造成功。
+
+产品没有 Skills 注册、导入、加载、授权或设置入口。Agent / Subagent 使用受权限约束的 Tools，MCP 负责连接外部工具；翻译与中文标签推荐是内置固定任务。旧 Skills 配置的剔除逻辑和回归测试不代表仍支持该功能，也不会执行遗留的用户包文件。
+
+普通失败归主助手处理：内置只读工具共用明确的只读名单；读取、检索、只读子任务失败返回 error observation，主助手可换已授权工具或给出带限制的部分回答。必需工具已经失败或不可用时，不再强制其成功；无证据时允许说明限制，但禁止虚构引用与写入成功。重复调用由宿主在执行前拒绝，连续失败、无进展和工具预算到限后进入总结；已完成结果不因无进展保护被丢弃。子任务至少为主助手预留一轮共享模型预算，并在普通失败时保留有界真实证据；用户取消、持久化失败、未知写入结果仍停止。
+
+`sdk/toolCatalog` 隔离内置／各 MCP 目录加载失败，只移除受影响能力，并把安全诊断传给主助手，不泄露命令、stderr 或密钥。检查点保存首次工具名单：恢复时可因服务离线缩小，不因服务恢复或新目录扩权；临时可用性不改变执行身份。工具编排入口仍保留共享提案、权限和证据状态，目录加载单独拆分以避免继续扩张其职责。PDF 队列对每个 IPC 等待支持超时／取消，等待中的原生文件请求不阻塞后续文档的 JS 队列；底层不可强制取消的请求最多保留 4 个未结束槽位，达到上限明确报错而不继续堆积，实际结束后回收。PDF Worker 销毁仍先完成，再释放提取槽位。
+
+Sciverse 检索先由 `sdk/sciverseOutput` 做确定性整理：精确重复片段去重、作者清洗、按 doc_id 归组、未知页码归空、清除 Markdown 图片占位符，并限制整个序列化结果最多 24,000 字符且不超过调用方预算。每份文档优先保留一个片段，再轮流补充，最多 12 个；提供本批次计数、遗漏和截断标志，不宣称覆盖全部文献。不同 doc_id 即使 DOI／标题相同也不自动合并；原始定位与导入字段保留在来源记录，只有实际返回的证据进入 SourceLedger。模型按 doc_id 关联 papers 与 evidence，负责相关性判断及最终汇总，不增加整理子 Agent 或额外模型调用。结构化元数据／Schema 的大响应仅返回有界预览，不再附带完整原始负载。
+
 - 将用户消息、完整对话、`@` 附件和显式 UI 上下文作为 Agent observation；
-- 由模型策略在统一 Agent Loop 中决定直接回答、自然追问、加载 Skill 或调用原子 Tool；
+- 输入区的“选择元素”按标签／条目／PDF／笔记选择具体对象，插入 typed mention；正文中的 `@` 可搜索 PDF／笔记名称。未选择的 `@` 保持普通文字，中文正文中也可触发。输入文档和光标由 Tiptap 持有；选择面板只持有打开状态、类别和查询，候选列表独立滚动并虚拟化；`@` 候选支持上下键、Enter、Shift+Enter 换行和 Esc，关闭选择面板后光标回输入区。发送时冻结 mention id 与上下文，不从用户文字猜测文件。
+- `present_diagram` 是主助手可用的只读宿主展示工具，不是 Skill，也不写工作区。模型按语义决定是否调用；宿主校验思维导图／流程图节点、关系和来源编号后确定性生成 Mermaid，作为结构化 tool result 持久化并在普通对话及展开阅读里渲染。后续写入笔记仍需读取目标笔记并走可确认的提案。自然语言图表意图目前没有独立的强制分类器，故工具选择不能视为百分之百命中保证；严格强制需要先由结构化语义判定产物类型，再在校验阶段检查产物，而不是按字词匹配。
+- 由模型策略在统一 Agent Loop 中决定直接回答、自然追问、调用原子 Tool 或委派子 Agent；
 - 在最终文本、来源和 Proposal 展示前执行 Verifier；
 - 维护 Conversation message parts、TaskState、AgentRun 和 Proposal 审核 UI。
 
@@ -19,7 +33,7 @@
 - 用户消息与有序 `@` attachments；
 - `[C1]` 等标记对应的 Typed Mention Map（Entry/Note/Tag/Segment 的真实 id 与名称）；
 - Workspace context snapshot；
-- LLM profile、Agent permissions、Skills、Tools 与 MCP allowlist。
+- LLM profile、Agent permissions、Tools 与 MCP allowlist。
 
 ## 输出
 
@@ -30,10 +44,86 @@
 
 ## 模块边界
 
-- `agent-core/`：Markov/POMDP 充分状态、turn/tool 预算、循环与无进展保护；
+- `agent-core/`：与供应商无关的 Agent 实例、顺序工具循环、完整消息历史、共享运行树预算和取消、循环与无进展保护；
 - `harness/`：主循环装配、显式上下文 hydration、Verifier 与 AgentRun；
-- `runtime/`：TaskState、Evidence Ledger 和 Verified Proposal；
-- `sdk/`：Provider、原子读取/副作用工具、结构化 Proposal Tools 和模型调用；
+- `runtime/`：只读 Subagent、共享 SourceLedger、TaskState、Verified Proposal 和窄应用命令；
+- `sdk/`：单轮 Provider 适配、无工具的固定模型任务、带 JSON Schema 校验的业务工具；AI SDK 不拥有执行循环；
 - `components/`：对话、上下文、Proposal Diff 与 Apply/Reject UI。
 
 `create_entry` 是明确授权的原子副作用，并在单次 Agent run 内按参数幂等。`read_note(entry_id, note_id)` 允许 Agent 读取任意明确引用的 Note，不依赖 UI 正则预选 current note。Note、Entry Meta 和 Tag 修改仍只生成可审核 Proposal；真实 Note 写盘只允许 UI 调用 `apply_note_proposal`。后端按 `taskId + proposalId` 读取持久化 Verified Proposal，执行 digest、基础内容 Hash、幂等和 journal recovery 校验。
+
+## 执行与配置边界
+
+- 输入区不再提供普通执行／仅规划模式选择。`runtime/requestRouter` 在 hydration 前自动分流：仅无历史、无阅读目标、无附件／引用的完整独立问候（精确匹配，允许尾标点）使用轻量路径；不以包含某关键词或句子长度判定业务意图。有上下文、有历史、混合需求和不确定请求仍进入主 Agent。轻量路径复用同一 Agent、Provider、预算和检查点，但不读取文档、不加载工具目录／MCP，不生成固定计划或记忆请求。它并未关闭供应商自身推理。
+- Rust `assistant_routing` 复用已有 multilingual-e5-small / FastEmbed，独立惰性模型会话避免与文档索引争用锁；路由示例在进程内缓存，两侧采用 E5 的 `query:` 前缀和余弦相似度。自由输入的短独立非问候请求可获得聊天／阅读／修改／研究／方案／其他候选；当前是 **shadow 阶段**，候选、分差及模型标识只记录到任务检查点和默认折叠的执行详情，不改变执行路线、推理等级或权限。当前没有经过校准的业务阈值，不把相似度当正确率。上下文或历史门控直接回主 Agent，不做截断猜测；超过 256 字符也跳过分类。
+- 面板可用时后台预热；原生等待最多 100ms、前端最多 120ms，冷启动／忙碌／资源缺失／错误直接回主 Agent，不请求远程分类器，不下载权重，不记录正文或凭据日志。后台加载完成不修改已冻结的路线；每个请求的路线随检查点保存并用于恢复。翻译和标签的明确 UI 操作仍沿用原固定业务流程，不进入此路由器。未来启用语义快捷路线前须用独立中文标注集校准阈值和分差，并验证混合意图／否定／续聊的误分率及尾延迟。
+- `runtime/executionPolicy` 只从当前授权配置装配能力，路由只能收窄不能扩大授权；同一循环按需回答、澄清、检索和委派。无正式调用的旧 `taskOrchestrator` / `executionContract` 已移除。旧只读检查点仍保留其白名单边界，新请求以自然语言说明是否只要方案，不要求切换界面模式；语义候选不是写入授权，计划本身也不是修改确认。
+- 默认任务不预判目标与最终操作；工具从显式上下文与参数解析真实目标，歧义由主 Agent 自然追问。原冻结 scope、授权交集、修改前读取、行坐标／expected_text、SourceLedger、内联引用、不可变提案摘要与后端 Apply 校验继续生效。读取出证据后的回答必须引用，带证据的笔记提案缺少引用时作为工具错误交回主 Agent 修正。语义上是否需要读取、哪条资料支持哪句结论仍由模型决定，程序的引用有效性检查不等于事实真实性保证。
+- 短对话不额外请求记忆模型；距最近检查点的未总结正文达到 8,000 字符才更新摘要，原始会话照常保存。长上下文的请求投影压缩仍独立生效。该阈值是字符估算，不是供应商 token 的精确用量。
+- 模型推理流、任务计划、执行状态是独立概念。等待响应显示“正在处理”，只读计划／工具／子任务／记忆按真实阶段显示；折叠只影响展示，总耗时包含整个任务。Provider 仍接收 reasoning 增量；尚未提供跨协议思考强度配置，不能将只读计划开关称作“深度思考”。
+- 主、子 Agent 使用同一个 `Agent` 内核，独立消息上下文；整次请求共享 24 次模型请求、48 次工具调用预算和取消信号，任务理解、上下文摘要和结束记忆也计入请求预算。主 Agent 最多 12 轮，子 Agent 最多 8 轮、深度最多 2；恢复不重置预算。累计供应商已报告的 input/output tokens，达到 512,000 后拒绝下一次模型调用；这不是预付费额度控制，不能精确统计断流后供应商未报告的用量。
+- Provider 保留供应商的 reasoning/signature 元数据。每次请求超时 120 秒；上下文使用保守字符估算，超限时只压缩发送给模型的历史投影，保留初始请求、完整近期工具调用/结果配对和引用标识。原始 transcript、SourceLedger 和提案不裁剪；初始输入或最近工具批次仍无法容纳时显式停止。截断的模型输出不得执行工具或标记为完整回答。
+- API Key 只属于安装级 LLM profile。主助手可以指定 profile；子助手未指定时继承父模型，指定但不存在时失败。Tool 不拥有模型 Key；MCP/Sciverse/Parser 的凭据与模型凭据不同。
+- 对话摘要等固定模型任务使用 `runJsonModelTask`，无工具和子 Agent。推荐标签使用 Rust 固定任务策略直接调用模型，不由用户选择模板。宿主要求每级标签及理由使用简体中文，专有名词可附中文说明保留原文；校验拒绝没有汉字的层级或理由，不做自动翻译重试。旧英文标签及缓存推荐不自动改名，须重新生成推荐。标签输出 schema 为 `{tags: [{path, dimension, reason, confidence}]}`，只推荐、不执行修改。翻译保留 Rust `TranslationPipeline`、共享 `llm_http`、调度、缓存和重试，不绕入 Agent 循环。
+- 能力由 Agent、可选只读 Subagent 和受权限约束的 Tools 组成；MCP 只负责连接外部工具。翻译、标签推荐是宿主固定业务服务，条目属性修改和笔记生成由主 Agent 使用原子工具与溯源能力完成。配置规范化丢弃不支持的工具和旧扩展字段；不读取或执行已退役的用户扩展文件，也不删除用户文件。
+- PatchPlannerAgent 已移除；EvidenceAgent 是可选的只读证据工作者，默认关闭。旧双子 Agent 配置首次规范化时关闭原默认开启的 EvidenceAgent，可随后手动重新开启；只有启用且有主助手授权时才向模型提供委派工具。子 Agent 不产生写盘、应用外观或外部 MCP 副作用。计划和子任务只能缩小已授予权限。
+- `app.set_appearance` 通过注入的 `ApplicationActions` 调用既有 `AppearanceProvider`，只切换三种外观；不开放通用设置写入。状态、持久化与原界面共用，滚动、键盘、拖动协议不变。条目标题等知识数据修改仍走提案。
+- Runtime v4 不迁移 v3 Agent 配置；旧配置不执行，新默认不影响安装级模型 Key、文档、Source Link 或用户已有编辑。普通设置继续隐藏 Agent/MCP 高级配置；该产品开关不是多用户账户权限系统。
+
+## MCP 与溯源
+
+### 内置研究工具
+
+`search_papers` 默认并行查询 arXiv / Crossref，OpenAlex 保留为显式可选来源；`search_web` 默认使用 DuckDuckGo 公开搜索页，失败时尝试 Bing 公开搜索页（不使用 Bing RSS）；`read_webpage` 默认直接访问目标网址并在本机提取静态文本。这些工具由 Rust 原生服务提供，无需检索 API Key、外部 Agent、Python 或可执行扩展包。无既有配置时默认启用免费服务，已保存的关闭选择继续生效。设置中的 Tavily 是折叠的可选增强，必须显式开启才替代免费网页服务；仅保存密钥不会开启，不因免费服务失败自动切换付费服务。凭据保存在系统凭据库，不使用大模型 Key。旧完整默认工具集合会补齐新工具，明确限制过的集合不会自动扩权；主助手仍受工具权限、只读模式和预算约束。
+
+Crossref 只保证论文元数据，摘要可能缺失，出版商 TDM 链接不作为免费 PDF 依据；可再按标题搜索 arXiv 或显式查询 OpenAlex 的公开版本。元数据、摘要、搜索摘录、静态网页摘录分别标记证据类型，不声称已读完整 PDF。免费网页源可能限流、改版或要求验证码；失败明确报告，不无限重试或绕过限制。静态正文不执行 JavaScript、不登录、不启动浏览器，不保证完整抽取所有网站。
+
+`import_papers` 只接收本次检索返回的论文 ID。任务在进入确认等待前从后端读取标题、作者、摘要与 PDF 来源；若全部缺少公开 PDF，将未执行原因返回主助手，不创建零篇下载确认。确认面板使用任务持有的预览，后端比对实际预览快照，生成与本次 UI 请求绑定、5 分钟有效、单次消费的批准。模型不能选择本地路径、提交 PDF 下载地址或自行批准。拒绝、停止、过期、资料库不匹配、预览变化均不执行；用户拒绝或主动停止保存为正常停止提示，不展示任务错误。已开始的导入不能当作只读工具在恢复时自动重放；按 research_id / DOI 去重，不覆盖原条目。缺失 PDF 的已有条目明确报错，手动补充后再继续。
+
+每批最多 10 篇、每篇 64 MiB；全进程串行下载 PDF，最多 8 个研究调用，每次 180 秒总上限。论文单源及网页调用上限 25 秒，免费搜索每源 8 秒；搜索请求全进程串行、至少间隔 2 秒，DuckDuckGo 失败后冷却 60 秒。搜索缓存最多 32 条 / 5 分钟，论文缓存最多 512 条 / 1 小时，批准最多 32 条 / 5 分钟；无后台清理定时器，访问时裁剪，容量始终有界。网页响应最多 2 MiB、正文最多 12,000 字符，不执行脚本、不向模型返回 HTML。请求、取消监听、临时文件、下载许可和异步事件订阅按生命周期释放。下载使用 HTTPS 443、公开 DNS 校验、地址固定和逐次重定向复查，不沿用系统代理。凭据网址及内网地址不能发送到网页提取服务；上游错误不包含响应正文或密钥。不绕过登录、付费墙或站点访问限制。
+
+下载和附加 PDF 分为两个持久化步骤。附加失败时保留已创建条目并明确报告恢复方式，不伪装成全批原子成功，也不自动删除用户数据。中止可能保留已经完成的导入，条目库通过原生事件刷新。下载只进行文件头尾校验，不等同于完整 PDF 结构验证。**本阶段不会自动解析 PDF、添加标签或创建阅读笔记**；先从现有入口解析，再使用原内联 Source Link 和修改提案流程。外部摘要与网页摘录使用真实 URL，不伪造页码、片段或 `[Sx]`。
+
+参考 [paper-search-mcp](https://github.com/openags/paper-search-mcp)、[arxiv-mcp-server](https://github.com/blazickjp/arxiv-mcp-server)、[duckduckgo-mcp-server](https://github.com/nickclyde/duckduckgo-mcp-server)、[web-search-mcp](https://github.com/mrkrsl/web-search-mcp) 的能力分层、公开搜索页与直接内容提取思路，以及 [Crossref 的免注册公开接口](https://www.crossref.org/documentation/retrieve-metadata/rest-api/access-and-authentication/)。SearXNG 需要自建服务或依赖公开实例，不作为零配置默认来源。本实现自行编写适配器，未复制这些仓库代码。Rust 复用锁文件已有的 quick-xml（MIT）、tempfile（MIT / Apache-2.0）、scraper（ISC，健壮 HTML 解析，替代正则抓取）及 encoding_rs（Apache-2.0 / MIT / BSD-3-Clause，字符解码）；不增加前端依赖、外部运行时或浏览器体积。
+
+### 外部 MCP
+
+Rust stdio 客户端按照 [MCP 生命周期规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) 执行 `initialize → notifications/initialized → tools/list 或 tools/call`；分页发现使用同一会话，执行请求为短会话。工具 schema 来自服务器，名称须同时通过主助手 server 授权、server allowlist、已启用且 `permissionMode=allow` 的 Tool Package。`ask` 在没有审批界面时拒绝执行，不能自动视为批准。
+
+每个 MCP 操作有 60 秒总超时、2 MiB 单消息上限、8 页发现上限；支持取消、进程回收、Windows 隐藏窗口。不启动 shell，不把模型参数拼成命令。配置中的本地程序是受信任代码，read-only 是业务权限而非 OS 沙箱。当前不提供 Streamable HTTP、长连接池、sampling、elicitation 或任意服务器请求执行。
+
+SourceLedger 在一次运行树内分配唯一 `[Sx]`，子助手证据可供主助手引用和构建提案；最后聊天回答才重编号。既有 Source Link 页码、片段、快照、hash、反向引用和应用时校验保持不变。不存在的引用拒绝，Sciverse 来源可用于聊天，但不能冒充本地 Source Link；需先导入论文再生成带本地溯源的笔记。外部来源的独立持久化模型、PPT 产物工具尚未实现。
+
+## 持久化任务与恢复
+
+未解析 PDF 不再阻止基本问答：`sdk/pdfTools` 提供受范围约束的 `read_pdf_pages` / `search_pdf_text`，已有条目正文读取自动降级到前 3 页以内。`sdk/pdfTextExtractor` 复用 PDF.js 文字层，非 OCR，不自动启动 MinerU。返回物理页码、续读位置、截断与空白页提示。Rust `neuink-workspace::pdf_text` 保存文件版本绑定的有界缓存，只有成功缓存的非空页进入 SourceLedger；来源快照及提案确认仍走原链路。资源在成功、错误、取消时释放；读取上限、缓存大小与扫描件边界见系统架构。阅读对象提示归 AssistantPanel，沿用原滚动／键盘交互，不因“尚未解析”禁用对话。
+
+`harness/durableHarness` 拥有执行身份和交付状态；`runtime/durableExecution` 串行保存检查点；Rust `neuink-workspace::agent_execution` 负责原子保存、版本比较与交换（CAS）和进程间文件锁。状态存于 Workspace 的 `agent-runtime/executions/`，每份最多 16 MiB；只持久化明确列出的任务输入，不保存 LLM profiles、API Key 或可执行配置。删除对话时清理对应检查点，已删除对话拒绝后续写入。
+
+存储标识校验接受领域 NanoID 的完整 URL-safe 字符集（包括 `_`）以及执行 UUID，不接受路径分隔符、点或 Windows 路径语法。存储错误按标识、已删除对话、版本冲突、锁冲突、容量和权限分类，不展示原始路径或请求内容。恢复前校验原始任务输入、预算和待执行位置；资料库权限读取失败立即停止，不用默认授权代替读取失败的配置。
+
+模型请求前预留预算，模型返回后先保存整批调用，再执行工具；工具执行前记录 intent，完成后保存结果及证据。主/子 actor 分别记录 transcript、待执行位置，共享预算和 SourceLedger。恢复复用原任务合同、上下文快照、已完成结果、待审核提案及读取快照；重新装配当前工具权限，模型/Agent 身份改变时拒绝沿用旧上下文。UI 的“继续任务”为显式恢复入口，无自动启动和自动重放写操作。
+
+只读工具可以重试未完成的调用；已完成调用不重做。创建条目或外部 MCP 出现结果不明、取消或错误时停止自动恢复，要求人工核对；不承诺跨外部系统的 exactly-once，也不会声称取消可以撤销已提交副作用。提案工具只构造候选内容，真实写入仍走原有 Verified Proposal/digest/hash/journal。最终结果先存入检查点，Conversation 成功保存后才确认交付；确认失败不会抹去已经保存的回答和提案。
+
+对话控制器结束时停止接收流事件，等待已排队草稿落盘后再保存终态；模型的迟到事件不能继续更新已结束任务。答案交付后历史列表刷新等外围错误只能提示刷新失败，不能覆盖已保存的答案、来源和提案。原 AssistantPanel 保持状态/滚动、键盘与拖动所有权，无新增交互容器。
+
+内核提供可等待事件、steer、followUp 和 waitForIdle；当前聊天 UI 仍使用既有队列交互，不新增中途插话 UI。任务可在 WebView 重载或应用重启后由用户显式恢复，但关闭应用后不会继续后台执行，没有引入 Node sidecar 或独立 daemon。恢复格式仅适用于本次开始保存的新任务，旧日志不是执行检查点。
+
+## 参考实现与许可证
+
+- [Aurelio Semantic Router](https://github.com/aurelio-labs/semantic-router)（MIT）：借鉴“示例句向量 → 路线候选 → 未命中回退”，没有引入 Python 服务或复制源码。[vLLM Semantic Router 架构](https://github.com/vllm-project/semantic-router/blob/main/website/docs/overview/semantic-router-overview.md)：借鉴检测信号和执行策略分离，不引入其服务端基础设施。
+- [multilingual-e5-small 模型说明](https://huggingface.co/intfloat/multilingual-e5-small)：复用已有 MIT 许可本地权重，Mean pooling、对称任务两端 `query:` 前缀及余弦比较；模型的高相似度不是业务分类准确率。本次没有下载或替换模型资源。
+- [Pi 只读计划扩展](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts)：计划属于可选宿主策略，同一循环通过缩小工具集进入只读模式，由用户决定后续执行。本地采用更保守的明确只读白名单，不复制其 Bash 或 UI 代码。
+- [Pi agent loop](https://github.com/earendil-works/pi/blob/7f06f9cf1626504cde95683f1c81a72a7bc7a0cb/packages/agent/src/agent-loop.ts)、[Agent](https://github.com/earendil-works/pi/blob/7f06f9cf1626504cde95683f1c81a72a7bc7a0cb/packages/agent/src/agent.ts)：事件顺序、等待订阅者、轮次边界输入和截断输出的安全处理；[compaction](https://github.com/earendil-works/pi/blob/7f06f9cf1626504cde95683f1c81a72a7bc7a0cb/packages/coding-agent/docs/compaction.md)：区分完整会话与请求投影、保留工具调用配对。上游 MIT，Copyright (c) 2025 Mario Zechner。
+- [LangGraph persistence](https://docs.langchain.com/oss/javascript/langgraph/persistence) 和 [fault tolerance](https://docs.langchain.com/oss/javascript/langgraph/fault-tolerance)：持久化检查点、恢复边界和显式重试策略。[仓库](https://github.com/langchain-ai/langgraphjs)。
+
+本次参考上述设计，自行实现 NeuInk 适配，没有复制上游源文件，也没有引入 Pi/LangGraph 运行依赖。直接替换 Pi 包会同时引入其消息、Provider 和宿主依赖体系；当前保留 AI SDK 单轮驱动，避免为恢复任务同时迁移模型协议与特殊溯源。若以后复制代码，须按固定版本保留上游版权与完整许可，不能仅以致谢替代。
+
+## 验证范围
+
+Claude Code、Codex、OpenCode 通过 `local-agent/runner` 和各自官方协议，复用现有聊天、每轮 MCP、工具执行及笔记审阅。设置默认关闭；成功检测安装后可在聊天顶部选择，各 Agent 保持自己的原生工具与循环。原生授权映射到现有 UI，切换不同 Agent 新建独立对话。架构、续接边界和真实测试入口见 [本地 Agent 开发说明](../../../../../docs/development/local-agent.md)。
+
+阅读上下文由 `app/assistantSurfaceContext` 统一从焦点页签解析，显式选择优先，发送后冻结。旧 sidePane、隐藏 PDF 选区和资料库旧标签不得误变为当前笔记的修改目标；空或越界检索范围失败关闭。未解析条目仍可用内置 PDF 工具，不能仅因状态不是 Parsed 而从资料库范围剔除。网页标签不等于已读取网页；关联当前标签后，主助手按需调用 `read_browser_tab`：Readability 提取当前安全可见正文，PDF.js 读取公开 PDF 的指定页窗，yt-dlp/subtp 读取受支持公开视频的简介或字幕。公开媒体可重新请求，但不继承登录凭据；选区模式不请求媒体。目标由宿主冻结并在异步完成后复核，不由模型传入 URL；PDF 二进制不进入模型、轨迹或持久化对话。结果明确区分简介、字幕、PDF 页码、缺失及截断，不伪造本地 Segment 来源。标签笔记直接读写仍未接入，UI 显示限制。
+
+确定性测试覆盖真实 Provider 适配层与主/子循环接线、工具参数、共享引用、待确认笔记、预算、取消和权限。Rust 使用合成 stdio 服务器验证 MCP 握手、分页、调用、取消。`agent.live.test.ts` 默认跳过；显式设置 `NEUINK_LIVE_SETTINGS` 为本地安装配置路径才进行小规模真实请求，只发送合成文本，不输出凭据。

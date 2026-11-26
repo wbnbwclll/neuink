@@ -241,7 +241,7 @@
   position: relative;
   display: grid;
   grid-template-columns:
-    var(--app-activity-width) var(--app-sidebar-width)
+    var(--app-activity-width) var(--app-sidebar-live-width, var(--app-sidebar-width))
     minmax(0, 1fr);
   grid-template-rows: var(--app-tabs-height) minmax(0, 1fr);
   min-width: 0;
@@ -284,6 +284,7 @@
   position: absolute;
   top: 0;
   bottom: 0;
+  left: var(--app-activity-width);
   z-index: 95;
   width: 3px;
   border-radius: 999px;
@@ -293,7 +294,11 @@
     0 0 18px color-mix(in srgb, var(--primary) 28%, transparent);
   opacity: 0.72;
   pointer-events: none;
-  transform: translateX(-1.5px);
+  transform: translate3d(calc(var(--app-sidebar-preview-width, 0px) - 1.5px), 0, 0);
+}
+
+.app-shell.is-sidebar-resizing .app-sidebar-resize-preview {
+  will-change: transform;
 }
 
 .app-note-pane-resizer {
@@ -527,13 +532,9 @@
   content: "";
 }
 
-.app-shell.is-sidebar-resizing .app-sidebar {
-  filter: saturate(0.72);
-  opacity: 0.82;
-}
-
+.app-shell.is-sidebar-resizing .app-sidebar,
 .app-shell.is-sidebar-resizing .app-sidebar::after {
-  opacity: 1;
+  transition: none;
 }
 
 .app-shell:has(.tabsbar.is-assistant-context-dragging) .app-sidebar[data-assistant-context-dropzone="true"]::after {
@@ -589,54 +590,4 @@
   overflow: hidden;
 }
 
-.settings-page {
-  display: grid;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  grid-template-rows: 44px minmax(0, 1fr);
-  overflow: hidden;
-  background: var(--card);
-}
 
-.settings-page-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 20px;
-  border-bottom: 1px solid var(--app-line);
-  font-size: 14px;
-  font-weight: 800;
-}
-
-.settings-page [data-slot="tabs"] {
-  min-height: 0;
-}
-
-.settings-panel-shell {
-  container: settings-panel / inline-size;
-}
-
-.settings-panel-tabs {
-  grid-template-columns: 248px minmax(0, 1fr);
-}
-
-.settings-panel-content-inner {
-  min-width: 0;
-}
-
-.settings-panel-nav-body {
-  display: grid;
-  gap: 12px;
-}
-
-@container settings-panel (max-width: 1040px) {
-  .settings-panel-tabs {
-    grid-template-columns: 176px minmax(0, 1fr);
-  }
-
-  .settings-panel-content-inner {
-    min-width: 720px;
-  }
-}

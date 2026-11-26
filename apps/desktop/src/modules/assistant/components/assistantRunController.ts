@@ -1,3 +1,11 @@
+import type { ApplicationActions } from '../runtime/applicationActions';
+import { rejectedAnswerContent } from './rejectedAnswerContent';
+import { requestToolApproval } from '../runtime/toolApproval';
+import { AgentStoppedError } from '../agent-core/agent';
+import { requestUserInput } from '../runtime/userInput';
+import { runLocalAgentHarness } from '../local-agent/runner';
+import { visibleAssistantAnswer } from '../sdk/assistantAnswerMarkup';
+import { selectionLocalProvider, createLocalSession, conversationLocalSession } from '../local-agent/session';
 import type {
   Dispatch,
   MutableRefObject,
@@ -32,6 +40,7 @@ import type {
 import type { TagMeta } from "@/shared/types/domain";
 
 import { AssistantHarnessError, runAssistantHarness } from "../harness/engine";
+import { acknowledgeExecution } from '../harness/durableHarness';
 import {
   assistantRunBaseScope,
   buildConversationMentionScope,
@@ -41,12 +50,18 @@ import {
   mergeScopeWithContextEntries,
 } from "./assistantScope";
 import {
-  buildAssistantMessageParts,
+  buildAssistantMessageParts as buildBaseMessageParts,
   createOptimisticMessage,
   createOptimisticMessageId,
   mergeToolTraceEvent,
   updateConversationMessageLocally,
 } from "./assistantPanelState";
+
+import {
+  findAssistantBackgroundRun, finishAssistantBackgroundRun, getAssistantBackgroundRun,
+  setAssistantBackgroundRun, syncAssistantBackgroundRunState,
+} from './assistantBackgroundRuns';
+export { getAssistantBackgroundRun, setAssistantBackgroundRun, subscribeAssistantBackgroundRun } from './assistantBackgroundRuns';
 
 const STREAM_RENDER_INTERVAL_MS = 50;
 
@@ -58,89 +73,13 @@ export type QueuedAssistantDraft = {
   contextItems: AssistantContextItem[];
   contextPlan: AssistantContextPlan | null;
   question: string;
+  scope: ScopeSnapshot;
   snapshot: AssistantComposerSnapshot;
 };
 
-export type AssistantBackgroundRunSnapshot = {
-  abortController: AbortController;
-  conversation: Conversation | null;
-  conversationId: string | null;
-  error: string | null;
-  noteProposalsByMessageId: Record<string, AssistantNoteProposal[]>;
-  question: string;
-  root: string;
-  streamingMessageId: string | null;
-  toolEventsByMessageId: Record<string, AssistantToolTraceEvent[]>;
-};
-
-let assistantBackgroundRun: AssistantBackgroundRunSnapshot | null = null;
-const assistantBackgroundRunListeners = new Set<() => void>();
-
-export function getAssistantBackgroundRun() {
-  return assistantBackgroundRun;
-}
-
-export function setAssistantBackgroundRun(
-  patch:
-    | AssistantBackgroundRunSnapshot
-    | null
-    | ((
-        current: AssistantBackgroundRunSnapshot | null,
-      ) => AssistantBackgroundRunSnapshot | null),
-) {
-  assistantBackgroundRun =
-    typeof patch === "function" ? patch(assistantBackgroundRun) : patch;
-  for (const listener of assistantBackgroundRunListeners) {
-    listener();
-  }
-}
-
-export function subscribeAssistantBackgroundRun(listener: () => void) {
-  assistantBackgroundRunListeners.add(listener);
-  return () => {
-    assistantBackgroundRunListeners.delete(listener);
-  };
-}
-
-export function syncAssistantBackgroundRunState({
-  abortController,
-  conversation,
-  error,
-  noteProposalsByMessageId,
-  streamingMessageId,
-  toolEventsByMessageId,
-}: {
-  abortController: AbortController;
-  conversation?: Conversation | null;
-  error?: string | null;
-  noteProposalsByMessageId?: Record<string, AssistantNoteProposal[]>;
-  streamingMessageId?: string | null;
-  toolEventsByMessageId?: Record<string, AssistantToolTraceEvent[]>;
-}) {
-  setAssistantBackgroundRun((current) =>
-    current?.abortController === abortController
-      ? {
-          ...current,
-          ...(conversation !== undefined
-            ? {
-                conversation,
-                conversationId: conversation?.id ?? current.conversationId,
-              }
-            : null),
-          ...(error !== undefined ? { error } : null),
-          ...(noteProposalsByMessageId !== undefined
-            ? { noteProposalsByMessageId }
-            : null),
-          ...(streamingMessageId !== undefined ? { streamingMessageId } : null),
-          ...(toolEventsByMessageId !== undefined
-            ? { toolEventsByMessageId }
-            : null),
-        }
-      : current,
-  );
-}
-
 type AssistantRunControllerOptions = {
+  resumeExecutionId?: string;
+  applicationActions?: ApplicationActions;
   conversation: Conversation | null;
   entries: LibraryEntry[];
   forceNextScroll: () => void;
@@ -180,6 +119,8 @@ type AssistantRunControllerOptions = {
 };
 
 export async function runAssistantPanelTask({
+  resumeExecutionId,
+  applicationActions,
   conversation,
   entries,
   forceNextScroll,
@@ -213,6 +154,11 @@ export async function runAssistantPanelTask({
   toolEventsByMessageId,
   trimmedQuestion,
 }: AssistantRunControllerOptions) {
+  // A different conversation may run concurrently, but one conversation has one writer.
+  if (conversation && findAssistantBackgroundRun(root, conversation.id)) {
+    setError('这个对话仍在运行，请等待完成或先停止。');
+    return;
+  }
   const runContext: AssistantContext = { items: messageContextItems };
   setBusy(true);
   setError(null);
@@ -220,7 +166,6 @@ export async function runAssistantPanelTask({
   if (resetComposer) {
     setComposerResetKey((key) => key + 1);
   }
-  runAbortControllerRef.current?.abort();
   const runAbortController = new AbortController();
   runAbortControllerRef.current = runAbortController;
   setAssistantBackgroundRun({
@@ -231,9 +176,16 @@ export async function runAssistantPanelTask({
     noteProposalsByMessageId,
     question: trimmedQuestion,
     root,
+    startedAt: Date.now(),
+    taskKind: 'conversation',
     streamingMessageId: null,
     toolEventsByMessageId,
   });
+  if (runAbortController.signal.aborted) {
+    if (runAbortControllerRef.current === runAbortController) runAbortControllerRef.current = null;
+    setBusy(false);
+    return;
+  }
   let persistedConversationId: string | null = null;
   let persistedAssistantMessageId: string | null = null;
   let streamedAnswer = "";
@@ -241,6 +193,16 @@ export async function runAssistantPanelTask({
   let assistantToolEvents: AssistantToolTraceEvent[] = [];
   let assistantNoteProposals: AssistantNoteProposal[] = [];
   let streamRenderTimer: number | null = null;
+  let draftPersistPromise: Promise<void> = Promise.resolve();
+  let acceptingEvents = true;
+  let resultDelivered = false;
+  const localProvider = conversationLocalSession(conversation)?.provider ?? selectionLocalProvider(selectedProfile.id);
+  let localSession = localProvider ? createLocalSession(conversation,localProvider) : null;
+  const buildAssistantMessageParts = (input: Parameters<typeof buildBaseMessageParts>[0]) => {
+    const parts = buildBaseMessageParts(input);
+    if (localSession) parts.push({ ...localSession });
+    return parts;
+  };
   try {
     const conversationMessages = conversation?.messages ?? [];
     const baseScope = assistantRunBaseScope({
@@ -275,7 +237,6 @@ export async function runAssistantPanelTask({
 
     const assistantMessageId = createOptimisticMessageId("assistant");
     let lastDraftPersistedAt = 0;
-    let draftPersistPromise: Promise<void> = Promise.resolve();
 
     setOptimisticMessages([
       createOptimisticMessage(
@@ -335,7 +296,7 @@ export async function runAssistantPanelTask({
         return;
       }
       lastDraftPersistedAt = now;
-      const draftContent = streamedAnswer;
+      const draftContent = visibleAssistantAnswer(streamedAnswer);
       const draftReasoning = streamedReasoning;
       const draftToolEvents = assistantToolEvents;
       const draftNoteProposals = assistantNoteProposals;
@@ -369,15 +330,20 @@ export async function runAssistantPanelTask({
             conversation: updated,
           });
         });
+      // The next draft/final save still observes this rejection, but a paused stream
+      // must not leave a rejected promise unhandled while waiting for the model.
+      void draftPersistPromise.catch(() => undefined);
     };
 
     const flushStreamingDraft = () => {
+      if (!acceptingEvents || runAbortController.signal.aborted) return;
       if (streamRenderTimer !== null) {
         window.clearTimeout(streamRenderTimer);
         streamRenderTimer = null;
       }
+      const visibleAnswer = visibleAssistantAnswer(streamedAnswer);
       const draftParts = buildAssistantMessageParts({
-        content: streamedAnswer,
+        content: visibleAnswer,
         noteProposals: assistantNoteProposals,
         reasoning: streamedReasoning,
         toolEvents: assistantToolEvents,
@@ -388,7 +354,7 @@ export async function runAssistantPanelTask({
           current,
           messageId,
           {
-            content: streamedAnswer,
+            content: visibleAnswer,
             note_proposals: assistantNoteProposals,
             parts: draftParts,
             tool_events: assistantToolEvents,
@@ -398,13 +364,13 @@ export async function runAssistantPanelTask({
       setConversation(applyDraft);
       syncAssistantBackgroundRunState({
         abortController: runAbortController,
-        conversation: applyDraft(getAssistantBackgroundRun()?.conversation ?? null),
+        conversation: applyDraft(getAssistantBackgroundRun(runAbortController)?.conversation ?? null),
         noteProposalsByMessageId: {
-          ...(getAssistantBackgroundRun()?.noteProposalsByMessageId ?? {}),
+          ...(getAssistantBackgroundRun(runAbortController)?.noteProposalsByMessageId ?? {}),
           [messageId]: assistantNoteProposals,
         },
         toolEventsByMessageId: {
-          ...(getAssistantBackgroundRun()?.toolEventsByMessageId ?? {}),
+          ...(getAssistantBackgroundRun(runAbortController)?.toolEventsByMessageId ?? {}),
           [messageId]: assistantToolEvents,
         },
       });
@@ -422,7 +388,23 @@ export async function runAssistantPanelTask({
     };
 
     const runEntries = entries;
-    const grounded = await runAssistantHarness({
+    const execute = localSession ? (options: Parameters<typeof runAssistantHarness>[0]) => runLocalAgentHarness(options, localSession!, session => {
+      if (!acceptingEvents || runAbortController.signal.aborted) return;
+      localSession = session;
+      persistAssistantDraft(true);
+    }) : runAssistantHarness;
+    const grounded = await execute({
+      resumeExecutionId,
+      applicationActions,
+      requestUserInput: async (request, signal) => {
+        try { return await requestUserInput(root, currentConversation.id)(request, signal); }
+        catch (error) { if (!signal?.aborted) runAbortController.abort(error); throw error; }
+      },
+      requestToolApproval: async (request, signal) => {
+        const approved = await requestToolApproval(root, currentConversation.id)(request, signal);
+        if (!approved) runAbortController.abort(new AgentStoppedError('用户已拒绝本次操作，任务已停止，未执行待确认操作。'));
+        return approved;
+      },
       abortSignal: runAbortController.signal,
       availableEntries: runEntries.map((entry) => ({
         description: entry.fields.description ?? "",
@@ -480,23 +462,28 @@ export async function runAssistantPanelTask({
         };
       },
       onDelta: (delta) => {
+        if (!acceptingEvents || runAbortController.signal.aborted) return;
         streamedAnswer += delta;
         scheduleStreamingDraft();
       },
       onAnswerReset: () => {
+        if (!acceptingEvents || runAbortController.signal.aborted) return;
         streamedAnswer = "";
         scheduleStreamingDraft();
       },
       onReasoningDelta: (delta) => {
+        if (!acceptingEvents || runAbortController.signal.aborted) return;
         streamedReasoning += delta;
         scheduleStreamingDraft();
       },
       onNoteProposal: undefined,
       onToolEvent: (event) => {
+        if (!acceptingEvents || runAbortController.signal.aborted) return;
         assistantToolEvents = mergeToolTraceEvent(assistantToolEvents, event);
         const messageId = persistedAssistantMessageId ?? assistantMessageId;
+        const visibleAnswer = visibleAssistantAnswer(streamedAnswer);
         const draftParts = buildAssistantMessageParts({
-          content: streamedAnswer,
+          content: visibleAnswer,
           noteProposals: assistantNoteProposals,
           reasoning: streamedReasoning,
           toolEvents: assistantToolEvents,
@@ -506,7 +493,7 @@ export async function runAssistantPanelTask({
             current,
             messageId,
             {
-              content: streamedAnswer,
+              content: visibleAnswer,
               note_proposals: assistantNoteProposals,
               parts: draftParts,
               tool_events: assistantToolEvents,
@@ -521,12 +508,12 @@ export async function runAssistantPanelTask({
         syncAssistantBackgroundRunState({
           abortController: runAbortController,
           conversation: applyDraft(
-            getAssistantBackgroundRun()?.conversation ?? null,
+            getAssistantBackgroundRun(runAbortController)?.conversation ?? null,
           ),
           noteProposalsByMessageId:
-            getAssistantBackgroundRun()?.noteProposalsByMessageId ?? {},
+            getAssistantBackgroundRun(runAbortController)?.noteProposalsByMessageId ?? {},
           toolEventsByMessageId: {
-            ...(getAssistantBackgroundRun()?.toolEventsByMessageId ?? {}),
+            ...(getAssistantBackgroundRun(runAbortController)?.toolEventsByMessageId ?? {}),
             [messageId]: assistantToolEvents,
           },
         });
@@ -539,6 +526,7 @@ export async function runAssistantPanelTask({
       settings: selectedProfile,
     });
 
+    acceptingEvents = false;
     if (streamRenderTimer !== null) {
       window.clearTimeout(streamRenderTimer);
       streamRenderTimer = null;
@@ -587,9 +575,19 @@ export async function runAssistantPanelTask({
             tool_events: finalToolEvents,
           },
         ]);
+    resultDelivered = true;
     const persistedAssistant = [...updated.messages]
       .reverse()
       .find((message) => message.role === "assistant");
+    if (grounded.executionId) {
+      try {
+        await acknowledgeExecution(root, grounded.executionId,
+          Boolean(finalNoteProposals.length || finalEntryMetaProposals.length || finalTagProposals.length));
+      } catch {
+        // The answer/proposals are already saved. Do not replace them with an error-only draft.
+        setError('结果已经保存，但任务完成状态未能确认。继续任务只会取回已有结果，不会重做已完成的操作。');
+      }
+    }
     if (grounded.agentRun) {
       void saveAgentRun(root, {
         answerPreview: grounded.answer,
@@ -622,30 +620,47 @@ export async function runAssistantPanelTask({
       noteProposalsByMessageId:
         persistedAssistant && finalNoteProposals.length > 0
           ? {
-              ...(getAssistantBackgroundRun()?.noteProposalsByMessageId ?? {}),
+              ...(getAssistantBackgroundRun(runAbortController)?.noteProposalsByMessageId ?? {}),
               [persistedAssistant.message_id]: finalNoteProposals,
             }
-          : (getAssistantBackgroundRun()?.noteProposalsByMessageId ?? {}),
+          : (getAssistantBackgroundRun(runAbortController)?.noteProposalsByMessageId ?? {}),
       streamingMessageId: null,
       toolEventsByMessageId:
         persistedAssistant && finalToolEvents.length > 0
           ? {
-              ...(getAssistantBackgroundRun()?.toolEventsByMessageId ?? {}),
+              ...(getAssistantBackgroundRun(runAbortController)?.toolEventsByMessageId ?? {}),
               [persistedAssistant.message_id]: finalToolEvents,
             }
-          : (getAssistantBackgroundRun()?.toolEventsByMessageId ?? {}),
+          : (getAssistantBackgroundRun(runAbortController)?.toolEventsByMessageId ?? {}),
     });
     setOptimisticMessages([]);
     setStreamingMessageId(null);
     setConversations(await listConversations(root));
   } catch (caught) {
+    acceptingEvents = false;
+    if (streamRenderTimer !== null) {
+      window.clearTimeout(streamRenderTimer);
+      streamRenderTimer = null;
+    }
+    // Drain already queued writes before saving the terminal state; otherwise a late
+    // streaming draft can overwrite the error/result after this task has ended.
+    await draftPersistPromise.catch(() => undefined);
+    if (resultDelivered) {
+      setError('结果已保存，但后续状态刷新失败。请重新打开对话查看，已保存的结果不会被覆盖。');
+      return;
+    }
     const failedAgentRun =
       caught instanceof AssistantHarnessError ? caught.agentRun : undefined;
+    const stopped = runAbortController.signal.aborted;
+    const stopMessage = '任务已停止，未继续执行后续操作。';
+    const terminalError = stopped ? null : caught instanceof Error ? caught.message : String(caught);
     if (root && persistedConversationId && persistedAssistantMessageId) {
       const conversationId = persistedConversationId;
       const assistantMessageId = persistedAssistantMessageId;
       const errorMessage = caught instanceof Error ? caught.message : String(caught);
-      const fallbackContent = streamedAnswer;
+      const visibleAnswer = visibleAssistantAnswer(streamedAnswer);
+      const fallbackContent = stopped ? [visibleAnswer, stopMessage].filter(Boolean).join('\n\n')
+        : rejectedAnswerContent(errorMessage, assistantToolEvents) ?? visibleAnswer;
       const fallbackParts = buildAssistantMessageParts({
         agentRun: failedAgentRun,
         content: fallbackContent,
@@ -654,7 +669,7 @@ export async function runAssistantPanelTask({
           caught instanceof AssistantHarnessError ? caught.taskState : undefined,
         toolEvents: assistantToolEvents,
       });
-      fallbackParts.push({
+      if (!stopped) fallbackParts.push({
         message: errorMessage,
         type: "error",
       });
@@ -669,15 +684,15 @@ export async function runAssistantPanelTask({
       syncAssistantBackgroundRunState({
         abortController: runAbortController,
         conversation: updateConversationMessageLocally(
-          getAssistantBackgroundRun()?.conversation ?? null,
+          getAssistantBackgroundRun(runAbortController)?.conversation ?? null,
           assistantMessageId,
           { content: fallbackContent, parts: fallbackParts, tool_events: assistantToolEvents },
           conversationId,
         ),
-        error: errorMessage,
+        error: terminalError,
         streamingMessageId: null,
       });
-      void updateConversationMessage(root, conversationId, assistantMessageId, {
+      await updateConversationMessage(root, conversationId, assistantMessageId, {
         content: fallbackContent,
         parts: fallbackParts,
         tool_events: assistantToolEvents,
@@ -697,17 +712,18 @@ export async function runAssistantPanelTask({
     }
     setOptimisticMessages([]);
     setStreamingMessageId(null);
-    setError(caught instanceof Error ? caught.message : String(caught));
+    setError(terminalError);
+    syncAssistantBackgroundRunState({ abortController: runAbortController,
+      error: terminalError, streamingMessageId: null });
   } finally {
+    acceptingEvents = false;
     if (streamRenderTimer !== null) {
       window.clearTimeout(streamRenderTimer);
     }
+    finishAssistantBackgroundRun(runAbortController);
     if (runAbortControllerRef.current === runAbortController) {
       runAbortControllerRef.current = null;
     }
-    setAssistantBackgroundRun((current) =>
-      current?.abortController === runAbortController ? null : current,
-    );
     setBusy(false);
   }
 }

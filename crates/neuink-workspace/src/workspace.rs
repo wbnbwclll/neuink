@@ -178,9 +178,18 @@ impl Workspace {
         entry_id: &EntryId,
         title: impl Into<String>,
     ) -> Result<EntryMeta, WorkspaceError> {
+        self.create_note_with_id(entry_id, NoteId::new(), title)
+    }
+
+    /// The caller can journal the identity before any files are created.
+    pub fn create_note_with_id(
+        &self,
+        entry_id: &EntryId,
+        note_id: NoteId,
+        title: impl Into<String>,
+    ) -> Result<EntryMeta, WorkspaceError> {
         let _guard = self.begin_tag_safe_mutation()?;
         let mut entry = self.read_entry_meta(entry_id)?;
-        let note_id = NoteId::new();
         let title = normalize_note_title(title.into());
         let note_path = self.layout.entry_note_file(entry_id, &note_id);
         if note_path.exists() {
@@ -505,20 +514,18 @@ impl Workspace {
         Ok(segments)
     }
 
-    pub(crate) fn resolve_source_segment(
+    pub fn resolve_source_segment(
         &self,
         entry_id: &EntryId,
         segment_uid: &SegmentUid,
     ) -> Result<SourceSegment, WorkspaceError> {
-        self.read_segments(entry_id)?
-            .into_iter()
-            .find(|segment| {
-                segment.uid == *segment_uid
-                    || segment
-                        .continuation_group_id
-                        .as_deref()
-                        .is_some_and(|group_id| group_id == segment_uid.as_str())
-            })
+        if segment_uid
+            .as_str()
+            .starts_with(crate::pdf_text::PDF_TEXT_PREFIX)
+        {
+            return self.resolve_pdf_text_segment(entry_id, segment_uid);
+        }
+        neuink_domain::find_source_segment(&self.read_segments(entry_id)?, segment_uid)
             .ok_or_else(|| WorkspaceError::SegmentMissing(segment_uid.to_string()))
     }
 
@@ -560,6 +567,10 @@ impl Workspace {
             ) {
                 self.read_segments(&entry.id)?
                     .into_iter()
+                    .flat_map(|segment| {
+                        let items = neuink_domain::list_item_segments(&segment);
+                        std::iter::once(segment).chain(items)
+                    })
                     .map(|segment| (segment.uid.clone(), segment))
                     .collect()
             } else {
@@ -702,9 +713,29 @@ impl Workspace {
         segment_uid: SegmentUid,
         text: String,
     ) -> Result<Vec<SegmentBlockNote>, WorkspaceError> {
+        self.upsert_segment_note_if_text(entry_id, segment_uid, text, None)
+    }
+
+    /// Compare and write under the same workspace lock used by manual saves.
+    pub fn upsert_segment_note_if_text(
+        &self,
+        entry_id: &EntryId,
+        segment_uid: SegmentUid,
+        text: String,
+        expected_text: Option<&str>,
+    ) -> Result<Vec<SegmentBlockNote>, WorkspaceError> {
+        let _guard = self.begin_tag_safe_mutation()?;
         validate_segment_note_text(&text)?;
         let segment_uid = self.resolve_source_segment(entry_id, &segment_uid)?.uid;
         let mut notes = self.read_segment_notes(entry_id)?;
+        let current = notes
+            .iter()
+            .find(|note| note.segment_uid == segment_uid)
+            .map(|note| note.text.as_str())
+            .unwrap_or_default();
+        if expected_text.is_some_and(|expected| expected != current) {
+            return Err(WorkspaceError::SegmentNoteConflict(current.to_string()));
+        }
         if let Some(note) = notes
             .iter_mut()
             .find(|note| note.segment_uid == segment_uid)
@@ -717,11 +748,40 @@ impl Workspace {
         Ok(notes)
     }
 
+    /// Bookmark metadata is changed independently of the note body, so a reader
+    /// cannot overwrite an editor's newer text when marking a position.
+    pub fn set_segment_note_bookmark(
+        &self,
+        entry_id: &EntryId,
+        segment_uid: SegmentUid,
+        bookmarked: bool,
+    ) -> Result<Vec<SegmentBlockNote>, WorkspaceError> {
+        let _guard = self.begin_tag_safe_mutation()?;
+        let mut notes = self.read_segment_notes(entry_id)?;
+        // Unmarking remains possible if a later parse removed the source.
+        let uid = if !bookmarked && notes.iter().any(|note| note.segment_uid == segment_uid) {
+            segment_uid
+        } else {
+            self.resolve_source_segment(entry_id, &segment_uid)?.uid
+        };
+        if let Some(note) = notes.iter_mut().find(|note| note.segment_uid == uid) {
+            note.bookmarked = bookmarked;
+            note.updated_at = Utc::now();
+        } else if bookmarked {
+            let mut note = SegmentBlockNote::new(uid, "");
+            note.bookmarked = true;
+            notes.push(note);
+        }
+        atomic_write_json(self.layout.entry_segment_notes_file(entry_id), &notes)?;
+        Ok(notes)
+    }
+
     pub fn delete_segment_note(
         &self,
         entry_id: &EntryId,
         segment_uid: SegmentUid,
     ) -> Result<Vec<SegmentBlockNote>, WorkspaceError> {
+        let _guard = self.begin_tag_safe_mutation()?;
         let segment_uid = self.resolve_source_segment(entry_id, &segment_uid)?.uid;
         let mut notes = self.read_segment_notes(entry_id)?;
         let deleted = notes
@@ -996,7 +1056,10 @@ impl Workspace {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
-    pub(crate) fn write_workspace_file(&self, workspace_file: &WorkspaceFile) -> Result<(), WorkspaceError> {
+    pub(crate) fn write_workspace_file(
+        &self,
+        workspace_file: &WorkspaceFile,
+    ) -> Result<(), WorkspaceError> {
         atomic_write_json(self.layout.workspace_file(), workspace_file)
     }
 
@@ -1776,6 +1839,8 @@ pub(crate) struct WorkspaceFile {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EntryTranslation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<TranslationTaskSnapshot>,
     pub schema_version: u16,
     pub entry_id: EntryId,
     pub source_language: String,
@@ -1790,6 +1855,17 @@ pub struct EntryTranslation {
     pub updated_at: chrono::DateTime<Utc>,
 }
 
+/// Durable task intent, never credentials. Removing this ends the task, not its output.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TranslationTaskSnapshot {
+    pub job_id: String,
+    pub profile_id: String,
+    pub force: bool,
+    pub source_hashes: std::collections::HashMap<SegmentUid, String>,
+    pub remaining_segment_uids: Vec<SegmentUid>,
+    pub created_at: chrono::DateTime<Utc>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranslationStatus {
@@ -1798,6 +1874,8 @@ pub enum TranslationStatus {
     Succeeded,
     Failed,
     Partial,
+    Paused,
+    Canceled,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

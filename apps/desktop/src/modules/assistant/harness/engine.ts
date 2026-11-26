@@ -1,3 +1,10 @@
+import type { ApplicationActions } from '../runtime/applicationActions';
+import type { RequestToolApproval } from '../runtime/toolApproval';
+import type { RequestUserInput } from '../runtime/userInput';
+import { runDurableHarness } from './durableHarness';
+import type { DurableExecution } from '../runtime/durableExecution';
+import type { RunBudget } from '../agent-core';
+import { MEMORY_PROMPT, resolveModelProfile } from '../sdk/modelTasks';
 import type {
   AssistantContextSnapshot,
   AssistantToolTraceEvent,
@@ -7,7 +14,6 @@ import type {
 } from '@/shared/ipc/assistantApi';
 import {
   getAssistantContextSnapshot,
-  listSkillPackages,
   loadAgentRuntimeSettings
 } from '@/shared/ipc/assistantApi';
 import type {
@@ -24,7 +30,6 @@ import type {
   AssistantTaskState
 } from '@/shared/types/assistant';
 import {
-  mergeRegistrySkillPackages,
   normalizeAgentRuntimeSettings,
   readAgentRuntimeSettings,
   selectAgentExecution
@@ -38,14 +43,12 @@ import { finalizeVerifiedProposals } from '../runtime/verifiedProposal';
 import { AssistantVerificationError } from './verification';
 import { verifyHarnessResult } from './verification';
 import { observeAssistantContext } from './context';
-import {
-  buildInvocationPlanForContract,
-  compileAssistantExecutionContract
-} from './executionContract';
-import { orchestrateAssistantTask } from './taskOrchestrator';
+import { buildDirectExecution } from '../runtime/executionPolicy';
+import { routeAssistantRequest, routeSummary, type RequestRoute } from '../runtime/requestRouter';
 import {
   appendConversationMemory,
   buildConversationTail,
+  shouldUpdateConversationMemory,
   updateConversationMemory
 } from './conversationMemory';
 import {
@@ -64,7 +67,13 @@ import {
 
 export { AssistantHarnessError } from './runState';
 
-type RunAssistantHarnessOptions = {
+export type RunAssistantHarnessOptions = {
+  budget?: RunBudget;
+  execution?: DurableExecution;
+  resumeExecutionId?: string;
+  applicationActions?: ApplicationActions;
+  requestToolApproval?: RequestToolApproval;
+  requestUserInput?: RequestUserInput;
   abortSignal?: AbortSignal;
   availableEntries?: AssistantEntryMetaTarget[];
   availableNotes?: unknown[];
@@ -98,11 +107,14 @@ type RunAssistantHarnessOptions = {
 };
 
 export async function runAssistantHarness(options: RunAssistantHarnessOptions): Promise<GroundedAnswer> {
+  return runDurableHarness(options, executeAssistantHarness);
+}
+
+async function executeAssistantHarness(options: RunAssistantHarnessOptions): Promise<GroundedAnswer> {
   const {
     abortSignal,
     assistantContext,
     availableEntries = [],
-    availableNotes = [],
     contextPlan,
     composerSnapshot,
     conversationHistory = [],
@@ -155,14 +167,33 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
       title: 'Observe explicit UI context'
     });
 
-    const snapshot = await getAssistantContextSnapshot({
+    const route = options.execution?.get<RequestRoute>('requestRoute') ?? await routeAssistantRequest({
+      question,
+      history: conversationHistory,
+      legacyPlan: composerSnapshot?.executionMode === 'plan',
+      hasContext: Boolean(observed.activeEntryId || observed.activeNote || observed.activeSegment ||
+        currentSurface?.browserTab ||
+        observed.pinnedSegments.length || assistantContext?.items.length ||
+        composerSnapshot?.mentions.length || contextPlan?.items.length || contextPlan?.editTarget ||
+        options.destinationEntryId || preferredAgentId),
+    }, abortSignal);
+    options.execution?.set('requestRoute', route);
+    emitHarnessEvent(onToolEvent, {
+      id: `${runId}-route`, status: 'done', toolName: 'agent.route',
+      summary: routeSummary(route), input: { ...route },
+    });
+    const snapshot = options.execution?.get<AssistantContextSnapshot>('contextSnapshot') ??
+      (route.path === 'lightweight_chat'
+        ? { active_entry: null, active_note: null, document: null, pinned_segments: [], warnings: [] }
+        : await getAssistantContextSnapshot({
       activeEntryId: observed.activeEntryId,
       activeNote: observed.activeNote,
       documentCharBudget: assistantContextCharBudget(settings.max_context_length),
       noteCharBudget: assistantNoteCharBudget(settings.max_context_length),
       pinnedSegments: observed.pinnedSegments,
       root
-    });
+    }));
+    options.execution?.set('contextSnapshot', snapshot);
     recordNode(agentRun, onToolEvent, {
       id: `${runId}-hydrate`,
       kind: 'hydrate',
@@ -173,87 +204,18 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
     throwIfAborted(abortSignal);
 
     const runtimeSettings = await loadWorkspaceAgentRuntimeSettings(root);
-    agentRun.subagentTaskCount += 1;
-    upsertRunNode(agentRun, {
-      agentId: 'task-orchestrator-agent',
-      id: `${runId}-orchestrate`,
-      inputSummary: `goal=${question.slice(0, 180)}`,
-      kind: 'subagent',
-      status: 'running',
-      title: 'Understand task and select capabilities'
-    });
-    emitHarnessEvent(onToolEvent, {
-      id: `${runId}-orchestrate`,
-      status: 'running',
-      summary: '正在理解用户目标、当前上下文和所需能力。',
-      toolName: 'agent.orchestrate'
-    });
-    const orchestration = await orchestrateAssistantTask({
-      availableEntries,
-      availableNotes,
-      composerSnapshot,
-      contextPlan,
-      conversationHistory,
-      profiles,
-      question,
-      runtimeSettings,
-      scope: mentionScope ?? scope,
-      settings,
-      snapshot,
-    });
-    upsertRunNode(agentRun, {
-      agentId: orchestration.orchestratorAgentId,
-      id: `${runId}-orchestrate`,
-      kind: 'subagent',
-      outputSummary: `intent=${orchestration.plan.intent}, tools=${orchestration.requiredToolIds.join(',') || 'none'}`,
-      status: 'succeeded',
-      title: 'Understand task and select capabilities'
-    });
-    emitHarnessEvent(onToolEvent, {
-      id: `${runId}-orchestrate`,
-      status: 'done',
-      summary: `已识别任务意图：${orchestration.plan.intent}。`,
-      toolName: 'agent.orchestrate'
-    });
-    const contract = compileAssistantExecutionContract(orchestration);
-    const plan = contract.plan;
-    const invocationPlan = buildInvocationPlanForContract(
-      contract,
-      runtimeSettings,
-      preferredAgentId
+    // Recompute grants on resume. A checkpoint never authorizes tools that have
+    // since been disabled, and the frozen composer owns the per-request mode.
+    const { plan, invocationPlan } = buildDirectExecution(
+      runtimeSettings, question, composerSnapshot?.executionMode ?? 'act', route
     );
-    activeTaskState = createCompiledTaskState({
+    activeTaskState = options.execution?.get<AssistantTaskState>('initialTaskState') ?? createCompiledTaskState({
       conversationId: conversationId ?? 'local',
       request: question,
       spec: plan
     });
-    recordNode(agentRun, onToolEvent, {
-      id: `${runId}-plan`,
-      kind: 'planner',
-      summary: `orchestrator=${orchestration.orchestratorAgentId}, intent=${plan.intent}, requiredTools=${contract.requiredToolIds.join(',') || 'none'}, sourcePolicy=${contract.sourcePolicy}`,
-      title: 'Orchestrate and compile execution contract'
-    });
-    if (plan.missing.length > 0) {
-      const answer = plan.clarificationQuestion ?? `当前任务缺少必要上下文：${plan.missing.join(', ')}。`;
-      const awaitingTaskState = transitionTaskState(
-        activeTaskState,
-        'awaiting_user',
-        'compile'
-      );
-      onDelta?.(answer);
-      return {
-        agentRun: finishAgentRun(agentRun, 'succeeded'),
-        answer,
-        plan,
-        sources: [],
-        taskState: awaitingTaskState
-      };
-    }
-    if (invocationPlan.missing.length > 0) {
-      throw new Error(
-        `当前 Agent 未启用完成此任务所需的工具：${invocationPlan.missing.join(', ')}。请在 Agent 工具配置中启用后重试。`
-      );
-    }
+    options.execution?.set('initialTaskState', activeTaskState);
+    await options.execution?.flush();
     const activeExecution = selectAgentExecution(
       runtimeSettings,
       question,
@@ -261,8 +223,7 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
       preferredAgentId,
       invocationPlan
     );
-    const executionProfile =
-      profiles.find((profile) => profile.id === activeExecution.agent.llmProfileId) ?? settings;
+    const executionProfile = resolveModelProfile(activeExecution.agent.llmProfileId, profiles, settings);
     agentRun.invocationMode = 'agent_execute';
     agentRun.mainAssistantId = activeExecution.agent.id;
     upsertRunNode(agentRun, {
@@ -271,23 +232,31 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
       inputSummary: `goal=${question.slice(0, 180)}`,
       kind: 'main_assistant',
       status: 'running',
-      title: 'Run model-driven Agent loop'
+      title: plan.executionMode === 'plan' ? 'Read-only planning in the main Agent' : 'Run model-driven Agent loop'
     });
     emitHarnessEvent(onToolEvent, {
       id: `${runId}-loop`,
       input: { goal: question },
       status: 'running',
-      summary: 'Agent is deciding whether to answer, ask naturally, load a Skill, or use a tool.',
-      toolName: 'agent.loop'
+      summary: 'Agent is deciding whether to answer, ask naturally, or use a tool.',
+      toolName: plan.executionMode === 'plan' ? 'agent.plan' : 'agent.loop'
     });
 
     let streamedAnswer = false;
+    abortSignal?.throwIfAborted();
+    const delegatedCalls = new Set<string>();
     const grounded = await answerWithGroundedAgent({
+      budget: options.budget,
+      execution: options.execution,
+      applicationActions: options.applicationActions,
+      requestToolApproval: options.requestToolApproval,
+      requestUserInput: options.requestUserInput,
       abortSignal,
       activeExecution,
       assistantContext,
       availableEntries,
       contextSnapshot: snapshot,
+      browserTabTarget: currentSurface?.kind === 'browser' ? currentSurface.browserTab : null,
       conversationHistory,
       currentEntry: snapshot.active_entry
         ? { id: snapshot.active_entry.entry_id, title: snapshot.active_entry.entry_title }
@@ -296,6 +265,7 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
       harnessBrief: modelDrivenBrief({
         composerSnapshot,
         contextPlan,
+        currentSurface,
         history: conversationHistory,
         mentionScope: mentionScope ?? scope,
         tagMentionScopes
@@ -315,7 +285,18 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
           }
         : undefined,
       onReasoningDelta,
-      onToolEvent,
+      onToolEvent: (event) => {
+        if (event.toolName === 'task.run_subagent') {
+          delegatedCalls.add(event.id);
+          agentRun.subagentTaskCount = delegatedCalls.size;
+          upsertRunNode(agentRun, {
+            id: `${runId}-${event.id}`, kind: 'subagent', title: 'Delegated task',
+            status: event.status === 'done' ? 'succeeded' : event.status === 'error' ? 'failed' : 'running',
+            outputSummary: event.summary, error: event.error, sourceCount: event.sources?.length
+          });
+        }
+        onToolEvent?.(event);
+      },
       plan,
       profiles,
       question,
@@ -337,6 +318,9 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
     }
     verifyGroundedProposals({
       composerSnapshot,
+      assistantContext,
+      contextPlan,
+      currentSurface,
       history: conversationHistory,
       proposals: grounded.noteProposals ?? [],
       sources: grounded.sources
@@ -359,52 +343,56 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
           ...activeTaskState,
           evidenceLedger: registerEvidence(activeTaskState.evidenceLedger, grounded.sources)
         },
-        proposalIds.length > 0 ? 'awaiting_approval' : 'completed',
+        proposalIds.length > 0 ? 'awaiting_approval' : plan.executionMode === 'plan' ? 'awaiting_user' : 'completed',
         proposalIds.length > 0 ? 'propose' : 'verify',
         proposalIds
       ),
       agentLoopState: grounded.agentLoopState
     };
     activeTaskState = nextTaskState;
-    const memoryAgent = runtimeSettings.subagents.find(
-      (agent) => agent.id === 'memory-agent' && agent.enabled
-    );
-    if (memoryAgent) {
-      agentRun.subagentTaskCount += 1;
+    if (shouldUpdateConversationMemory(conversationHistory, question, grounded.answer)) {
       upsertRunNode(agentRun, {
-        agentId: memoryAgent.id,
+        agentId: 'conversation-memory',
         id: `${runId}-memory`,
-        kind: 'subagent',
+        kind: 'planner',
         status: 'running',
         title: 'Update semantic memory checkpoint'
       });
-      const memoryProfile = profiles.find(
-        (profile) => profile.id === memoryAgent.llmProfileId
-      ) ?? settings;
+      const memoryProfile = settings;
+      emitHarnessEvent(onToolEvent, {
+        id: `${runId}-memory`, status: 'running', toolName: 'agent.memory',
+        summary: '对话达到记忆整理阈值，正在保存摘要。'
+      });
       try {
         grounded.conversationMemory = await updateConversationMemory({
+          budget: options.budget,
+          abortSignal,
           answer: grounded.answer,
           history: conversationHistory,
           pendingProposalCount: proposalIds.length,
           question,
           settings: memoryProfile,
           sourceCount: grounded.sources.length,
-          systemPrompt: memoryAgent.systemPrompt
+          systemPrompt: MEMORY_PROMPT
+        });
+        emitHarnessEvent(onToolEvent, {
+          id: `${runId}-memory`, status: 'done', toolName: 'agent.memory', summary: '对话摘要已整理。'
         });
         upsertRunNode(agentRun, {
-          agentId: memoryAgent.id,
+          agentId: 'conversation-memory',
           id: `${runId}-memory`,
-          kind: 'subagent',
+          kind: 'planner',
           outputSummary: `summary=${grounded.conversationMemory.summary.slice(0, 180)}`,
           status: 'succeeded',
           title: 'Update semantic memory checkpoint'
         });
       } catch (memoryError) {
+        throwIfAborted(abortSignal);
         upsertRunNode(agentRun, {
-          agentId: memoryAgent.id,
+          agentId: 'conversation-memory',
           error: errorMessage(memoryError),
           id: `${runId}-memory`,
-          kind: 'subagent',
+          kind: 'planner',
           status: 'failed',
           title: 'Update semantic memory checkpoint'
         });
@@ -430,18 +418,18 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
       id: `${runId}-loop`,
       status: 'done',
       summary: 'Agent reached a terminal response for this turn.',
-      toolName: 'agent.loop'
+      toolName: plan.executionMode === 'plan' ? 'agent.plan' : 'agent.loop'
     });
     if (!streamedAnswer) onDelta?.(grounded.answer);
     return {
       ...grounded,
       agentRun: finishAgentRun(agentRun, 'succeeded'),
-      plan,
+      // No invented workflow steps in the UI; a requested plan is the actual answer.
       taskState: nextTaskState
     };
   } catch (error) {
     const message = errorMessage(error);
-    const canceled = isAbortError(error);
+    const canceled = Boolean(abortSignal?.aborted) || isAbortError(error);
     if (canceled) {
       markRunningNodesCanceled(agentRun, message);
       finishAgentRun(agentRun, 'canceled');
@@ -463,17 +451,24 @@ export async function runAssistantHarness(options: RunAssistantHarnessOptions): 
 export function modelDrivenBrief({
   composerSnapshot,
   contextPlan,
+  currentSurface,
   history,
   mentionScope,
   tagMentionScopes
 }: {
   composerSnapshot?: AssistantComposerSnapshot | null;
   contextPlan?: AssistantContextPlan | null;
+  currentSurface?: AssistantActiveSurfaceSnapshot | null;
   history: ConversationMessage[];
   mentionScope: ScopeSnapshot;
   tagMentionScopes?: Record<string, ScopeSnapshot>;
 }) {
   const transcript = buildConversationTail(history);
+  const lastDiagram = [...history].reverse().flatMap(message => [...(message.parts ?? [])].reverse())
+    .find(part => part.type === 'tool-result' && part.diagram);
+  const previousDiagram = lastDiagram?.type === 'tool-result' && lastDiagram.diagram
+    ? `Previous host-rendered diagram (${lastDiagram.diagram.kind}, ${JSON.stringify(lastDiagram.diagram.title)}):\n\`\`\`mermaid\n${lastDiagram.diagram.code.slice(0, 12000)}\n\`\`\`\nThis is a prior output artifact, not evidence. When the user asks to append that diagram, reuse its exact code and first read the selected destination note before proposing a change.`
+    : '';
   const mentionMap = formatMentionMap(composerSnapshot, mentionScope, tagMentionScopes);
   const historicalMentionMaps = history
     .filter((message) => message.role === 'user')
@@ -497,15 +492,21 @@ export function modelDrivenBrief({
   return appendConversationMemory([
     'Use a model-driven Agent loop. Interpret all user replies as natural language; never require fixed phrases, regex slots, or magic retry wording.',
     'Answer directly when no external observation or side effect is needed. Naming, summarization, wording, planning, and deciding whether to ask are model-native cognition, not tools.',
-    'Call tools only for workspace observation, deterministic computation, Skill loading, or an authorized side effect. For "name and create", choose the name internally and call create_entry once. For title suggestions only, answer without tools.',
-    'For note and metadata writes, create reviewable proposals. For paper-grounded content, read evidence and include source_markers in the proposal.',
+    'Call tools only for workspace observation, deterministic computation, or an authorized side effect. For "name and create", choose the name internally and call create_entry once. For title suggestions only, answer without tools.',
+    'For note and metadata writes, create reviewable proposals. For paper-grounded content, read evidence and include source_markers in the proposal. In Markdown notes, also put [S#] inline beside each supported claim or list item (inside inserted/replacement text for patches). Never collect markers at the end; source_markers is metadata, not citation placement.',
+    'Every state-changing action requires explicit confirmation in the application UI. Proposal creation is NOT application. create_entry, app_set_appearance and external MCP calls pause for user confirmation before execution. Never claim success before a successful tool result, never infer confirmation from conversation text, and never bypass or repeat a rejected action.',
     'Resolve every [C<number>] token through the Typed Mention Map below. Never search for literal C1/C2 marker text. A TagScope is already expanded into the frozen read scope. When the user asks to place, organize, or save output into an Entry/Overall reference, call note_propose_create with that reference entry_id; an Entry/Overall is a destination container, not an existing selected note.',
     'For requests to read or summarize the papers under a TagScope, treat the resolved Entry list as exhaustive: call read_entry_assistant_context for each relevant Entry. A zero-result keyword/semantic search does not prove that scoped Entries have no parsed content.',
+    'PDF parsing is not required for basic reading. For unparsed Entries use read_pdf_pages or search_pdf_text (read_entry_assistant_context also falls back automatically). Preserve actual page citations, read further pages when necessary, and disclose OCR, layout or partial-coverage limits. Never mark a PDF as fully parsed or read based on this fallback.',
     mentionMap ? `Current Typed Mention Map:\n${mentionMap}` : 'Current Typed Mention Map: none',
+    currentSurface?.kind === 'browser' && currentSurface.browserTab
+      ? 'The submitted browser tab is the current reading target. Historical paper mentions below describe prior requests, not an instruction to include those papers in this webpage task. Current explicit paper, tag and excerpt attachments still apply. If the user actually continues an earlier paper task, read and cite its evidence again.'
+      : '',
     historicalMentionMaps ? `Historical Typed Mention Maps available for continuation:\n${historicalMentionMaps}` : '',
     taskObservation,
     contextPlan?.summary ? `UI context summary (informational only; the Agent decides semantic roles): ${contextPlan.summary}` : '',
-    transcript ? `Recent conversation:\n${transcript}` : ''
+    transcript ? `Recent conversation:\n${transcript}` : '',
+    previousDiagram
   ].filter(Boolean).join('\n\n'), history);
 }
 
@@ -537,16 +538,25 @@ function activeNote(snapshot: AssistantContextSnapshot): AssistantActiveNote | n
 
 export function verifyGroundedProposals({
   composerSnapshot,
+  assistantContext,
+  contextPlan,
+  currentSurface,
   history = [],
   proposals,
   sources
 }: {
   composerSnapshot?: AssistantComposerSnapshot | null;
+  assistantContext?: AssistantContext | null;
+  contextPlan?: AssistantContextPlan | null;
+  currentSurface?: AssistantActiveSurfaceSnapshot | null;
   history?: ConversationMessage[];
   proposals: AssistantNoteProposal[];
   sources: GroundedAnswer['sources'];
 }) {
-  const historicalMentions = history.flatMap((message) => (message.parts ?? []).flatMap((part) =>
+  const browserTarget = currentSurface?.kind === 'browser' && Boolean(currentSurface.browserTab);
+  // A newly submitted webpage does not inherit evidence obligations from old paper requests.
+  // Current attachments and sources acquired in this run retain their normal citation checks.
+  const historicalMentions = browserTarget ? [] : history.flatMap((message) => (message.parts ?? []).flatMap((part) =>
     part.type === 'context-snapshot' ? part.composer?.mentions ?? [] : []
   ));
   const hasEvidenceReference = [
@@ -554,8 +564,12 @@ export function verifyGroundedProposals({
     ...historicalMentions
   ].some((mention) =>
     mention.kind === 'tag' || mention.kind === 'pdf' || mention.kind === 'reflow' ||
-    mention.kind === 'segment' || mention.kind === 'overview'
-  );
+    mention.kind === 'segment' || mention.kind === 'overview' || mention.role === 'evidence'
+  ) || Boolean(browserTarget && (
+    assistantContext?.items.some(item => item.kind === 'segment' || (item.kind === 'entry' && ['pdf', 'reflow', 'overview'].includes(item.contentKind ?? ''))) ||
+    contextPlan?.items.some(item => item.role !== 'edit_target' &&
+      (['pdf', 'reflow', 'segment', 'overview'].includes(item.kind) || (item.role === 'evidence' && item.kind !== 'note')))
+  ));
   if (!hasEvidenceReference && sources.length === 0) return;
   const invalid = proposals.find(
     (proposal) =>
@@ -598,15 +612,11 @@ function recordNode(
 
 async function loadWorkspaceAgentRuntimeSettings(root: string) {
   try {
-    const [workspaceSettings, registrySkills] = await Promise.all([
-      loadAgentRuntimeSettings(root),
-      listSkillPackages(root)
-    ]);
-    return mergeRegistrySkillPackages(
-      normalizeAgentRuntimeSettings(workspaceSettings ?? readAgentRuntimeSettings()),
-      registrySkills
-    );
+    const workspaceSettings = await loadAgentRuntimeSettings(root);
+    return normalizeAgentRuntimeSettings(workspaceSettings ?? readAgentRuntimeSettings());
   } catch {
-    return normalizeAgentRuntimeSettings(readAgentRuntimeSettings());
+    // Missing configuration is represented by null above. An I/O/parse failure is
+    // not permission to replace the workspace's grants with installation defaults.
+    throw new Error('无法读取资料库的 Agent 权限配置，任务已停止。请检查资料库后重试，系统不会改用默认权限执行。');
   }
 }

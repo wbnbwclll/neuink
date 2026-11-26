@@ -1,9 +1,17 @@
+import { workspaceStorageIdentity } from '@/shared/lib/workspaceStorageIdentity';
+import { findSourceSegment } from '@/shared/lib/listItemSegments';
+import type { ComponentProps } from 'react';
+import { readingAssistantContext } from '../readingAssistantContext';
+import { translateTextSelection } from '../../translation/entryTranslation';
+import { ReadingNavigationScope, useReadingNavigation } from '../navigation/ReadingNavigation';
+import { ReadingNavigationControls } from '../navigation/ReadingNavigationControls';
 import { buildSegmentNoteLookup } from '../pdf-reader/segmentNoteLookup';
 import { useReadingSession } from '../../parallel-reading/ReadingSessionContext';
 import { ListRestart, Loader2 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import {
   Select,
   SelectContent,
@@ -14,13 +22,13 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { translateEntrySegment, type PdfReaderResponse } from '@/shared/ipc/workspaceApi';
 import { useToast } from '@/shared/hooks/useToast';
-import type { ReaderPreferences } from '@/shared/lib/readerPreferences';
+import { reflowDisplayOptions, withReflowDisplayOptions, type ReaderPreferences, type ReflowOriginalDisplay } from '@/shared/lib/readerPreferences';
 import { formatSourceLinkClipboardMarker } from '@/shared/lib/sourceLinkClipboard';
 import type { AssistantContextAddOptions, AssistantContextInput } from '@/shared/types/assistant';
 import type { Annotation, AnnotationId, AnnotationImportance, AnnotationTextSelection, SegmentBlockNote, SourceLink, SourceSegment } from '@/shared/types/domain';
 
 import type { LibraryEntry } from '../../../library/components/LibrarySidebar';
-import type { MarkdownNoteTarget, SourceBacklink, SourceBacklinksBySegmentUid } from '../../types';
+import type { MarkdownNoteTarget, PdfJumpRequest, SourceBacklink, SourceBacklinksBySegmentUid } from '../../types';
 import {
   useEntryTranslationTask,
   type TranslationRunStrategy,
@@ -61,8 +69,9 @@ const SEGMENT_FLASH_DURATION_MS = 1200;
 
 const REFLOW_HIDDEN_SEGMENTS_STORAGE_KEY = 'neuink.reader.reflowHiddenSegments';
 
-export function ReflowEntryReader({
+function ReflowEntryReaderBody({
   entry,
+  recordReloadKey = 0,
   editorScopeKey,
   pairedMarkdownNoteTarget,
   readerPreferences,
@@ -82,10 +91,13 @@ export function ReflowEntryReader({
   onOpenAnnotationsSurface,
   syncSegmentUid: externalSyncSegmentUid,
   syncRequestKey: externalSyncRequestKey,
+  syncSentenceIndex,
+  jumpRequest,
   onSegmentClick
   , suppressClickOverlay = false
 }: {
   entry: LibraryEntry;
+  recordReloadKey?: number;
   editorScopeKey: string;
   pairedMarkdownNoteTarget: MarkdownNoteTarget | null;
   readerPreferences: ReaderPreferences;
@@ -112,15 +124,19 @@ export function ReflowEntryReader({
   onOpenAnnotationsSurface: (segmentUid: string) => void;
   syncSegmentUid?: string | null;
   syncRequestKey?: number;
+  syncSentenceIndex?: number;
+  jumpRequest?: PdfJumpRequest | null;
   onSegmentClick?: (segment: SourceSegment) => void;
   suppressClickOverlay?: boolean;
 }) {
   const { notify } = useToast();
   const readingSession = useReadingSession();
-  const syncRequestKey = readingSession?.jump?.requestKey ?? externalSyncRequestKey;
+  const readingJump = jumpRequest ?? readingSession?.jump;
+  const syncRequestKey = readingJump?.requestKey ?? externalSyncRequestKey;
   const [paperExportOpen, setPaperExportOpen] = useState(false);
   const { annotations, loadState, segmentNotes, setAnnotations, setSegmentNotes } = usePdfReaderData({
     entry,
+    recordReloadKey,
     onReadPdfReader
   });
   const [selectedSegmentUid, setSelectedSegmentUid] = useState<string | null>(null);
@@ -134,19 +150,22 @@ export function ReflowEntryReader({
   const [sourceLinkBusySegmentUid, setSourceLinkBusySegmentUid] = useState<string | null>(null);
   const [translatingSegmentUid, setTranslatingSegmentUid] = useState<string | null>(null);
   const [pdfDocumentRequested, setPdfDocumentRequested] = useState(false);
+  const requirePdfDocument = useCallback(() => setPdfDocumentRequested(true), []);
   const [hiddenSegmentUids, setHiddenSegmentUids] = useState<Set<string>>(
     () => readStoredHiddenSegmentUids(entry.id)
   );
   const handledTranslationJobKeyRef = useRef<string | null>(null);
 
   const segments = loadState.status === 'ready' ? loadState.data.segments : [];
-  const syncSegmentUid = readingSession?.jump ? (readingSession.jump.kind === 'page'
-    ? segments.find((segment) => segment.page_idx === readingSession.jump?.pageIdx)?.uid
-    : readingSession.jump.segmentUid) : externalSyncSegmentUid;
+  const syncSegmentUid = readingJump ? (readingJump.kind === 'page' ? undefined : readingJump.segmentUid) : externalSyncSegmentUid;
   const {
     activeJob: translationJob,
     currentJobKey: translationJobKey,
     pauseTranslation: pauseTranslationTask,
+    cancelTranslation: cancelTranslationTask,
+    resumeTranslation: resumeTranslationTask,
+    translationPaused,
+    stopPending: translationStopPending,
     startTranslation: startTranslationTask,
     translation,
     translationBusy,
@@ -194,11 +213,8 @@ export function ReflowEntryReader({
       ),
     [translation]
   );
-  const hasTranslation = Boolean(
-    translation?.segments.some((segment) => segment.status === 'translated')
-  );
   const overlaySegment = notePopoverSegmentUid
-    ? segments.find((segment) => segment.uid === notePopoverSegmentUid) ?? null
+    ? findSourceSegment(segments, notePopoverSegmentUid) ?? null
     : null;
   const hiddenSegments = useMemo(
     () => segments.filter((segment) => hiddenSegmentUids.has(segment.uid)),
@@ -267,6 +283,7 @@ export function ReflowEntryReader({
       return;
     }
     if (translationJob.status === 'processing' || translationJob.status === 'queued') {
+      handledTranslationJobKeyRef.current = null;
       return;
     }
 
@@ -282,10 +299,10 @@ export function ReflowEntryReader({
       return;
     }
 
-    if (translationJob.status === 'canceled') {
+    if (translationJob.status === 'canceled' || translationJob.status === 'paused') {
       notify({
-        title: '已暂停翻译',
-        description: '已保留当前翻译进度，可稍后继续。'
+        title: translationJob.status === 'paused' ? '已暂停翻译' : '已取消翻译任务',
+        description: translationJob.status === 'paused' ? '任务已保留，点击“继续翻译”接着处理剩余内容。' : '未完成部分已取消，已有译文保留。'
       });
       return;
     }
@@ -395,9 +412,18 @@ export function ReflowEntryReader({
     }
   };
 
-  const updateReflowTranslationMode = (mode: ReaderPreferences['reflowTranslationMode']) => {
-    onReaderPreferencesChange({ ...readerPreferences, reflowTranslationMode: mode });
+  const cancelTranslation = async () => {
+    if (!translationBusy && !translationPaused) return;
+    try { await cancelTranslationTask(); }
+    catch { notify({ tone: 'danger', title: '取消翻译失败', description: '暂时无法取消翻译，请重试。' }); }
   };
+
+  const resumeTranslation = async () => {
+    try { await resumeTranslationTask(); }
+    catch (error) { notify({ tone: 'danger', title: '继续翻译失败', description: String(error) }); }
+  };
+
+  const displayOptions = reflowDisplayOptions(readerPreferences);
   const activateSegmentFromClick = useGuardedSegmentAction((segment) => {
     if (!activateSegment(segment)) return;
     onSegmentClick?.(segment);
@@ -410,7 +436,7 @@ export function ReflowEntryReader({
 
   useEffect(() => {
     if (!syncSegmentUid) return;
-    const segment = segments.find((item) => item.uid === syncSegmentUid || item.continuation_group_id === syncSegmentUid);
+    const segment = findSourceSegment(segments, syncSegmentUid);
     if (!segment) return;
     setSelectedSegmentUid(segment.uid);
     setFlashSegmentUid(segment.uid);
@@ -523,37 +549,44 @@ export function ReflowEntryReader({
 
   if (loadState.status === 'loading' || loadState.status === 'idle') {
     return (
-      <ReaderMessage
+      <div data-guide="reflow-reader" className="size-full"><ReaderMessage
         icon={<Loader2 className="animate-spin" size={22} aria-hidden="true" />}
         title="正在加载重排版"
         description="正在加载已解析的 MinerU 原文片段和片段笔记。"
-      />
+      /></div>
     );
   }
 
   if (loadState.status === 'error') {
     return (
-      <ReaderMessage
+      <div data-guide="reflow-reader" className="size-full"><ReaderMessage
         title="无法打开重排版"
         description={loadState.error}
         tone="danger"
-      />
+      /></div>
     );
   }
 
   return (
-    <div className="relative grid size-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-muted/30">
-      <ReflowToolbar compact={Boolean(readingSession)} busy={translationBusy} entryTitle={entry.title}
+    <div data-guide="reflow-reader" className="relative grid size-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-muted/30">
+      <ReflowToolbar navigation={<ReadingNavigationControls segments={segments} entryId={entry.id} workspaceRoot={workspaceRoot} />} compact={Boolean(readingSession)} busy={translationBusy} entryTitle={entry.title}
         appearance={<ReflowAppearanceControls
           compact={Boolean(readingSession)}
           preferences={readerPreferences}
           onChange={onReaderPreferencesChange}
         />}
-        translationMode={hasTranslation ? <Select value={readerPreferences.reflowTranslationMode}
-          onValueChange={(value) => updateReflowTranslationMode(value as ReaderPreferences['reflowTranslationMode'])}>
-          <SelectTrigger className="w-[116px]" size="sm" aria-label="原文与译文显示"><SelectValue /></SelectTrigger>
-          <SelectContent><SelectItem value="source">原文</SelectItem><SelectItem value="translation">译文</SelectItem><SelectItem value="bilingual">双语对照</SelectItem></SelectContent>
-        </Select> : null}
+        translationMode={segments.length > 0 ? <div className="reflow-toolbar-translation flex min-w-0 shrink-0 items-center gap-2">
+          <Select value={displayOptions.original} onValueChange={value => onReaderPreferencesChange(withReflowDisplayOptions(
+            readerPreferences, value as ReflowOriginalDisplay, displayOptions.translation))}>
+            <SelectTrigger className="w-[108px]" size="sm" aria-label="原文显示格式"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="hidden">不显示</SelectItem><SelectItem value="original">原文</SelectItem><SelectItem value="sentences">逐句</SelectItem></SelectContent>
+          </Select>
+          <label className="flex shrink-0 items-center gap-1.5 text-xs text-foreground">
+            <Switch aria-label="显示翻译" checked={displayOptions.translation}
+              onCheckedChange={checked => onReaderPreferencesChange(withReflowDisplayOptions(readerPreferences, displayOptions.original, checked))} />
+            <span>翻译</span>
+          </label>
+        </div> : null}
       >
         <ReflowComponentControls
           preferences={readerPreferences}
@@ -567,10 +600,13 @@ export function ReflowEntryReader({
         />
 
         {translationBusy ? (
-          <Button size="sm" type="button" variant="outline" onClick={() => void pauseTranslation()}>
+          <Button disabled={Boolean(translationStopPending)} size="sm" type="button" variant="outline" onClick={() => void pauseTranslation()}>
             暂停
           </Button>
         ) : null}
+
+        {translationPaused ? <Button disabled={Boolean(translationStopPending)} size="sm" onClick={() => void resumeTranslation()}>继续翻译</Button> : null}
+        {translationBusy || translationPaused ? <Button disabled={Boolean(translationStopPending)} size="sm" type="button" variant="outline" onClick={() => void cancelTranslation()}>取消翻译</Button> : null}
 
         {segments.length > 0 ? (
           <Button aria-label="导出论文内容" size="sm" type="button" variant="outline" onClick={() => setPaperExportOpen(true)}>
@@ -607,6 +643,7 @@ export function ReflowEntryReader({
           hoverPreviewShowTranslation={readerPreferences.hoverPreviewShowTranslation}
           hoverPreviewShowNote={readerPreferences.hoverPreviewShowNote}
           hoverPreviewShowAnnotation={readerPreferences.hoverPreviewShowAnnotation}
+          paperReferenceHoverEnabled={readerPreferences.paperReferenceHoverEnabled && !readingSession?.resizing}
           notesBySegmentUid={notesBySegmentUid}
           pdfDocument={pdfState.status === 'ready' ? pdfState.document : null}
           reflowBackgroundColor={readerPreferences.reflowBackgroundColor}
@@ -618,6 +655,9 @@ export function ReflowEntryReader({
           sourceLinkCountBySegmentUid={sourceLinkCountBySegmentUid}
           sourceBacklinksBySegmentUid={sourceBacklinksBySegmentUid}
           scrollRequestKey={syncRequestKey}
+          scrollSentenceIndex={syncSentenceIndex}
+          jumpRequest={readingJump}
+          localScrollRequest={Boolean(readingJump?.targetSurfaceKey)}
           scrollToSegmentUid={syncSegmentUid}
           translationBySegmentUid={translationBySegmentUid}
           workspaceRoot={workspaceRoot}
@@ -639,20 +679,17 @@ export function ReflowEntryReader({
             setNotePopoverSegmentUid(segment.uid);
             setSegmentOverlayOpen(true);
           }}
-          onRequirePdfDocument={() => setPdfDocumentRequested(true)}
+          onRequirePdfDocument={requirePdfDocument}
+          pdfPreviewError={pdfBytesState.error ?? pdfState.error ?? (!pdfPath ? "原 PDF 不可用" : null)}
+          onRetryPdfPreview={pdfBytesState.retry}
           onHideSegment={hideSegment}
           onAddSourceLink={readingSession ? (readingSession.note ? addSourceLink : undefined) : pairedMarkdownNoteTarget ? addSourceLink : undefined}
           onCopyContent={copyContent}
           onCopySourceLink={copySourceLink}
           onOpenSourceBacklink={onOpenSourceBacklink}
-          onAddAssistantContext={onAddAssistantContext ? (segment) => onAddAssistantContext({
-            kind: 'segment',
-            entryId: entry.id,
-            entryTitle: entry.title,
-            segmentUid: segment.uid,
-            pageIdx: segment.page_idx,
-            text: segment.markdown ?? segment.text
-          }) : undefined}
+          onAddAssistantContext={onAddAssistantContext ? (segment, options) =>
+            onAddAssistantContext(readingAssistantContext(entry, segment, options), options) : undefined}
+          onTranslateTextSelection={({ segment, text }) => translateTextSelection({ root: workspaceRoot, entryId: entry.id, entryTitle: entry.title, text, context: segment.markdown ?? segment.text })}
           onTranslateSegment={!translationBusy ? translateSingleSegment : undefined}
         />
         {overlaySegment ? (
@@ -728,6 +765,10 @@ export function ReflowEntryReader({
         onCreateTranslationNote={!translationBusy && hasExportableTranslation ? exportTranslation : undefined}
       />
       <TranslationTaskDialog
+        stopPending={translationStopPending}
+        onPause={translationBusy ? () => void pauseTranslation() : undefined}
+        onCancel={translationBusy || translationPaused ? () => void cancelTranslation() : undefined}
+        onResume={translationPaused ? () => void resumeTranslation() : undefined}
         exportContext={{ entryId: entry.id, entryTitle: entry.title, workspaceRoot }}
         busy={translationBusy || translatingSegmentUid !== null}
         detail={translationDetail}
@@ -848,4 +889,9 @@ function persistHiddenSegmentUids(entryId: string, segmentUids: Set<string>) {
     return;
   }
   window.localStorage.setItem(key, JSON.stringify([...segmentUids]));
+}
+
+export function ReflowEntryReader(props: ComponentProps<typeof ReflowEntryReaderBody>) {
+  const key = JSON.stringify(['reflow', props.workspaceRoot ? workspaceStorageIdentity(props.workspaceRoot) : null, props.entry.id, props.entry.pdfFileName]);
+  return <ReadingNavigationScope key={key} retentionKey={key}><ReflowEntryReaderBody {...props} /></ReadingNavigationScope>;
 }

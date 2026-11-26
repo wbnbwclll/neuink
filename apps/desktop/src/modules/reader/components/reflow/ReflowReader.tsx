@@ -1,3 +1,10 @@
+import { PaperReferencesProvider } from '../navigation/PaperReferences';
+import type { AssistantContextAddOptions } from '@/shared/types/assistant';
+import { PdfTextSelectionToolbar } from '../pdf-reader/PdfTextSelectionToolbar';
+import { useReflowTextSelection } from './useReflowTextSelection';
+import { useReflowReadingNavigation } from '../navigation/useReflowReadingNavigation';
+import { reflowJumpTarget } from '../../sourceJump';
+import type { PdfJumpRequest } from '../../types';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
@@ -7,6 +14,8 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { Badge } from "@/components/ui/badge";
 import { hoverInteractionBlocked, useHoverDismiss } from '@/components/ui/hover-interactions';
+import { ParagraphTranslationProvider } from './ParagraphTranslationContext';
+import { ReflowSegmentPreferencesProvider } from './ReflowSegmentPreferences';
 import { cn } from "@/lib/utils";
 import {
   resolveMineruAssetUrl,
@@ -43,7 +52,7 @@ import {
   estimateReflowGroupSize,
 } from "./reflowVirtualization";
 
-export type ReflowTranslationMode = "source" | "translation" | "bilingual";
+export type ReflowTranslationMode = "source" | "translation" | "bilingual" | "sentences";
 
 import { ReflowSegmentGroupView } from './ReflowSegmentGroupView';
 import {
@@ -68,6 +77,7 @@ export function ReflowReader({
   hoverPreviewShowTranslation,
   hoverPreviewShowNote,
   hoverPreviewShowAnnotation,
+  paperReferenceHoverEnabled = true,
   notesBySegmentUid,
   pdfDocument,
   reflowBackgroundColor,
@@ -80,6 +90,9 @@ export function ReflowReader({
   sourceBacklinksBySegmentUid,
   scrollToSegmentUid,
   scrollRequestKey,
+  scrollSentenceIndex,
+  localScrollRequest = false,
+  jumpRequest,
   translationBySegmentUid,
   workspaceRoot,
   onActivateSegment,
@@ -87,6 +100,8 @@ export function ReflowReader({
   onOpenSegmentAnnotation,
   onOpenSegmentNote,
   onRequirePdfDocument,
+  pdfPreviewError,
+  onRetryPdfPreview,
   onHideSegment,
   onAddSourceLink,
   onCopyContent,
@@ -94,6 +109,7 @@ export function ReflowReader({
   onOpenSourceBacklink,
   onAddAssistantContext,
   onTranslateSegment,
+  onTranslateTextSelection,
 }: {
   activeSegmentUid: string | null;
   annotationsBySegmentUid: Map<string, Annotation[]>;
@@ -104,6 +120,7 @@ export function ReflowReader({
   hoverPreviewShowTranslation: boolean;
   hoverPreviewShowNote: boolean;
   hoverPreviewShowAnnotation: boolean;
+  paperReferenceHoverEnabled?: boolean;
   notesBySegmentUid: Map<string, SegmentBlockNote>;
   pdfDocument: PDFDocumentProxy | null;
   reflowBackgroundColor: string;
@@ -116,6 +133,9 @@ export function ReflowReader({
   sourceBacklinksBySegmentUid: SourceBacklinksBySegmentUid;
   scrollToSegmentUid?: string | null;
   scrollRequestKey?: number;
+  scrollSentenceIndex?: number;
+  localScrollRequest?: boolean;
+  jumpRequest?: PdfJumpRequest | null;
   translationBySegmentUid: Map<string, TranslatedSegment>;
   workspaceRoot: string | null;
   onActivateSegment: (
@@ -126,14 +146,19 @@ export function ReflowReader({
   onOpenSegmentAnnotation: (segment: SourceSegment) => void;
   onOpenSegmentNote: (segment: SourceSegment) => void;
   onRequirePdfDocument: () => void;
+  pdfPreviewError?: string | null;
+  onRetryPdfPreview?: () => void;
   onHideSegment: (segment: SourceSegment) => void;
   onAddSourceLink?: (segment: SourceSegment) => void;
   onCopyContent: (segment: SourceSegment) => void;
   onCopySourceLink: (segment: SourceSegment) => void;
   onOpenSourceBacklink: (backlink: SourceBacklink) => void;
-  onAddAssistantContext?: (segment: SourceSegment) => void;
+  onAddAssistantContext?: (segment: SourceSegment, options?: AssistantContextAddOptions) => void;
   onTranslateSegment?: (segment: SourceSegment) => void;
+  onTranslateTextSelection?: (input: { segment: SourceSegment; text: string }) => Promise<string>;
 }) {
+  const { notify } = useToast();
+  const unavailableJumpRef = useRef<string | null>(null);
   const segmentGroups = useMemo(
     () => buildReflowSegmentGroups(segments),
     [segments],
@@ -164,7 +189,13 @@ export function ReflowReader({
     ((position: ReflowPreviewPosition) => void) | null
   >(null);
   const reflowScrollRef = useRef<HTMLDivElement | null>(null);
+  const readingSurfaceRef = useRef<HTMLElement | null>(null);
   const resumedReadingStateKeyRef = useRef<string | null>(null);
+  const [focusedSentence, setFocusedSentence] = useState<{ segmentUid: string; index: number; requestKey: number } | null>(null);
+  const activateSegment = useCallback<NonNullable<typeof onActivateSegment>>((segment, options) => {
+    setFocusedSentence(null);
+    onActivateSegment(segment, options);
+  }, [onActivateSegment]);
   const [preview, setPreview] = useState<{
     initialPosition: ReflowPreviewPosition;
     relatedImagePath?: string | null;
@@ -184,9 +215,34 @@ export function ReflowReader({
     getScrollElement: () => reflowScrollRef.current,
     overscan: 6,
   });
-  useEffect(() => {
+  const remeasureRows = useCallback(() => {
     rowVirtualizer.measure();
-  }, [reflowComponents, reflowFontSize, rowVirtualizer]);
+    // Clear the old width's measurements, then synchronously size the rows
+    // already on screen so long bilingual paragraphs cannot overlap siblings.
+    rowVirtualizer.getTotalSize();
+    readingSurfaceRef.current?.querySelectorAll<HTMLElement>('[data-reflow-virtual-item]')
+      .forEach(row => rowVirtualizer.measureElement(row));
+  }, [rowVirtualizer]);
+  useEffect(() => {
+    remeasureRows();
+  }, [reflowComponents, reflowFontSize, reflowTranslationMode, remeasureRows]);
+  useEffect(() => {
+    const surface = readingSurfaceRef.current;
+    if (!surface || typeof ResizeObserver === 'undefined') return;
+    let previousWidth: number | null = null;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = entry.contentRect.width;
+      // Minimized windows can report a zero-sized reading surface. Keep the
+      // measured rows so restoring the same width does not rebuild the paper.
+      if (width <= 0) return;
+      if (previousWidth !== null && width !== previousWidth) remeasureRows();
+      previousWidth = width;
+    });
+    observer.observe(surface);
+    return () => observer.disconnect();
+  }, [remeasureRows]);
+  const navigation = useReflowReadingNavigation(reflowScrollRef, visibleSegmentGroups, rowVirtualizer, groupIndexBySegmentUid);
+  const textSelection = useReflowTextSelection(reflowScrollRef, visibleSegments);
   const virtualRows = rowVirtualizer.getVirtualItems();
   const scrollTop = reflowScrollRef.current?.scrollTop ?? 0;
   const viewportBottom = scrollTop + (reflowScrollRef.current?.clientHeight ?? 0);
@@ -208,7 +264,7 @@ export function ReflowReader({
     workspaceRoot,
   });
   useEffect(() => {
-    if (!savedReadingState || savedReadingState.current_page_idx === null) {
+    if (navigation.hasRetainedPosition || jumpRequest || scrollToSegmentUid || !savedReadingState || savedReadingState.current_page_idx === null) {
       return;
     }
     const resumeKey = `${entryId}:${savedReadingState.document_hash ?? "none"}`;
@@ -222,14 +278,48 @@ export function ReflowReader({
       resumedReadingStateKeyRef.current = resumeKey;
       rowVirtualizer.scrollToIndex(groupIndex, { align: "start" });
     }
-  }, [entryId, rowVirtualizer, savedReadingState, visibleSegmentGroups]);
+  }, [entryId, navigation.hasRetainedPosition, jumpRequest, scrollToSegmentUid, rowVirtualizer, savedReadingState, visibleSegmentGroups]);
   useEffect(() => {
-    if (!scrollToSegmentUid) return;
-    const groupIndex = groupIndexBySegmentUid.get(scrollToSegmentUid);
+    if (!jumpRequest && !scrollToSegmentUid) return;
+    const jumpKey = jumpRequest ? `${entryId}:source:${jumpRequest.requestKey}` : `${entryId}:${scrollToSegmentUid}:${scrollRequestKey}`;
+    if (navigation.isJumpHandled?.(jumpKey)) return;
+    const target = jumpRequest ? reflowJumpTarget(visibleSegmentGroups, jumpRequest) : null;
+    const segmentUid = (jumpRequest ? target?.segmentUid : scrollToSegmentUid) ?? undefined;
+    const groupIndex = segmentUid ? groupIndexBySegmentUid.get(segmentUid) : undefined;
     if (groupIndex !== undefined) {
-      rowVirtualizer.scrollToIndex(groupIndex, { align: 'center' });
+      const localOnly = localScrollRequest || Boolean(jumpRequest?.targetSurfaceKey);
+      navigation.markJumpHandled?.(jumpKey, { localOnly });
+      if (navigation.navigate) navigation.navigate({ pageIdx: visibleSegmentGroups[groupIndex].body.page_idx, segmentUid, ...(localOnly ? { focus: false } : {}) }, { localOnly });
+      else rowVirtualizer.scrollToIndex(groupIndex, { align: 'center' });
+    } else if (jumpRequest && unavailableJumpRef.current !== jumpKey) {
+      unavailableJumpRef.current = jumpKey;
+      notify({ tone: 'default', title: `第 ${jumpRequest.pageIdx + 1} 页没有可定位的重排内容`,
+        description: '该页内容可能已隐藏或未解析，请恢复隐藏内容后重新定位，或手动切换到 PDF 查看。' });
     }
-  }, [groupIndexBySegmentUid, rowVirtualizer, scrollRequestKey, scrollToSegmentUid]);
+  }, [entryId, groupIndexBySegmentUid, rowVirtualizer, scrollRequestKey, scrollToSegmentUid, localScrollRequest, jumpRequest, visibleSegmentGroups, notify]);
+  useEffect(() => {
+    if (!scrollToSegmentUid || scrollSentenceIndex === undefined || scrollRequestKey === undefined) {
+      setFocusedSentence(null);
+      return;
+    }
+    const focus = { segmentUid: scrollToSegmentUid, index: scrollSentenceIndex, requestKey: scrollRequestKey };
+    setFocusedSentence(focus);
+    let attempts = 0;
+    let seekTimer: number | null = null;
+    const seek = () => {
+      const container = reflowScrollRef.current;
+      const target = Array.from(container?.querySelectorAll<HTMLElement>('[data-reading-sentence-index]') ?? [])
+        .find(element => element.dataset.readingSegmentUid === focus.segmentUid &&
+          Number(element.dataset.readingSentenceIndex) <= focus.index &&
+          focus.index < Number(element.dataset.readingSentenceEndIndex ?? Number(element.dataset.readingSentenceIndex) + 1));
+      if (container && target) {
+        const distance = target.getBoundingClientRect().top - container.getBoundingClientRect().top - container.clientHeight / 3;
+        container.scrollTo({ top: container.scrollTop + distance, behavior: 'smooth' });
+      } else if (++attempts < 24) seekTimer = window.setTimeout(seek, 50);
+    };
+    seekTimer = window.setTimeout(seek, 0);
+    return () => { if (seekTimer !== null) window.clearTimeout(seekTimer); };
+  }, [scrollRequestKey, scrollSentenceIndex, scrollToSegmentUid]);
   const updatePreview = useCallback(
     (next: ReflowPreviewPointerState | null) => {
       if (!hoverPreviewEnabled || !next || hoverInteractionBlocked()) {
@@ -252,8 +342,11 @@ export function ReflowReader({
   }, [hoverPreviewEnabled]);
 
   return (
+    <PaperReferencesProvider segments={segments} entryId={entryId} workspaceRoot={workspaceRoot} pdfDocument={pdfDocument} hoverEnabled={paperReferenceHoverEnabled} onRequirePdfDocument={onRequirePdfDocument} pdfPreviewError={pdfPreviewError} onRetryPdfPreview={onRetryPdfPreview}>
     <ReflowComponentPreferencesProvider value={reflowComponents}>
-    <div className="relative h-full min-h-0 min-w-0 overflow-hidden">
+    <ParagraphTranslationProvider root={workspaceRoot} entryId={entryId}>
+    <ReflowSegmentPreferencesProvider root={workspaceRoot} entryId={entryId}>
+    <div className="reflow-reader-pane relative h-full min-h-0 min-w-0 overflow-hidden">
       <SegmentRailLayout
       rail={
         <SegmentRail
@@ -261,12 +354,13 @@ export function ReflowReader({
           annotationsBySegmentUid={annotationsBySegmentUid}
           flashSegmentUid={flashSegmentUid}
           notesBySegmentUid={notesBySegmentUid}
-          pageCount={pageCount}
           pages={pages}
           selectedSegmentUid={activeSegmentUid}
           onJumpToSegment={(segmentUid) => {
             const groupIndex = groupIndexBySegmentUid.get(segmentUid);
             if (groupIndex === undefined) return;
+            navigation.beginUserNavigation?.();
+            navigation.remember?.();
             rowVirtualizer.scrollToIndex(groupIndex, { align: "start" });
           }}
         />
@@ -274,15 +368,19 @@ export function ReflowReader({
     >
       <div
         ref={reflowScrollRef}
-        className="h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto px-6 py-6"
+        onPointerUp={() => { textSelection.capture(); setPreview(null); }}
+        onKeyUp={event => { if (event.shiftKey) { textSelection.capture(); setPreview(null); } }}
+        tabIndex={-1}
+        className="reflow-document-scroll h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto"
         data-reflow-background-color={reflowBackgroundColor}
         style={reflowSurfaceStyle(reflowBackgroundColor)}
       >
         <article
+          ref={readingSurfaceRef}
           data-reflow-total-groups={visibleSegmentGroups.length}
           data-reflow-font-size={reflowFontSize}
           className="reflow-reading-surface relative mx-auto w-full min-w-0 max-w-[860px]"
-          style={{ fontSize: reflowFontSize, height: rowVirtualizer.getTotalSize() }}
+          style={{ '--reflow-preferred-font-size': `${reflowFontSize}px`, height: rowVirtualizer.getTotalSize() } as CSSProperties}
         >
         {visibleSegmentGroups.length > 0 ? (
           virtualRows.map((virtualRow) => {
@@ -297,24 +395,30 @@ export function ReflowReader({
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
                 <ReflowSegmentGroupView
+                  activeSegmentUid={activeSegmentUid}
+                  flashSegmentUid={flashSegmentUid ?? navigation.flashUid}
+                  focusedSentenceIndex={focusedSentence?.segmentUid === segmentGroup.body.uid ? focusedSentence.index : undefined}
+                  sentenceLinked={scrollSentenceIndex !== undefined && scrollToSegmentUid === segmentGroup.body.uid}
                   active={segmentGroup.segments.some(
                     (segment) => segment.uid === activeSegmentUid,
                   )}
                   annotationsBySegmentUid={annotationsBySegmentUid}
                   entryId={entryId}
                   flashed={segmentGroup.segments.some(
-                    (segment) => segment.uid === flashSegmentUid,
+                    (segment) => segment.uid === flashSegmentUid || segment.uid === navigation.flashUid,
                   )}
                   hoverPreviewEnabled={hoverPreviewEnabled}
                   notesBySegmentUid={notesBySegmentUid}
                   pdfDocument={pdfDocument}
+                  pdfPreviewError={pdfPreviewError}
+                  onRetryPdfPreview={onRetryPdfPreview}
                   reflowTranslationMode={reflowTranslationMode}
                   segmentGroup={segmentGroup}
                   translationBySegmentUid={translationBySegmentUid}
                   sourceLinkCountBySegmentUid={sourceLinkCountBySegmentUid}
                   sourceBacklinksBySegmentUid={sourceBacklinksBySegmentUid}
                   workspaceRoot={workspaceRoot}
-                  onActivateSegment={onActivateSegment}
+                  onActivateSegment={activateSegment}
                   altClickOpensNote={altClickOpensNote}
                   onOpenSegmentAnnotation={onOpenSegmentAnnotation}
                   onOpenSegmentNote={onOpenSegmentNote}
@@ -340,7 +444,14 @@ export function ReflowReader({
       </div>
       </SegmentRailLayout>
 
-      {preview ? (
+      <PdfTextSelectionToolbar pending={textSelection.pending} onClose={textSelection.close} onTranslate={onTranslateTextSelection}
+        onAsk={onAddAssistantContext ? ({ segment, text }, intent) => {
+          onAddAssistantContext(segment, { selectionText: text,
+            draftQuestion: intent === 'explain' ? '请解释刚刚选中的这段内容，并结合原文说明。' : undefined });
+          textSelection.close();
+        } : undefined} />
+
+      {preview && !textSelection.pending ? (
         <ReflowSourcePreview
           annotations={
             annotationsBySegmentUid.get(logicalSegmentUid(preview.segment)) ??
@@ -373,7 +484,10 @@ export function ReflowReader({
         />
       ) : null}
     </div>
+    </ReflowSegmentPreferencesProvider>
+    </ParagraphTranslationProvider>
     </ReflowComponentPreferencesProvider>
+    </PaperReferencesProvider>
   );
 }
 
@@ -391,7 +505,7 @@ function reflowSurfaceStyle(backgroundColor: string): CSSProperties {
     '--muted-foreground': dark ? '#cbd5e1' : '#697386',
     backgroundColor,
     color: foreground,
-    paddingLeft: PDF_RAIL_WIDTH + 24
+    '--reflow-rail-width': `${PDF_RAIL_WIDTH}px`
   } as CSSProperties;
 }
 

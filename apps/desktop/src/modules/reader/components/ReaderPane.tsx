@@ -1,4 +1,12 @@
+import { ReadingStateRetention } from './navigation/ReadingStateRetention';
+import { ReadingViewSession } from './navigation/ReadingViewSession';
+import { readingViewStorageKey } from './navigation/readingViewStorage';
+import { jumpForSurface } from '../sourceJump';
+import { BrowserSurface, type BrowserSurfaceMetadata } from '@/modules/browser/BrowserSurface';
+import { AssistantReplyReader } from '@/modules/assistant/components/AssistantReplyReader';
 import {
+  lazy,
+  Suspense,
   useEffect,
   useRef,
   useState,
@@ -6,8 +14,12 @@ import {
   type PointerEvent as ReactPointerEvent
 } from 'react';
 import type { WorkspacePaneId, WorkspaceSurface, WorkspaceSurfaceLayout } from '@/app/workspaceSurface';
+import { NoteReviewPage } from '@/modules/assistant/review/NoteReviewPage';
 import { entryContentId, entryContentSurface, surfaceKey, noteSurface } from '@/app/workspaceSurface';
 import { useWorkspaceNotes } from '@/modules/notes/WorkspaceNotesContext';
+import { RelationsPage } from '@/modules/relations/RelationsPage';
+import { RelationReturnFrame } from '@/modules/relations/RelationReturnFrame';
+import { WorkspaceSurfaceDeck } from './WorkspaceSurfaceDeck';
 import { OwnedNoteSurfaceView } from '@/modules/notes/components/OwnedNoteSurfaceView';
 import { TagDetailsView } from '@/modules/library/components/TagDetailsView';
 import { ReadingSessionContext, type ReadingNoteBinding } from '../parallel-reading/ReadingSessionContext';
@@ -53,18 +65,25 @@ import type { ReaderPreferences } from '@/shared/lib/readerPreferences';
 
 import type { LibraryEntry, LibraryView } from '../../library/components/LibrarySidebar';
 import { TagEditorPage } from '../../library/components/TagEditorPage';
-import { SettingsPanel } from '../../settings/components/SettingsPanel';
 import { CreateEntryPanel } from './CreateEntryPanel';
 import { MineruClientImportGuide } from './MineruClientImportGuide';
 import { EntryLibraryView } from './EntryLibraryView';
-import { EntryWorkspaceView } from './EntryWorkspaceView';
+import type { EntryPdfHandlers } from '@/modules/library/components/EntryPdfActions';
 import { SourceLinksSurface } from './SourceLinksSurface';
 import { isHeavyReaderSurface } from './readerRetention';
 import { useHeavyReaderRetention } from './useHeavyReaderRetention';
 import { hasUnsavedSegmentEditors } from './segmentEditorDirtyRegistry';
 import { useSourceBacklinks } from './useSourceBacklinks';
+import { setSegmentNoteBookmark } from '@/shared/ipc/workspaceApi';
+import { SEGMENT_BOOKMARK_CHANGED } from '@/shared/ipc/noteCatalogApi';
 
-type ReaderPaneProps = {
+const SettingsPanel = lazy(() => import('../../settings/components/SettingsPanel')
+  .then((module) => ({ default: module.SettingsPanel })));
+const EntryWorkspaceView = lazy(() => import('./EntryWorkspaceView')
+  .then((module) => ({ default: module.EntryWorkspaceView })));
+
+type ReaderPaneProps = EntryPdfHandlers & {
+  onUpdateBrowser?: (id: string, url: string, title: string, metadata?: BrowserSurfaceMetadata) => void;
   librarySection: 'papers' | 'notes';
   onLibrarySectionChange: (section: 'papers' | 'notes') => void;
   onOpenTagLibrary: (tagId: string, section?: 'papers' | 'notes') => void;
@@ -115,7 +134,7 @@ type ReaderPaneProps = {
   onDeleteMarkdownNote: (entryId: string, noteId: string) => Promise<void> | void;
   onDeleteTag: (tagId: string) => Promise<void> | void;
   onOpenCreateEntryTab: () => void;
-  onOpenEntryExplorer: (entryId: string) => void;
+  onOpenEntryExplorer: (entryId: string, explicitContentId?: 'overview') => void;
   onOpenEntryInSidePane: (entryId: string) => void;
   onOpenEntryNote: (entryId: string, noteId: string) => void;
   onOpenAnnotation: (record: AnnotationCatalogRecord) => void;
@@ -191,6 +210,7 @@ type LinkedReaderSegment = {
 };
 
 export function ReaderPane({
+  onUpdateBrowser,
   onUpdateTagDescription,
   onOpenTrash,
   onRestoreTagArchive,
@@ -262,6 +282,10 @@ export function ReaderPane({
   onActiveSegmentChange,
   onApplyEntryTagPaths,
   onUpdateEntry,
+  onFetchPdf,
+  onAttachPdf,
+  onCreatePdfVersion,
+  onImportMineruClientResult,
   onExportTranslationNote,
   onSaveSegmentNote,
   onDeleteSegmentNote,
@@ -294,17 +318,35 @@ export function ReaderPane({
     Record<string, PdfJumpRequest | null>
   >({});
   const [linkedReflowSegmentByEntryId, setLinkedReflowSegmentByEntryId] = useState<
-    Record<string, { requestKey: number; segmentUid: string } | null>
+    Record<string, { requestKey: number; segmentUid: string; sentenceIndex?: number } | null>
   >({});
   const [segmentNoteReloadByEntryId, setSegmentNoteReloadByEntryId] = useState<
     Record<string, number>
   >({});
+  useEffect(() => {
+    const changed = (event: Event) => {
+      const detail = (event as CustomEvent<{ root: string; entryId: string }>).detail;
+      if (detail?.root === workspaceRoot) setSegmentNoteReloadByEntryId(current => ({ ...current, [detail.entryId]: (current[detail.entryId] ?? 0) + 1 }));
+    };
+    window.addEventListener(SEGMENT_BOOKMARK_CHANGED, changed);
+    return () => window.removeEventListener(SEGMENT_BOOKMARK_CHANGED, changed);
+  }, [workspaceRoot]);
   const [segmentNoteDraftsByEntryId, setSegmentNoteDraftsByEntryId] = useState<
     Record<string, Record<string, string>>
   >({});
+  const segmentDraftsRef = useRef(segmentNoteDraftsByEntryId);
+  const savedSegmentTextRef = useRef(new Map<string, string>());
+  const segmentWritesRef = useRef(new Map<string, Promise<unknown>>());
+  useEffect(() => {
+    segmentDraftsRef.current = {}; setSegmentNoteDraftsByEntryId({}); savedSegmentTextRef.current.clear();
+  }, [workspaceRoot]);
   const linkedRequestKeyRef = useRef(0);
   const previousPdfJumpByEntryIdRef = useRef(pdfJumpByEntryId);
   const noteCatalog = useWorkspaceNotes();
+  const [relationOrigins, setRelationOrigins] = useState<Set<string>>(() => new Set());
+  useEffect(() => setRelationOrigins(new Set()), [workspaceRoot]);
+  const markRelationOrigin = (surface: WorkspaceSurface) => setRelationOrigins(current => new Set([...current, surfaceKey(surface)]));
+  const hasRelationsPage = [...surfaceLayout.leftTabs, ...surfaceLayout.rightTabs].some(surface => surface.kind === 'relations');
   const sourceBacklinksByEntryId = useSourceBacklinks(entries, markdownNoteRefreshById, onReadMarkdownNote, noteCatalog?.catalog.notes);
   const [noteBindings, setNoteBindings] = useState<Record<string, ReadingNoteBinding | null>>({});
   const [isWorkspaceSplitResizing, setIsWorkspaceSplitResizing] = useState(false);
@@ -336,7 +378,20 @@ export function ReaderPane({
   };
 
   const saveLinkedSegmentNote = async (entryId: string, segmentUid: string, text: string) => {
-    const notes = await onSaveSegmentNote(entryId, segmentUid, text);
+    const key = JSON.stringify([workspaceRoot, entryId, segmentUid]);
+    const previous = segmentWritesRef.current.get(key);
+    const operation = (async () => {
+      if (previous) await previous.catch(() => undefined);
+      const live = segmentDraftsRef.current[entryId]?.[segmentUid];
+      if (live !== undefined && live !== text) throw new Error('另一侧已更新片段草稿，请确认最新内容后重新保存。');
+      const result = await onSaveSegmentNote(entryId, segmentUid, text);
+      savedSegmentTextRef.current.set(key, text);
+      return result;
+    })();
+    segmentWritesRef.current.set(key, operation);
+    let notes: Awaited<ReturnType<typeof onSaveSegmentNote>>;
+    try { notes = await operation; }
+    finally { if (segmentWritesRef.current.get(key) === operation) segmentWritesRef.current.delete(key); }
     setSegmentNoteReloadByEntryId((current) => ({
       ...current,
       [entryId]: (current[entryId] ?? 0) + 1
@@ -345,7 +400,18 @@ export function ReaderPane({
   };
 
   const deleteLinkedSegmentNote = async (entryId: string, segmentUid: string) => {
-    const notes = await onDeleteSegmentNote(entryId, segmentUid);
+    const key = JSON.stringify([workspaceRoot, entryId, segmentUid]);
+    const previous = segmentWritesRef.current.get(key);
+    const operation = (async () => {
+      if (previous) await previous.catch(() => undefined);
+      const notes = await onDeleteSegmentNote(entryId, segmentUid);
+      savedSegmentTextRef.current.set(key, '');
+      return notes;
+    })();
+    segmentWritesRef.current.set(key, operation);
+    let notes: Awaited<ReturnType<typeof onDeleteSegmentNote>>;
+    try { notes = await operation; }
+    finally { if (segmentWritesRef.current.get(key) === operation) segmentWritesRef.current.delete(key); }
     setSegmentNoteReloadByEntryId((current) => ({
       ...current,
       [entryId]: (current[entryId] ?? 0) + 1
@@ -376,15 +442,18 @@ export function ReaderPane({
     segmentUid: string,
     text: string | null
   ) => {
-    setSegmentNoteDraftsByEntryId((current) => {
+    const nextText = text ?? savedSegmentTextRef.current.get(JSON.stringify([workspaceRoot, entryId, segmentUid])) ?? null;
+    const update = (current: typeof segmentNoteDraftsByEntryId) => {
       const entryDrafts = { ...(current[entryId] ?? {}) };
-      if (text === null) {
+      if (nextText === null) {
         delete entryDrafts[segmentUid];
       } else {
-        entryDrafts[segmentUid] = text;
+        entryDrafts[segmentUid] = nextText;
       }
       return { ...current, [entryId]: entryDrafts };
-    });
+    };
+    segmentDraftsRef.current = update(segmentDraftsRef.current);
+    setSegmentNoteDraftsByEntryId(segmentDraftsRef.current);
   };
 
   useEffect(() => {
@@ -400,6 +469,13 @@ export function ReaderPane({
       const next = { ...current };
       for (const entryId of changedEntryIds) {
         delete next[entryId];
+      }
+      return next;
+    });
+    setLinkedReflowSegmentByEntryId((current) => {
+      const next = { ...current };
+      for (const entryId of changedEntryIds) {
+        if (pdfJumpByEntryId[entryId]?.targetSurfaceKey) delete next[entryId];
       }
       return next;
     });
@@ -551,11 +627,11 @@ export function ReaderPane({
   };
   const renderLibraryView = (standalone = false) =>
     <EntryLibraryView
+        onOpenRelations={() => onOpenSurface({ kind: 'relations' })}
         activeTag={activeTag}
         section={librarySection} onSectionChange={onLibrarySectionChange}
         onUpdateTagDescription={onUpdateTagDescription}
         onOpenTagNote={(target, label) => onOpenSurface(noteSurface(target, label))}
-        onManageTags={() => onOpenSurface({ kind: 'tag-editor' })}
         onOpenTrash={onOpenTrash}
         entries={entries}
         standalone={standalone}
@@ -573,7 +649,6 @@ export function ReaderPane({
         onOpenCreateEntryTab={onOpenCreateEntryTab}
         onOpenEntryExplorer={onOpenEntryExplorer}
         onOpenEntryInSidePane={onOpenEntryInSidePane}
-        onOpenTagReading={onOpenTagReading}
         onRestoreTagArchive={onRestoreTagArchive}
         onPurgeEntry={onPurgeEntry}
         onPurgeTrashItem={onPurgeTrashItem}
@@ -684,9 +759,10 @@ export function ReaderPane({
     const linkedReaderKind: WorkspaceReaderSurfaceKind | null =
       pairing?.relation === 'record-sync' ? readerKind(siblingSurface) : null;
     const linkedPdfJump = linkedPdfJumpByEntryId[parsed.entryId] ?? null;
-    const externalPdfJump = pdfJumpByEntryId[parsed.entryId] ?? null;
+    const externalPdfJump = jumpForSurface(pdfJumpByEntryId[parsed.entryId] ?? null, editorScopeOverride ?? surfaceKey(currentSurface));
 
     return (
+      <Suspense fallback={<div className="grid h-full min-h-0 place-items-center text-sm text-muted-foreground" role="status">正在载入阅读器…</div>}>
       <EntryWorkspaceView
         activeContentId={parsed.contentId}
         entry={openEntry}
@@ -725,6 +801,9 @@ export function ReaderPane({
         }
         onApplyEntryTagPaths={onApplyEntryTagPaths}
         onUpdateEntry={onUpdateEntry}
+        onFetchPdf={onFetchPdf} onAttachPdf={onAttachPdf}
+        onCreatePdfVersion={onCreatePdfVersion}
+        onImportMineruClientResult={onImportMineruClientResult}
         onCreateMarkdownSourceLink={onCreateMarkdownSourceLink}
         onImportMarkdownNoteSegmentAsset={onImportMarkdownNoteSegmentAsset}
         onReadMarkdownNote={onReadMarkdownNote}
@@ -762,7 +841,8 @@ export function ReaderPane({
             if (pairedReflowPane) {
               setLinkedReflowSegmentByEntryId((current) => ({
                 ...current,
-                [segment.entryId]: { requestKey: nextLinkedRequestKey(), segmentUid: segment.segmentUid }
+                [segment.entryId]: { requestKey: nextLinkedRequestKey(), segmentUid: segment.segmentUid,
+                  ...(segment.sentenceIndex === undefined ? {} : { sentenceIndex: segment.sentenceIndex }) }
               }));
             }
           }
@@ -851,6 +931,11 @@ export function ReaderPane({
         onSaveMarkdownNote={onSaveMarkdownNote}
         onSaveAnnotation={saveLinkedAnnotation}
         onSaveSegmentNote={saveLinkedSegmentNote}
+        onSetSegmentBookmark={async (uid, bookmarked) => {
+          if (!workspaceRoot) throw new Error('请先打开资料库');
+          const notes = await setSegmentNoteBookmark(workspaceRoot, parsed.entryId, uid, bookmarked);
+          return notes;
+        }}
         onDeleteSegmentNote={deleteLinkedSegmentNote}
         onEmptyEntryTrash={onEmptyEntryTrash}
         onPurgeEntry={onPurgeEntry}
@@ -858,6 +943,7 @@ export function ReaderPane({
         onRestoreEntry={onRestoreEntry}
         onRestoreTrashItem={onRestoreTrashItem}
       />
+      </Suspense>
     );
   };
   const renderCreateEntryPanel = () => (
@@ -882,8 +968,10 @@ export function ReaderPane({
       onSelectTag={onSelectTag}
     />
   );
-  const renderSettingsPanel = () => (
+  const renderSettingsPanel = (surface: Extract<WorkspaceSurface, { kind: 'settings' }>) => (
     <SettingsPanel
+      navigationTarget={surface.target}
+      onOpenMineruClientGuide={onOpenMineruClientGuide}
       parserEndpoint={parserEndpoint}
       parserApiKey={parserApiKey}
       readerPreferences={readerPreferences}
@@ -903,6 +991,12 @@ export function ReaderPane({
     />
   );
   const renderSurface = (surface: WorkspaceSurface, sibling: WorkspaceSurface | null, pane: WorkspacePaneId) => {
+    if (surface.kind === 'assistant-reply') return <AssistantReplyReader message={surface.message} />;
+    if (surface.kind === 'browser') return <BrowserSurface id={surface.id} initialUrl={surface.url}
+      active={surfaceLayout[pane]?.kind === 'browser' && surfaceKey(surfaceLayout[pane]!) === surfaceKey(surface)}
+      onFocus={() => onFocusSurface(pane)}
+      onChange={(url, title, metadata) => onUpdateBrowser?.(surface.id, url, title, metadata)} />;
+    if (surface.kind === 'note-review') return <NoteReviewPage key={surface.proposalId} proposalId={surface.proposalId} onOpenNote={onOpenEntryNote} />;
     if (surface.kind === 'tag-details') return <TagDetailsView key={`${workspaceRoot}:${surface.tagId}`} root={workspaceRoot} tagId={surface.tagId} tags={tags} entries={entries} initialView={surface.view}
       onDescription={onUpdateTagDescription} onOpenNote={(target, label) => onOpenSurface(noteSurface(target, label), pane)}
       onOpenEntry={(entry) => onOpenSurface({ kind: 'entry-overview', entryId: entry.id, contextTagId: surface.tagId }, pane)}
@@ -984,47 +1078,70 @@ export function ReaderPane({
         'segmentUid' in surface ? surface.segmentUid : undefined,
         surface.kind === 'segment-notes'
             ? surface.mode ?? 'note'
-            : 'note'
+            : 'note',
+        surfaceKey(surface)
       );
       const entry = entries.find((entry) => entry.id === surface.entryId);
       if (!entry || !['pdf', 'reflow', 'entry-overview'].includes(surface.kind)) return reader;
       const note = sibling?.kind === 'owned-note' ? noteBindings[noteTargetKey(sibling.target)] ?? undefined : undefined;
-      return note ? <ReadingSessionContext.Provider value={{ active: surfaceLayout.focusedPane === pane, onReady: () => undefined, note }}>{reader}</ReadingSessionContext.Provider> : reader;
+      // Keep the provider in place even while the paired note is loading or closing.
+      return <ReadingSessionContext.Provider value={note ? { active: surfaceLayout.focusedPane === pane, onReady: () => undefined, note } : null}>{reader}</ReadingSessionContext.Provider>;
     }
     switch (surface.kind) {
+      case 'relations':
+        return <RelationsPage key={workspaceRoot} entries={entries} tags={tags} trashedEntries={trashedEntries}
+          active={surfaceLayout[pane]?.kind === 'relations'}
+          catalog={noteCatalog?.catalog ?? { notes: [], errors: [] }} loading={status === 'loading' || Boolean(noteCatalog?.loading)}
+          error={status === 'error' ? '资料库读取失败，请在条目库检查工作区。' : noteCatalog?.error ?? null}
+          onRefresh={() => noteCatalog?.refresh()} onBack={() => onOpenSurface({ kind: 'library' })}
+          onOpen={node => {
+            if (!node.available) return;
+            if (node.tag) { markRelationOrigin({ kind: 'library' }); onOpenTagLibrary(node.tag.id); return; }
+            const target = node.target ? noteSurface(node.target, node.title) : node.entry ? { kind: 'entry-overview' as const, entryId: node.entry.id } : null;
+            if (target) { markRelationOrigin(target); onOpenSurface(target); }
+          }} onSource={evidence => {
+            if (!evidence.canLocate) return;
+            markRelationOrigin({ kind: 'pdf', entryId: evidence.source.entry_id });
+            onOpenSourceLink({ sourceEntryId: evidence.source.entry_id, page: evidence.source.page, segmentUid: evidence.source.segment_uid, originPane: pane });
+          }} />;
       case 'library':
         return renderLibraryView(true);
       case 'settings':
-        return <div className="h-full min-h-0 overflow-hidden">{renderSettingsPanel()}</div>;
+        return <div className="h-full min-h-0 overflow-hidden">
+          <Suspense fallback={<div className="px-4 py-3 text-sm text-muted-foreground" role="status">正在载入设置…</div>}>
+            {renderSettingsPanel(surface)}
+          </Suspense>
+        </div>;
       case 'create-entry':
         return <div className="h-full min-h-0 overflow-hidden">{renderCreateEntryPanel()}</div>;
       case 'mineru-client-guide':
-        return <div className="h-full min-h-0 overflow-y-auto"><MineruClientImportGuide /></div>;
+        return <div data-guide="mineru-tutorial" role="region" aria-label="MinerU 客户端导入教程" tabIndex={0}
+          className="h-full min-h-0 overflow-y-auto overscroll-contain"><MineruClientImportGuide /></div>;
       case 'tag-editor':
         return <TagEditorPage standalone workspaceRoot={workspaceRoot} onOpenTrash={onOpenTrash} onRestoreTagArchive={onRestoreTagArchive} activeTag={activeTag} entries={entries} tags={tags} onCreateTagPath={onCreateTagPath} onDeleteTag={onDeleteTag} onRenameTag={onRenameTag} onSelectTag={(id) => { if (id) onOpenTagLibrary(id); else onSelectTag(null); }} />;
       default:
         return <EmptyPane />;
     }
   };
-  const renderPaneSurfaces = (
-    tabs: WorkspaceSurface[],
-    active: WorkspaceSurface,
+  const renderRetainedSurface = (
+    surface: WorkspaceSurface,
     sibling: WorkspaceSurface | null,
-    pane: WorkspacePaneId
-  ) => tabs.map((surface) => {
+    pane: WorkspacePaneId,
+    activeSurface: boolean
+  ) => {
     const key = surfaceKey(surface);
-    const activeSurface = key === surfaceKey(active);
     const shouldMount =
       activeSurface || hasUnsavedSegmentEditors(key) || !isHeavyReaderSurface(surface) || !expiredHeavySurfaceKeys.has(key);
     return (
-      <div
-        className={activeSurface ? 'workspace-pane-surface is-active' : 'workspace-pane-surface'}
-        key={key}
-      >
-        {shouldMount ? renderSurface(activeSurface ? active : surface, sibling, pane) : null}
-      </div>
+        <RelationReturnFrame visible={hasRelationsPage && relationOrigins.has(key)} onReturn={() => onOpenSurface({ kind: 'relations' })}>
+          <ReadingStateRetention key={workspaceRoot} storageKey={surface.kind === 'pdf' || surface.kind === 'reflow' ? readingViewStorageKey(workspaceRoot, key) : undefined}>
+            <ReadingViewSession surface={surface} workspaceRoot={workspaceRoot} active={activeSurface}>
+            {shouldMount ? renderSurface(surface, sibling, pane) : null}
+            </ReadingViewSession>
+          </ReadingStateRetention>
+        </RelationReturnFrame>
     );
-  });
+  };
   const activePairing = surfaceLayout.right
     ? resolveWorkspaceSurfacePair(surfaceLayout.left, surfaceLayout.right)
     : null;
@@ -1041,20 +1158,13 @@ export function ReaderPane({
                 : 'workspace-split'
             }
           >
-            <div
-              className="workspace-pane"
-              data-workspace-drop-pane="left"
-              data-workspace-surface-kind={surfaceLayout.left.kind}
-              data-workspace-tab-count={surfaceLayout.leftTabs.length}
-              onPointerDown={() => onFocusSurface('left')}
-            >
-              {renderPaneSurfaces(surfaceLayout.leftTabs, surfaceLayout.left, surfaceLayout.right, 'left')}
-            </div>
+            <WorkspaceSurfaceDeck layout={surfaceLayout} onFocus={onFocusSurface} renderSurface={renderRetainedSurface} />
             {surfaceLayout.right ? (
               <>
                 <div
                   aria-label="调整分屏宽度"
                   className="workspace-pane-divider is-resizable"
+                  style={{ gridColumn: 2, gridRow: 1 }}
                   role="separator"
                   tabIndex={0}
                   aria-orientation="vertical"
@@ -1071,15 +1181,6 @@ export function ReaderPane({
                     style={{ transform: `translate3d(${workspaceSplitPreviewLeft}px, 0, 0)` }}
                   />
                 ) : null}
-                <div
-                  className="workspace-pane"
-                  data-workspace-drop-pane="right"
-                  data-workspace-surface-kind={surfaceLayout.right.kind}
-                  data-workspace-tab-count={surfaceLayout.rightTabs.length}
-                  onPointerDown={() => onFocusSurface('right')}
-                >
-                  {renderPaneSurfaces(surfaceLayout.rightTabs, surfaceLayout.right, surfaceLayout.left, 'right')}
-                </div>
               </>
             ) : null}
           </div>

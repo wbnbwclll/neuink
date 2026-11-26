@@ -1,8 +1,16 @@
 import { jsonSchema, tool, type JSONSchema7, type ToolSet } from 'ai';
+import { PDF_TOOL_NAMES } from './pdfTools';
+import { loadAssistantToolCatalog } from './toolCatalog';
+import { assertResearchRetry } from './researchRecovery';
+import { buildDiagramArtifact } from './diagramArtifact';
+import { createBrowserTabTool } from './browserTabTool';
+import type { BrowserTabTarget } from '@/shared/ipc/browserApi';
+import { safeToolErrorEvent, toolPreflight, trackToolFailures, ToolPreconditionError } from './toolFailurePolicy';
+import { createAgentToolFailure, isAgentToolFailure } from '../agent-core/toolFailure';
+import { AgentLocalLimitError, AgentStoppedError } from '../agent-core/agent';
 
 import type {
   AssistantContextSnapshot,
-  AssistantToolDescriptor,
   AssistantToolTraceEvent,
   ConversationMessage,
   ConversationSourceLink,
@@ -11,7 +19,7 @@ import type {
   ReadSegmentContentResponse,
   ScopeSnapshot
 } from '@/shared/ipc/assistantApi';
-import { invokeAssistantTool, listTools } from '@/shared/ipc/assistantApi';
+import { invokeAssistantTool } from '@/shared/ipc/assistantApi';
 import type {
   AgentInvocationPlan,
   AssistantActiveNote,
@@ -36,9 +44,6 @@ import {
   entryIdOrSingleScope,
   errorMessage,
   executeTool,
-  loadSkillOutput,
-  maxMarker,
-  mcpToolDescriptors,
   mcpToolIdsForAgent,
   modelInputSchema,
   modelToolName,
@@ -58,10 +63,6 @@ import {
   requiredString,
   runSubagentInputSchema,
   runningSummary,
-  searchSkillsOutput,
-  skillLoadInputSchema,
-  skillSearchInputSchema,
-  sourceKey,
   stringArray,
   tagProposalInputSchema,
   toolDescription,
@@ -77,8 +78,13 @@ import {
 
 import { assistantContextCharBudget } from './contextBudget';
 import { runSubagentTask } from '../runtime/subagent';
+import type { DurableExecution } from '../runtime/durableExecution';
 import { stableHash } from '../runtime/evidenceLedger';
-import type { AgentLoopGuard } from '../agent-core';
+import { RunBudget, type AgentLoopGuard } from '../agent-core';
+import { SourceLedger } from '../runtime/sourceLedger';
+import type { ApplicationActions } from '../runtime/applicationActions';
+import { resolveModelProfile } from './modelTasks';
+import { PLANNING_READ_TOOLS } from '../runtime/executionPolicy';
 import { buildEntryMetaProposal } from './entryMetaProposal';
 import {
   ENTRY_META_PROPOSAL_TOOL_DESCRIPTION,
@@ -87,6 +93,8 @@ import {
 } from './entryMetaProposalTool';
 
 const SUPPORTED_TOOL_NAMES = new Set([
+  ...PDF_TOOL_NAMES,
+  'search_papers', 'search_web', 'read_webpage', 'import_papers',
   'search_segments',
   'read_segment_content',
   'read_entry_assistant_context',
@@ -104,12 +112,10 @@ export function scopedEnabledToolIds(
   invocationPlan?: AgentInvocationPlan | null
 ) {
   const planned = invocationPlan ? new Set(invocationPlan.enabledToolIds) : null;
-  const candidates = [...new Set([
-    ...agentToolIds,
-    ...(invocationPlan?.enabledToolIds ?? []) as AgentToolId[]
-  ])];
+  const candidates = [...new Set(agentToolIds)];
 
   return candidates.filter((toolId) => {
+    if (invocationPlan?.executionMode === 'plan' && !PLANNING_READ_TOOLS.has(toolId)) return false;
     if (planned && !planned.has(toolId)) {
       return false;
     }
@@ -141,10 +147,19 @@ type TagProposalHandler = (proposal: AssistantTagProposal) => void;
 type CreateEntryHandler = (title: string) => Promise<AssistantEntryMetaTarget>;
 
 type CreateAssistantToolsOptions = {
+  execution?: DurableExecution;
+  actorId?: string;
+  restoredState?: ToolRuntimeState;
+  applicationActions?: ApplicationActions;
+  abortSignal?: AbortSignal;
+  budget?: RunBudget;
+  sourceLedger?: SourceLedger;
+  defaultProfile?: LlmProfile;
   activeExecution?: AgentExecutionSelection | null;
   availableEntries?: AssistantEntryMetaTarget[];
   assistantContext?: AssistantContext | null;
   contextSnapshot?: AssistantContextSnapshot | null;
+  browserTabTarget?: BrowserTabTarget | null;
   contextBudget?: number;
   conversationHistory?: ConversationMessage[];
   currentEntry?: {
@@ -170,11 +185,23 @@ type CreateAssistantToolsOptions = {
 };
 
 type AssistantToolRuntime = {
+  availabilityNotes: string[];
+  identityToolNames: string[];
+  snapshot: () => ToolRuntimeState;
   events: AssistantToolTraceEvent[];
   observations: Array<{ output: unknown; toolName: string }>;
   sourceByMarker: Map<number, ConversationSourceLink>;
   toolNames: string[];
   tools: ToolSet;
+};
+
+export type ToolRuntimeState = {
+  /** First-run capabilities: restoration may narrow availability, never expand it. */
+  toolNames?: string[];
+  events: AssistantToolTraceEvent[];
+  observations: Array<{ output: unknown; toolName: string }>;
+  createdEntries: Array<[string, AssistantEntryMetaTarget]>;
+  readNotes: Array<[string, { markdown: string; title: string }]>;
 };
 
 type JsonObject = Record<string, unknown>;
@@ -191,17 +218,25 @@ type ToolEvidence = {
 };
 
 export async function createAssistantTools({
+  execution,
+  actorId = 'main',
+  restoredState,
+  applicationActions,
+  abortSignal,
+  budget = new RunBudget(),
+  sourceLedger,
+  defaultProfile,
   activeExecution,
   availableEntries = [],
   assistantContext,
   contextSnapshot,
+  browserTabTarget,
   contextBudget = assistantContextCharBudget(null),
   conversationHistory = [],
   currentEntry,
   currentNote,
   executionDepth = 0,
   initialSourceByMarker,
-  markerStart = 1,
   loopGuard,
   onCreateEntry,
   onNoteProposal,
@@ -215,35 +250,22 @@ export async function createAssistantTools({
   runtimeSettings,
   scope
 }: CreateAssistantToolsOptions): Promise<AssistantToolRuntime> {
-  const descriptors = [
-    ...(await listTools()),
-    ...mcpToolDescriptors(runtimeSettings)
-  ];
-  const events: AssistantToolTraceEvent[] = [];
-  const observations: Array<{ output: unknown; toolName: string }> = [];
-  const sourceByMarker = new Map<number, ConversationSourceLink>(initialSourceByMarker ?? []);
-  const markerBySourceKey = new Map<string, number>();
-  let nextMarker = Math.max(markerStart, maxMarker(sourceByMarker) + 1);
-
-  for (const [marker, source] of sourceByMarker) {
-    markerBySourceKey.set(sourceKey(source), marker);
-  }
-
+  abortSignal?.throwIfAborted();
+  const { descriptors, notes: availabilityNotes, events: initializationErrors } = await loadAssistantToolCatalog({
+    root, signal: abortSignal, runtimeSettings, activeExecution, invocationPlan
+  });
+  const events: AssistantToolTraceEvent[] = [...(restoredState?.events ?? [])];
+  const observations: Array<{ output: unknown; toolName: string }> = [...(restoredState?.observations ?? [])];
+  const ledger = sourceLedger ?? new SourceLedger(initialSourceByMarker);
+  const sourceByMarker = ledger.sources;
   const addSource = (source: ConversationSourceLink) => {
-    const key = sourceKey(source);
-    const existing = markerBySourceKey.get(key);
-    if (existing) {
-      return existing;
-    }
-
-    const marker = nextMarker;
-    nextMarker += 1;
-    sourceByMarker.set(marker, source);
-    markerBySourceKey.set(key, marker);
-    return marker;
+    abortSignal?.throwIfAborted();
+    return ledger.add(source);
   };
 
   const emit = (event: AssistantToolTraceEvent) => {
+    if (abortSignal?.aborted) return;
+    event = safeToolErrorEvent(event);
     const index = events.findIndex((current) => current.id === event.id);
     const nextEvent =
       index >= 0
@@ -263,8 +285,9 @@ export async function createAssistantTools({
   };
 
   const tools: ToolSet = {};
-  const createdEntryByTitle = new Map<string, AssistantEntryMetaTarget>();
-  const readNoteSnapshots = new Map<string, { markdown: string; title: string }>();
+  for (const event of initializationErrors) emit(event);
+  const createdEntryByTitle = new Map<string, AssistantEntryMetaTarget>(restoredState?.createdEntries);
+  const readNoteSnapshots = new Map<string, { markdown: string; title: string }>(restoredState?.readNotes);
 
   const scopedToolIds = scopedEnabledToolIds(
     [
@@ -282,8 +305,84 @@ export async function createAssistantTools({
   );
   const enabledToolIds = new Set<AgentToolId>(permissionAudit.allowedToolIds);
 
-  if (enabledToolIds.has('create_entry') && onCreateEntry) {
+  if (browserTabTarget && enabledToolIds.has('read_browser_tab') &&
+      activeExecution?.agent.kind === 'main_assistant' && executionDepth === 0) {
+    tools.read_browser_tab = createBrowserTabTool({
+      target: browserTabTarget, contextBudget, abortSignal, loopGuard, emit,
+      observe: output => observations.push({ output, toolName: 'read_browser_tab' })
+    });
+  }
+
+  // Host-owned read-only presentation capability. It does not write to the workspace.
+  if (!activeExecution || activeExecution.agent.kind === 'main_assistant') {
+    tools.present_diagram = tool<unknown, unknown>({
+      description: 'Present a mind map or flowchart in Neuink. Supply nodes and, for a flowchart, edges as structured data. The host validates evidence markers and renders the diagram. Call this when the user requests a visual diagram; do not place raw Mermaid in the final answer.',
+      inputSchema: jsonSchema<unknown>({
+        type: 'object', additionalProperties: false, required: ['kind', 'title', 'nodes'],
+        properties: {
+          kind: { type: 'string', enum: ['mindmap', 'flowchart'] },
+          title: { type: 'string', minLength: 1, maxLength: 120 },
+          nodes: { type: 'array', minItems: 1, maxItems: 60, items: { type: 'object', additionalProperties: false,
+            required: ['id', 'label'], properties: {
+              id: { type: 'string', pattern: '^[A-Za-z][A-Za-z0-9_]{0,31}$' },
+              label: { type: 'string', minLength: 1, maxLength: 120 },
+              parent_id: { type: 'string' },
+              source_markers: { type: 'array', items: { type: 'integer', minimum: 1 } }
+            } } },
+          edges: { type: 'array', maxItems: 100, items: { type: 'object', additionalProperties: false,
+            required: ['from', 'to'], properties: {
+              from: { type: 'string' }, to: { type: 'string' }, label: { type: 'string', maxLength: 80 }
+            } } }
+        }
+      } as JSONSchema7),
+      execute: async (input, options) => {
+        (options.abortSignal ?? abortSignal)?.throwIfAborted();
+        try {
+          const diagram = buildDiagramArtifact(input, new Set(sourceByMarker.keys()));
+          emit({ id: options.toolCallId, input, status: 'done', toolName: 'present_diagram',
+            summary: `已生成${diagram.kind === 'mindmap' ? '思维导图' : '流程图'}：${diagram.title}`,
+            diagram, sources: diagram.sourceMarkers.map(marker => sourceByMarker.get(marker)!).filter(Boolean) });
+          return { status: 'rendered', kind: diagram.kind, title: diagram.title,
+            source_markers: diagram.sourceMarkers, mermaid: diagram.code };
+        } catch (error) {
+          emit({ id: options.toolCallId, input, status: 'error', toolName: 'present_diagram', error: errorMessage(error) });
+          throw error;
+        }
+      }
+    });
+  }
+
+  if (enabledToolIds.has('app.set_appearance') && applicationActions && activeExecution?.agent.kind === 'main_assistant') {
+    tools.app_set_appearance = tool({
+      needsApproval: true,
+      description: 'Change the application visual style only when requested by the user. standard=标准, atelier=工作室, liquid-glass=液态玻璃. This reversible local preference never changes documents or model settings.',
+      inputSchema: jsonSchema<{ appearance: 'standard' | 'atelier' | 'liquid-glass' }>({
+        type: 'object', properties: { appearance: { type: 'string', enum: ['standard', 'atelier', 'liquid-glass'] } },
+        required: ['appearance'], additionalProperties: false
+      }),
+      execute: async (input, options) => {
+        (options.abortSignal ?? abortSignal)?.throwIfAborted();
+        const appearance = toolPreflight(() => requiredEnum(asObject(input).appearance, 'appearance', ['standard', 'atelier', 'liquid-glass'] as const));
+        loopGuard?.beforeToolCall('app.set_appearance', input);
+        const result = applicationActions.setAppearance(appearance);
+        emit({ id: options.toolCallId, toolName: 'app.set_appearance', status: 'done',
+          summary: result.persisted ? `Appearance changed to ${result.current}.` : `Appearance changed for this session; preference could not be saved.` });
+        return result;
+      }
+    });
+  }
+
+  const canPropose = activeExecution?.agent.permissions.canWriteProposals === true &&
+    activeExecution.agent.sandbox !== 'read-only' && invocationPlan?.writePolicy === 'proposal_only';
+
+  if (enabledToolIds.has('create_entry') && onCreateEntry &&
+    activeExecution?.agent.kind === 'main_assistant' && activeExecution.agent.permissions.canWriteProposals &&
+    activeExecution.agent.sandbox !== 'read-only' && (
+      (invocationPlan?.writePolicy === 'workspace_write' && plan?.intent === 'entry_create') ||
+      (invocationPlan?.executionMode === 'act' && invocationPlan.writePolicy === 'proposal_only')
+    )) {
     tools.create_entry = tool<unknown, unknown>({
+      needsApproval: true,
       description:
         'Create an Entry as an external side effect. Choose the title yourself from the conversation, then call this tool once. Do not use this tool when the user only asks for title suggestions.',
       inputSchema: jsonSchema<unknown>({
@@ -300,7 +399,7 @@ export async function createAssistantTools({
       } as JSONSchema7),
       execute: async (input, options) => {
         const object = asObject(input);
-        const title = requiredString(object.title, 'title');
+        const title = toolPreflight(() => requiredString(object.title, 'title'));
         const cached = createdEntryByTitle.get(title);
         if (cached) {
           emit({
@@ -350,6 +449,7 @@ export async function createAssistantTools({
   }
 
   for (const descriptor of descriptors) {
+    if (descriptor.name === 'import_papers' && (!canPropose || activeExecution?.agent.kind !== 'main_assistant')) continue;
     if (!SUPPORTED_TOOL_NAMES.has(descriptor.name) && !descriptor.name.startsWith('mcp.')) {
       continue;
     }
@@ -360,6 +460,8 @@ export async function createAssistantTools({
     const exposedToolName = modelToolName(descriptor.name);
     assertModelToolNameAvailable(tools, descriptor.name, exposedToolName);
     tools[exposedToolName] = tool<unknown, unknown>({
+      // MCP declarations/annotations are not a trusted guarantee of read-only behavior.
+      needsApproval: descriptor.name.startsWith('mcp.') || descriptor.name === 'import_papers',
       description: toolDescription(descriptor),
       inputSchema: jsonSchema<unknown>(modelInputSchema(descriptor)),
       execute: async (input, options) => {
@@ -368,8 +470,9 @@ export async function createAssistantTools({
         let fingerprint: string | undefined;
 
         try {
-          const normalizedInput = normalizeToolInput(toolName, input, { root, scope });
-          assertToolPrerequisites(toolName, normalizedInput, observations);
+          const normalizedInput = toolPreflight(() => normalizeToolInput(toolName, input, { root, scope }));
+          toolPreflight(() => assertToolPrerequisites(toolName, normalizedInput, observations), 'TOOL_PREFLIGHT_FAILED');
+          assertResearchRetry(toolName, normalizedInput, events);
           fingerprint = loopGuard?.beforeToolCall(toolName, normalizedInput);
           emit({
             id: toolCallId,
@@ -380,16 +483,24 @@ export async function createAssistantTools({
           });
 
           const output = await executeTool(toolName, normalizedInput, {
+            toolCallId,
             addSource,
+            signal: options.abortSignal ?? abortSignal,
             contextBudget
           });
+          (options.abortSignal ?? abortSignal)?.throwIfAborted();
           observations.push({ output: output.modelOutput, toolName });
+          if (isAgentToolFailure(output.modelOutput)) {
+            if (fingerprint) loopGuard?.recordFailure(fingerprint);
+            return output.modelOutput;
+          }
           loopGuard?.recordSuccess(output.modelOutput);
 
           emit({
             id: toolCallId,
             input: publicInput(normalizedInput),
             sources: output.sources,
+            researchPapers: 'researchPapers' in output ? output.researchPapers : undefined,
             status: 'done',
             summary: output.summary,
             toolName
@@ -534,7 +645,7 @@ export async function createAssistantTools({
     'segment_note.propose_patch'
   ] as const;
   for (const toolName of proposalToolNames) {
-    if (!enabledToolIds.has(toolName) || !onNoteProposal) continue;
+    if (!canPropose || !enabledToolIds.has(toolName) || !onNoteProposal) continue;
     const exposedToolName = modelToolName(toolName);
     assertModelToolNameAvailable(tools, toolName, exposedToolName);
     tools[exposedToolName] = tool<unknown, unknown>({
@@ -543,6 +654,8 @@ export async function createAssistantTools({
       execute: async (input, options) => {
         loopGuard?.beforeToolCall(toolName, input);
         const normalizedInput = proposalToolInput(toolName, input, plan);
+        const createdEntries = toolName === 'note.propose_create' &&
+          (!plan?.noteAction || plan.noteAction === 'create') ? [...createdEntryByTitle.values()] : [];
         const proposal = buildNoteProposal(normalizedInput, {
           assistantContext,
           availableEntries,
@@ -551,9 +664,15 @@ export async function createAssistantTools({
           currentNote,
           plan,
           readNoteSnapshots,
-          scope,
+          // An approved create_entry result authorizes drafting a new note there.
+          // It does not expand reads or permit edits to unrelated existing notes.
+          scope: { ...scope, entry_ids: [...scope.entry_ids, ...createdEntries.map(entry => entry.id)],
+            entry_titles: [...scope.entry_titles, ...createdEntries.map(entry => entry.title)] },
           sourceByMarker
         });
+        if (sourceByMarker.size > 0 && proposal.markdown.trim() && proposal.sources.length === 0) {
+          throw new ToolPreconditionError('inline_citations_required');
+        }
         onNoteProposal(proposal);
         loopGuard?.recordSuccess({ proposal_id: proposal.id });
         emit({
@@ -572,7 +691,7 @@ export async function createAssistantTools({
     }) as ToolSet[string];
   }
 
-  if (enabledToolIds.has('entry.propose_meta_patch') && onEntryMetaProposal && plan) {
+  if (canPropose && enabledToolIds.has('entry.propose_meta_patch') && onEntryMetaProposal && plan) {
     const toolName = 'entry.propose_meta_patch';
     const exposedToolName = modelToolName(toolName);
     assertModelToolNameAvailable(tools, toolName, exposedToolName);
@@ -604,7 +723,7 @@ export async function createAssistantTools({
     }) as ToolSet[string];
   }
 
-  if (enabledToolIds.has('tag.propose_change') && onTagProposal) {
+  if (canPropose && enabledToolIds.has('tag.propose_change') && onTagProposal) {
     const toolName = 'tag.propose_change';
     const exposedToolName = modelToolName(toolName);
     assertModelToolNameAvailable(tools, toolName, exposedToolName);
@@ -619,7 +738,7 @@ export async function createAssistantTools({
         const proposal: AssistantTagProposal = {
           action,
           createdAt: new Date().toISOString(),
-          entryIds: stringArray(object.entry_ids),
+          entryIds: [...new Set(stringArray(object.entry_ids))],
           id: `tag-proposal-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           name: optionalString(object.name) ?? undefined,
           newName: optionalString(object.new_name) ?? undefined,
@@ -630,6 +749,13 @@ export async function createAssistantTools({
         if ((action === 'attach' || action === 'detach') && proposal.entryIds.length === 0) {
           throw new Error('Tag attach/detach proposals require entry_ids.');
         }
+        if (proposal.entryIds.some(id => !availableEntries.some(entry => entry.id === id))) {
+          throw new Error('标签提案包含未知条目，请先确认目标条目。');
+        }
+        if (action === 'create' && !proposal.name) throw new Error('创建标签需要名称。');
+        if (action === 'rename' && (!proposal.tagId || !proposal.newName)) throw new Error('重命名标签需要明确的标签 ID 和新名称。');
+        if ((action === 'attach' || action === 'detach') && !proposal.tagId && !proposal.name) throw new Error('请指定要添加或移除的标签。');
+        proposal.entryTitles = Object.fromEntries(proposal.entryIds.map(id => [id, availableEntries.find(entry => entry.id === id)!.title]));
         onTagProposal(proposal);
         loopGuard?.recordSuccess({ proposal_id: proposal.id });
         emit({
@@ -644,74 +770,16 @@ export async function createAssistantTools({
     }) as ToolSet[string];
   }
 
-  if (enabledToolIds.has('skill.search')) {
-    tools.skill_search = tool<unknown, unknown>({
-      description:
-        'List loaded Neuink skill packages for the current agent. Use this when deciding which SKILL.md instructions to load before a larger task.',
-      inputSchema: jsonSchema<unknown>(skillSearchInputSchema()),
-      execute: async (input, options) => {
-        const toolCallId = options.toolCallId;
-        loopGuard?.beforeToolCall('skill.search', input);
-        emit({
-          id: toolCallId,
-          input: publicInput(input),
-          status: 'running',
-          summary: 'Listing loaded skill packages for the current agent.',
-          toolName: 'skill.search'
-        });
-
-        const output = searchSkillsOutput(input, activeExecution?.skillPackages ?? []);
-        loopGuard?.recordSuccess(output.modelOutput);
-        emit({
-          id: toolCallId,
-          input: publicInput(input),
-          status: 'done',
-          summary: output.summary,
-          toolName: 'skill.search'
-        });
-        return output.modelOutput;
-      }
-    }) as ToolSet[string];
-  }
-
-  if (enabledToolIds.has('skill.load')) {
-    tools.skill_load = tool<unknown, unknown>({
-      description:
-        'Load one Neuink skill package by id. Use this to fetch SKILL.md instructions before performing a report, synthesis, or slide generation task.',
-      inputSchema: jsonSchema<unknown>(skillLoadInputSchema()),
-      execute: async (input, options) => {
-        const toolCallId = options.toolCallId;
-        loopGuard?.beforeToolCall('skill.load', input);
-        emit({
-          id: toolCallId,
-          input: publicInput(input),
-          status: 'running',
-          summary: 'Loading skill instructions.',
-          toolName: 'skill.load'
-        });
-        const output = loadSkillOutput(input, activeExecution?.skillPackages ?? []);
-        loopGuard?.recordSuccess(output.modelOutput);
-        emit({
-          id: toolCallId,
-          input: publicInput(input),
-          status: 'done',
-          summary: output.summary,
-          toolName: 'skill.load'
-        });
-        return output.modelOutput;
-      }
-    }) as ToolSet[string];
-  }
-
   if (
     enabledToolIds.has('task.run_subagent') &&
     runtimeSettings &&
     activeExecution?.agent.permissions.canInvokeSubagents &&
-    executionDepth < 2
+    resolveAllowedSubagents(runtimeSettings, activeExecution.agent).length > 0 &&
+    executionDepth < budget.maxDepth
   ) {
     tools.task_run_subagent = tool<unknown, unknown>({
       description:
-        'Delegate the current task to an allowed Neuink subagent. Use this for report outlines, PPT outlines, evidence synthesis, or focused research subtasks.',
+        'Delegate a focused evidence search or reading task to an enabled Neuink evidence subagent.',
       inputSchema: jsonSchema<unknown>(runSubagentInputSchema(activeExecution)),
       execute: async (input, options) => {
         const toolCallId = options.toolCallId;
@@ -735,13 +803,17 @@ export async function createAssistantTools({
             throw new Error('The selected subagent is not allowed for the current agent.');
           }
 
-          const profile =
-            profiles.find((item) => item.id === resolvedAgent.llmProfileId) ?? profiles[0];
-          if (!profile) {
-            throw new Error('No LLM profile is available for subagent execution.');
-          }
+          const profile = resolveModelProfile(resolvedAgent.llmProfileId, profiles, defaultProfile);
 
           const result = await runSubagentTask({
+            execution,
+            actorId: `${actorId}/${toolCallId}`,
+            abortSignal: options.abortSignal ?? abortSignal,
+            budget,
+            sourceLedger: ledger,
+            executionDepth: executionDepth + 1,
+            parentAgent: { ...activeExecution.agent, enabledToolIds: [...enabledToolIds] },
+            profiles,
             agentId,
             contextSnapshot,
             conversationHistory,
@@ -754,12 +826,7 @@ export async function createAssistantTools({
             settings: profile
           });
           loopGuard?.recordSuccess(result);
-          const subagentSkillPackages = runtimeSettings.skillPackages.filter(
-            (skillPackage) =>
-              skillPackage.enabled &&
-              resolvedAgent.allowedSkillPackageIds.includes(skillPackage.id)
-          );
-
+          observations.push({ toolName: 'task.run_subagent', output: { externalSourceUrls: result.externalSourceUrls } });
           emit({
             id: toolCallId,
             input: publicInput(input),
@@ -774,14 +841,15 @@ export async function createAssistantTools({
             agent_id: resolvedAgent.id,
             agent_name: resolvedAgent.name,
             kind: 'subagent_result',
+            externalSourceUrls: result.externalSourceUrls,
             sources: result.sources,
-            skill_summary: buildAgentSystemPrompt(
-              resolvedAgent,
-              subagentSkillPackages
-            ),
+            agent_summary: buildAgentSystemPrompt(resolvedAgent),
             trace: result.trace
           };
         } catch (error) {
+          (options.abortSignal ?? abortSignal)?.throwIfAborted();
+          if ((error instanceof AgentStoppedError && !(error instanceof AgentLocalLimitError))
+            || (error instanceof Error && error.name === 'AbortError')) throw error;
           emit({
             error: errorMessage(error),
             id: toolCallId,
@@ -789,18 +857,36 @@ export async function createAssistantTools({
             status: 'error',
             toolName: 'task.run_subagent'
           });
-          throw error;
+          const failure = createAgentToolFailure('TOOL_EXECUTION_FAILED');
+          if (error instanceof AgentLocalLimitError) failure.diagnostic = {
+            output_length: '子任务输出达到长度上限，未完成结论。',
+            context_capacity: '子任务上下文容量不足，未完成结论。',
+            turn_limit: '子任务局部轮次已用完，交由主助手总结。'
+          }[error.reason];
+          return { ...failure, evidence: [...sourceByMarker].slice(-8).map(([marker, source]) => ({
+            marker: `[S${marker}]`, quote: source.quote?.slice(0, 600)
+          })) };
         }
       }
     }) as ToolSet[string];
   }
 
   assertValidModelToolNames(tools);
+  if (restoredState?.toolNames) {
+    const frozen = new Set(restoredState.toolNames);
+    for (const name of Object.keys(tools)) if (!frozen.has(name)) delete tools[name];
+  }
+  const toolNames = Object.keys(tools);
+  trackToolFailures(tools, emit, abortSignal);
+  const identityToolNames = restoredState?.toolNames ? [...restoredState.toolNames] : toolNames;
   return {
+    availabilityNotes,
+    identityToolNames,
+    snapshot: () => ({ toolNames: [...identityToolNames], events, observations, createdEntries: [...createdEntryByTitle], readNotes: [...readNoteSnapshots] }),
     events,
     observations,
     sourceByMarker,
-    toolNames: Object.keys(tools),
+    toolNames,
     tools
   };
 }
@@ -828,8 +914,6 @@ function assertToolPrerequisites(
   );
   const docId = requiredString(input.doc_id, 'doc_id');
   if (!searchedDocIds.has(docId)) {
-    throw new Error(
-      'read_sciverse_content requires a doc_id returned by search_sciverse_evidence earlier in this run.'
-    );
+    throw new ToolPreconditionError('source_search_required');
   }
 }

@@ -6,6 +6,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SegmentRegion, buildPreviewLayout } from './SegmentRegion';
 
 describe('PDF segment preview layout', () => {
+  it('keeps the same reading font for short and long paragraph previews', () => {
+    const options = { hasFooter: false, position: { x: 100, segmentTop: 100, segmentBottom: 120 }, preferScrollable: false };
+    const short = buildPreviewLayout({ ...options, text: 'Short text' });
+    const long = buildPreviewLayout({ ...options, text: '很长的段落。'.repeat(2000) });
+    expect(long.contentStyle.fontSize).toBe(short.contentStyle.fontSize);
+    expect(long.contentStyle.lineHeight).toBe(short.contentStyle.lineHeight);
+    expect(long.contentStyle.columnCount).toBe(1);
+  });
+
+  it('lets paragraph previews receive pointers and scroll without closing or selecting the source', () => {
+    const onEnter = vi.fn(), onLeave = vi.fn(), onToggle = vi.fn();
+    const view = render(<SegmentRegion active flashed={false} hasAnnotation={false} hasNote={false} hovered isContinuation={false}
+      pageIdx={0} previewPosition={{ x: 100, segmentTop: 100, segmentBottom: 150 }} previewAnnotations={[]} previewNote={null}
+      previewShowOriginal previewShowTranslation={false} previewShowNote={false} previewShowAnnotation={false} previewShowRegion
+      regionBbox={[100, 100, 800, 300]} regionId="long-paragraph" segment={{ uid: 'long-paragraph', segment_type: 'paragraph', page_idx: 0, markdown: null, text: '长正文。'.repeat(500), bbox: [100, 100, 800, 300] }}
+      showRegions={false} sourceBacklinkCount={0} sourceEntryId="entry" translatedSegment={null} translationMode="hover" translationStatus={null} translationVisible={false} workspaceRoot={null}
+      onPreviewPointerEnter={onEnter} onPreviewPointerLeave={onLeave} onToggleSegment={onToggle} />);
+    const preview = view.getByRole('region', { name: '片段悬停预览' });
+    expect(preview.className).toContain('overflow-y-auto');
+    fireEvent.pointerEnter(preview);
+    expect(onEnter).toHaveBeenCalled();
+    fireEvent.scroll(preview, { target: { scrollTop: 100 } });
+    expect(view.getByRole('region', { name: '片段悬停预览' })).toBe(preview);
+    fireEvent.click(preview);
+    expect(onToggle).not.toHaveBeenCalled();
+    fireEvent.pointerLeave(preview);
+    expect(onLeave).toHaveBeenCalled();
+    fireEvent.keyDown(preview, { key: 'Escape' });
+    expect(view.queryByRole('region', { name: '片段悬停预览' })).toBeNull();
+  });
   beforeEach(() => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1000 });
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
@@ -19,7 +49,11 @@ describe('PDF segment preview layout', () => {
     vi.restoreAllMocks();
   });
 
-  it('shows only the translation matching the hovered list item', async () => {
+  it.each([
+    { item: 'Second source item', source: '- First source item\n- Second source item', translated: '- 第一项译文\n- 第二项译文', expected: '第二项译文', absent: '第一项译文' },
+    { item: '[17] S. K. McGrath, Stakeholder defined', source: '[3] G. Lucassen, User stories\n[17] S. K. McGrath, Stakeholder defined', translated: '[17] 利益相关者的定义\n[3] 用户故事的使用', expected: '[17] 利益相关者的定义', absent: '用户故事的使用' },
+    { item: 'S. K. McGrath, Stakeholder defined', source: '[17] S. K. McGrath, Stakeholder defined\n[3] G. Lucassen, User stories', translated: '[17] 利益相关者的定义\n[3] 用户故事的使用', expected: '[17] 利益相关者的定义', absent: '用户故事的使用' },
+  ])('shows the translation matching the hovered source: $item', async ({ item, source, translated, expected, absent }) => {
     render(
       <SegmentRegion
         active
@@ -43,15 +77,15 @@ describe('PDF segment preview layout', () => {
         relatedImagePath={null}
         segment={{
           bbox: [100, 320, 900, 500],
-          markdown: 'Second source item',
+          markdown: item,
           mineru_metadata: {
             list_item_regions: JSON.stringify([
-              { bbox: [100, 320, 900, 500], text: 'Second source item' },
+              { bbox: [100, 320, 900, 500], text: item },
             ]),
           },
           page_idx: 0,
           segment_type: 'list',
-          text: 'Second source item',
+          text: item,
           uid: 'list-1:list-item:1',
         }}
         showRegions={false}
@@ -63,9 +97,9 @@ describe('PDF segment preview layout', () => {
           segment_type: 'list',
           segment_uid: 'list-1',
           source_hash: 'hash',
-          source_text: '- First source item\n- Second source item',
+          source_text: source,
           status: 'translated',
-          translated_text: '- 第一项译文\n- 第二项译文',
+          translated_text: translated,
           updated_at: '2026-07-17T00:00:00Z',
         }}
         translationMode="hover"
@@ -77,9 +111,9 @@ describe('PDF segment preview layout', () => {
     );
 
     await waitFor(() => {
-      expect(document.body.textContent).toContain('第二项译文');
+      expect(document.body.textContent).toContain(expected);
     });
-    expect(document.body.textContent).not.toContain('第一项译文');
+    expect(document.body.textContent).not.toContain(absent);
   });
 
   it('shows the saved note and annotations when their preview sections are enabled', async () => {

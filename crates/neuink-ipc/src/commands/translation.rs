@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
         Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant},
@@ -15,13 +15,41 @@ use neuink_domain::{EntryId, SegmentType, SegmentUid, SourceSegment};
 use neuink_job::{Job, JobKind, JobScope};
 use neuink_workspace::{
     EntryTranslation, TranslatedSegment, TranslatedSegmentStatus, TranslationPaperContext,
-    TranslationProgress, TranslationStatus, TranslationTerm, Workspace,
+    TranslationProgress, TranslationStatus, TranslationTaskSnapshot, TranslationTerm, Workspace,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Runtime};
 use tokio::time::timeout;
+
+mod batch_recovery;
+mod batch_response;
+#[cfg(test)]
+mod batch_tests;
+mod control;
+mod diagrams;
+pub mod lifecycle;
+pub mod paragraph;
+mod prompts;
+mod rate_limit;
+#[cfg(test)]
+mod recovery_tests;
+mod scheduler;
+mod single_segment;
+mod transport;
+use control::{TranslationStop, TranslationTaskControl};
+use rate_limit::{RateLimitGate, RequestError};
+
+type TranslationTextSink = Arc<dyn Fn(&str) + Send + Sync>;
+type TranslationActivitySink = Arc<dyn Fn(RequestActivity) + Send + Sync>;
+
+#[derive(Clone, Copy)]
+enum RequestActivity {
+    Queued,
+    RateLimited(u64),
+    Generating,
+}
 
 use super::{
     job::{emit_job_event, job_manager},
@@ -31,6 +59,8 @@ use super::{
 const MAX_PAPER_CONTEXT_BUDGET: usize = 120_000;
 const MAX_BATCH_CHAR_BUDGET: usize = 60_000;
 const MAX_BATCH_SEGMENTS: usize = 12;
+// One merged request followed by at most one request for each member of the batch.
+const MAX_BATCH_RECOVERY_REQUESTS: usize = MAX_BATCH_SEGMENTS + 1;
 const LLM_REQUEST_BASE_TIMEOUT: Duration = Duration::from_secs(120);
 const LLM_TIMEOUT_RETRY_STEP: Duration = Duration::from_secs(60);
 const LLM_REQUEST_MAX_ATTEMPTS: u32 = 3;
@@ -41,6 +71,7 @@ const TRANSLATION_CONCURRENCY: usize = 4;
 
 static TRANSLATION_TASK_CONTROLS: OnceLock<Mutex<HashMap<String, Arc<TranslationTaskControl>>>> =
     OnceLock::new();
+static TRANSLATION_START_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Deserialize)]
 pub struct ReadEntryTranslationRequest {
@@ -161,19 +192,24 @@ pub struct RunEntryTranslationResponse {
 pub fn read_entry_translation(
     request: ReadEntryTranslationRequest,
 ) -> Result<EntryTranslationResponse, String> {
-    let workspace = Workspace::open(request.root).map_err(|error| error.to_string())?;
-    Ok(EntryTranslationResponse {
-        translation: workspace
-            .read_entry_translation(&request.entry_id)
-            .map_err(|error| error.to_string())?,
-    })
+    let _guard = TRANSLATION_START_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let workspace = Workspace::open(request.root.clone()).map_err(|error| error.to_string())?;
+    let translation = workspace
+        .read_entry_translation(&request.entry_id)
+        .map_err(|error| error.to_string())?;
+    if let Some(translation) = &translation {
+        lifecycle::restore_paused_job(&request.root, translation)?;
+    }
+    Ok(EntryTranslationResponse { translation })
 }
 
 #[tauri::command]
 pub fn begin_entry_translation(
     request: BeginEntryTranslationRequest,
 ) -> Result<EntryTranslationResponse, String> {
-    let workspace = Workspace::open(request.root).map_err(|error| error.to_string())?;
+    let workspace = Workspace::open(request.root.clone()).map_err(|error| error.to_string())?;
     let translation = new_translation(
         request.entry_id.clone(),
         request.source_language,
@@ -194,6 +230,17 @@ pub async fn run_entry_translation<R: Runtime>(
     app: AppHandle<R>,
     request: RunEntryTranslationRequest,
 ) -> Result<RunEntryTranslationResponse, String> {
+    // No awaits before worker registration: serialize check + creation across surfaces.
+    let _start_guard = TRANSLATION_START_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if job_manager().list().iter().any(|job| {
+        job.kind == JobKind::Translation
+            && matches!(job.status, neuink_job::JobStatus::Queued | neuink_job::JobStatus::Processing)
+            && matches!(&job.scope, Some(JobScope::Entry { root, entry_id }) if root == &request.root.to_string_lossy() && entry_id == &request.entry_id.to_string())
+    }) {
+        return Err("此条目已有翻译任务，请等待完成或暂停／取消后再开始。".into());
+    }
     let profile = read_translation_profile(&app)?
         .ok_or_else(|| "Please configure a translation model first.".to_string())?;
     let workspace = Workspace::open(request.root.clone()).map_err(|error| error.to_string())?;
@@ -218,12 +265,17 @@ pub async fn run_entry_translation<R: Runtime>(
     let previous = workspace
         .read_entry_translation(&request.entry_id)
         .map_err(|error| error.to_string())?;
+    if previous.as_ref().is_some_and(|translation| {
+        matches!(translation.status, TranslationStatus::Paused) && translation.task.is_some()
+    }) {
+        return Err("此条目有已暂停的翻译任务，请继续或取消当前任务。".into());
+    }
     let should_restart = (selected_segment_uids.is_none()
         && matches!(request.strategy, RunTranslationStrategy::Restart))
         || previous
             .as_ref()
             .is_none_or(|translation| translation.progress.total != total);
-    let translation = if should_restart {
+    let mut translation = if should_restart {
         new_translation(
             request.entry_id.clone(),
             request.source_language.clone(),
@@ -241,15 +293,41 @@ pub async fn run_entry_translation<R: Runtime>(
         translation.updated_at = Utc::now();
         translation
     };
-    workspace
-        .write_entry_translation(&request.entry_id, &translation)
-        .map_err(|error| error.to_string())?;
-
     let scope = JobScope::Entry {
         root: request.root.to_string_lossy().to_string(),
         entry_id: request.entry_id.to_string(),
     };
     let event = job_manager().create(JobKind::Translation, Some(scope), selected_total);
+    translation.task = Some(TranslationTaskSnapshot {
+        job_id: event.job.id.clone(),
+        profile_id: profile.id.clone(),
+        force: request.force,
+        source_hashes: segments
+            .iter()
+            .filter(|segment| {
+                selected_segment_uids
+                    .as_ref()
+                    .is_none_or(|uids| uids.contains(&segment.uid))
+            })
+            .map(|segment| (segment.uid.clone(), source_hash(&source_text(segment))))
+            .collect(),
+        remaining_segment_uids: segments
+            .iter()
+            .filter(|segment| {
+                selected_segment_uids
+                    .as_ref()
+                    .is_none_or(|uids| uids.contains(&segment.uid))
+            })
+            .map(|segment| segment.uid.clone())
+            .collect(),
+        created_at: event.job.created_at,
+    });
+    if let Err(error) = workspace.write_entry_translation(&request.entry_id, &translation) {
+        if let Some(event) = job_manager().fail(&event.job.id, error.to_string(), Value::Null) {
+            emit_job_event(&app, event);
+        }
+        return Err(error.to_string());
+    }
     emit_job_event(&app, event.clone());
 
     let job_id = event.job.id.clone();
@@ -321,65 +399,32 @@ pub async fn translate_entry_segment<R: Runtime>(
 ) -> Result<EntryTranslationResponse, String> {
     let profile = read_translation_profile(&app)?
         .ok_or_else(|| "Please configure a translation model first.".to_string())?;
-    let workspace = Workspace::open(request.root.clone()).map_err(|error| error.to_string())?;
-    let entry = workspace
-        .read_entry(&request.entry_id)
-        .map_err(|error| error.to_string())?;
-    let segments = workspace
-        .read_segments(&request.entry_id)
-        .map_err(|error| error.to_string())?;
-    let segment = segments
-        .iter()
-        .find(|segment| segment.uid == request.segment_uid)
-        .cloned()
-        .ok_or_else(|| "Source segment not found.".to_string())?;
-    if !should_translate_segment(&segment) {
-        return Err("This block is not suitable for translation.".to_string());
-    }
-
-    let existing = workspace
-        .read_entry_translation(&request.entry_id)
-        .map_err(|error| error.to_string())?;
-    if existing.is_none() {
-        let translation = new_translation(
-            request.entry_id.clone(),
-            request.source_language,
-            request.target_language,
-            Some(profile.model.clone()),
-            segments.len(),
-        );
-        workspace
-            .write_entry_translation(&request.entry_id, &translation)
-            .map_err(|error| error.to_string())?;
-    }
-    let context = existing
-        .and_then(|translation| translation.paper_context)
-        .unwrap_or(TranslationPaperContext {
-            summary: String::new(),
-            terminology: Vec::new(),
-            generated_at: Utc::now(),
-        });
-    let translated = LlmClient::new(profile)
-        .translate_batch(&entry.title, &context, std::slice::from_ref(&segment))
-        .await?;
-    update_translation(request.root, request.entry_id, |translation| {
-        upsert_segments(
-            translation,
-            [translated_segment(&segment, translated.get(&segment.uid))],
-        );
-        translation.status = TranslationStatus::Partial;
-        translation.error = None;
-    })
+    single_segment::translate(request, profile).await
 }
 
 #[tauri::command]
 pub fn pause_entry_translation(
     request: PauseEntryTranslationRequest,
 ) -> Result<Option<Job>, String> {
-    if let Some(control) = get_translation_task_control(&request.job_id) {
-        control.request_pause();
+    stop_entry_translation(&request.job_id, TranslationStop::Pause)
+}
+
+fn stop_entry_translation(job_id: &str, reason: TranslationStop) -> Result<Option<Job>, String> {
+    let job = job_manager()
+        .get(job_id)
+        .ok_or("翻译任务不存在，请重新打开翻译任务。")?;
+    if job.kind != JobKind::Translation {
+        return Err("此操作只能停止全文翻译任务。".into());
     }
-    Ok(job_manager().get(&request.job_id))
+    if let Some(control) = get_translation_task_control(job_id) {
+        control.request_stop(reason);
+    } else if matches!(
+        job.status,
+        neuink_job::JobStatus::Queued | neuink_job::JobStatus::Processing
+    ) {
+        return Err("未找到正在执行的翻译任务，请重新打开翻译任务。".into());
+    }
+    Ok(Some(job))
 }
 
 #[tauri::command]
@@ -426,8 +471,20 @@ async fn run_translation_task<R: Runtime>(
     task: TranslationTask,
 ) {
     let pipeline = TranslationPipeline::new(task);
-    let result = pipeline.run(&app, &job_id).await;
-    clear_translation_task_control(&job_id);
+    // Dropping the entire pipeline also drops every concurrent request, stream,
+    // retry timer and owned scheduler permit BEFORE publishing the stopped event.
+    let result = match pipeline
+        .task
+        .control
+        .run_until_stopped(pipeline.run(&app, &job_id))
+        .await
+    {
+        Some(result) => result,
+        None => pipeline
+            .pause_if_requested(&app, &job_id)
+            .map(|outcome| outcome.unwrap_or(TranslationRunOutcome::Paused)),
+    };
+    clear_translation_task_control(&job_id, &pipeline.task.control);
     match result {
         Ok(TranslationRunOutcome::Completed) | Ok(TranslationRunOutcome::Paused) => {}
         Err(error) => {
@@ -453,21 +510,6 @@ struct TranslationTask {
 enum TranslationRunOutcome {
     Completed,
     Paused,
-}
-
-#[derive(Debug, Default)]
-struct TranslationTaskControl {
-    pause_requested: AtomicBool,
-}
-
-impl TranslationTaskControl {
-    fn request_pause(&self) {
-        self.pause_requested.store(true, Ordering::Relaxed);
-    }
-
-    fn pause_requested(&self) -> bool {
-        self.pause_requested.load(Ordering::Relaxed)
-    }
 }
 
 struct TranslationPipeline {
@@ -500,12 +542,8 @@ impl TranslationPipeline {
             .read_entry_translation(&self.task.entry_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "translation has not been started".to_string())?;
-        let selected_segments = segments.into_iter().filter(|segment| {
-            self.task
-                .selected_segment_uids
-                .as_ref()
-                .is_none_or(|uids| uids.contains(&segment.uid))
-        });
+        let selected_segments =
+            lifecycle::pending_segments(&self.task, segments, &previous_translation).into_iter();
         let (candidates, skipped): (Vec<_>, Vec<_>) =
             selected_segments.partition(should_translate_segment);
         emit_started(app, job_id, "准备论文背景");
@@ -519,23 +557,6 @@ impl TranslationPipeline {
             .iter()
             .map(|segment| (segment.segment_uid.clone(), segment))
             .collect::<HashMap<_, _>>();
-        // 已完成的 segment 数（含复用），实时进度事件据此报告不回退的进度条。
-        let done_counter = Arc::new(AtomicUsize::new(
-            previous_translation
-                .segments
-                .iter()
-                .filter(|segment| {
-                    (matches!(segment.status, TranslatedSegmentStatus::Skipped)
-                        || (!self.task.force
-                            && matches!(segment.status, TranslatedSegmentStatus::Translated)))
-                        && self
-                            .task
-                            .selected_segment_uids
-                            .as_ref()
-                            .is_none_or(|uids| uids.contains(&segment.segment_uid))
-                })
-                .count(),
-        ));
         let candidate_count = candidates.len();
         let pending_candidates = candidates
             .into_iter()
@@ -548,12 +569,22 @@ impl TranslationPipeline {
             })
             .collect::<Vec<_>>();
         let reused_count = candidate_count.saturating_sub(pending_candidates.len());
+        self.update_translation(|translation| {
+            if let Some(task) = translation.task.as_mut() {
+                task.remaining_segment_uids = pending_candidates
+                    .iter()
+                    .map(|segment| segment.uid.clone())
+                    .collect();
+            }
+        })?;
+        let done_counter = Arc::new(AtomicUsize::new(
+            self.task.job_total.saturating_sub(pending_candidates.len()),
+        ));
 
         if !skipped.is_empty() {
             self.update_translation(|translation| {
                 upsert_segments(translation, skipped.iter().map(skipped_segment));
             })?;
-            done_counter.fetch_add(skipped.len(), Ordering::Relaxed);
             self.emit_translation_progress(app, job_id, "已跳过不适合翻译的区域")?;
         }
 
@@ -581,6 +612,7 @@ impl TranslationPipeline {
             let final_translation = self.update_translation(|translation| {
                 recompute_progress(translation);
                 translation.status = completed_translation_status(translation);
+                translation.task = None;
                 translation.error = None;
             })?;
             let message = if matches!(final_translation.status, TranslationStatus::Partial) {
@@ -643,7 +675,6 @@ impl TranslationPipeline {
         );
         let batches = build_translation_batches(pending_candidates, budgets.batch);
         self.emit_translation_progress(app, job_id, "正在翻译")?;
-        let failed_counter = Arc::new(AtomicUsize::new(0));
         // 串行化磁盘写与进度事件：并发批次都往同一个译文文件 upsert，
         // 不加锁会互相覆盖（读-改-写竞态）。
         let io_lock = Arc::new(Mutex::new(()));
@@ -652,7 +683,7 @@ impl TranslationPipeline {
 
         futures_util::stream::iter(batches)
             .for_each_concurrent(TRANSLATION_CONCURRENCY, |batch| async {
-                // 暂停或致命错误后不再启动新批次；已在跑的批次会自然完成。
+                // 不再启动新批次；停止信号由外层 runner 同时释放所有在途请求。
                 if self.task.control.pause_requested()
                     || fatal_error
                         .lock()
@@ -673,60 +704,34 @@ impl TranslationPipeline {
                         &done_counter,
                     ));
                     let outcome = batch_client
-                        .translate_batch(&entry.title, &context, &ordinary_segments)
+                        .translate_batch_recovering(
+                            &entry.title,
+                            &context,
+                            ordinary_segments,
+                            &self.task.control,
+                            |completed| {
+                                let translated_count = completed
+                                    .iter()
+                                    .filter(|segment| {
+                                        matches!(
+                                            segment.status,
+                                            TranslatedSegmentStatus::Translated
+                                        )
+                                    })
+                                    .count();
+                                let _io = io_lock.lock().unwrap_or_else(|error| error.into_inner());
+                                self.update_translation(|translation| {
+                                    upsert_segments(translation, completed)
+                                })?;
+                                done_counter.fetch_add(translated_count, Ordering::Relaxed);
+                                self.emit_translation_progress(app, job_id, "正在翻译")
+                            },
+                        )
                         .await;
-                    let translated_count = outcome
-                        .as_ref()
-                        .ok()
-                        .map(|translated| {
-                            ordinary_segments
-                                .iter()
-                                .filter(|segment| {
-                                    translated
-                                        .get(&segment.uid)
-                                        .is_some_and(|text| !text.trim().is_empty())
-                                })
-                                .count()
-                        })
-                        .unwrap_or(0);
-                    let io = io_lock.lock().unwrap_or_else(|error| error.into_inner());
-                    match outcome {
-                        Ok(translated) => {
-                            // 模型漏译的 segment 会被 translated_segment 判定为 failed，
-                            // 与整批失败一样留给「重试失败」处理，不再终止全部任务。
-                            if let Err(error) = self.update_translation(|translation| {
-                                let segments = ordinary_segments
-                                    .iter()
-                                    .map(|segment| {
-                                        translated_segment(segment, translated.get(&segment.uid))
-                                    });
-                                upsert_segments(translation, segments);
-                            }) {
-                                record_fatal(&fatal_error, error);
-                                return;
-                            }
-                        }
-                        Err(error) => {
-                            failed_counter.fetch_add(1, Ordering::Relaxed);
-                            let reason = format!("翻译模型调用失败，已跳过该批：{error}");
-                            if let Err(error) = self.update_translation(|translation| {
-                                let segments = ordinary_segments
-                                    .iter()
-                                    .map(|segment| failed_segment(segment, &reason));
-                                upsert_segments(translation, segments);
-                            }) {
-                                record_fatal(&fatal_error, error);
-                                return;
-                            }
-                            let _ = self.emit_translation_progress(app, job_id, &reason);
-                        }
-                    }
-                    done_counter.fetch_add(translated_count, Ordering::Relaxed);
-                    if let Err(error) = self.emit_translation_progress(app, job_id, "正在翻译") {
+                    if let Err(error) = outcome {
                         record_fatal(&fatal_error, error);
                         return;
                     }
-                    drop(io);
                 }
 
                 for segment in list_segments {
@@ -767,7 +772,8 @@ impl TranslationPipeline {
                     if translated_successfully {
                         done_counter.fetch_add(1, Ordering::Relaxed);
                     }
-                    if let Err(error) = self.emit_translation_progress(app, job_id, "正在翻译") {
+                    if let Err(error) = self.emit_translation_progress(app, job_id, "正在翻译")
+                    {
                         record_fatal(&fatal_error, error);
                         return;
                     }
@@ -790,11 +796,14 @@ impl TranslationPipeline {
         let final_translation = self.update_translation(|translation| {
             recompute_progress(translation);
             translation.status = completed_translation_status(translation);
+            translation.task = None;
             translation.error = None;
         })?;
-        let failed_batches = failed_counter.load(Ordering::Relaxed);
-        let message = if failed_batches > 0 {
-            format!("翻译部分完成，{failed_batches} 批失败，可在翻译任务中重试")
+        let message = if final_translation.progress.failed > 0 {
+            format!(
+                "翻译部分完成，仍有 {} 个片段失败，可在翻译任务中重试",
+                final_translation.progress.failed
+            )
         } else if matches!(final_translation.status, TranslationStatus::Partial) {
             "翻译部分完成".to_string()
         } else {
@@ -976,6 +985,7 @@ impl TranslationPipeline {
 
     fn mark_failed(&self, error: String) -> Result<(), String> {
         let _ = self.update_translation(|translation| {
+            translation.task = None;
             recompute_progress(translation);
             let has_completed = translation.progress.translated + translation.progress.skipped > 0;
             translation.status = if has_completed {
@@ -997,17 +1007,41 @@ impl TranslationPipeline {
             return Ok(None);
         }
 
-        let translation = self.update_translation(|translation| {
-            recompute_progress(translation);
-            translation.status = TranslationStatus::Partial;
-            translation.error = Some("已暂停全文翻译".to_string());
-        })?;
-        if let Some(event) =
-            job_manager().cancel(job_id, "已暂停全文翻译", translation_payload(&translation))
-        {
+        let canceled = self.task.control.reason() == Some(TranslationStop::Cancel);
+        let _guard = TRANSLATION_START_LOCK
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let message = if canceled {
+            "已取消全文翻译"
+        } else {
+            "已暂停全文翻译"
+        };
+        let translation = self.mark_stopped(canceled)?;
+        clear_translation_task_control(job_id, &self.task.control);
+        let event = if canceled {
+            job_manager().cancel(job_id, message, translation_payload(&translation))
+        } else {
+            job_manager().pause(job_id, translation_payload(&translation))
+        };
+        if let Some(event) = event {
             emit_job_event(app, event);
         }
         Ok(Some(TranslationRunOutcome::Paused))
+    }
+
+    fn mark_stopped(&self, canceled: bool) -> Result<EntryTranslation, String> {
+        self.update_translation(|translation| {
+            if canceled {
+                translation.task = None;
+            }
+            recompute_progress(translation);
+            translation.status = if canceled {
+                TranslationStatus::Canceled
+            } else {
+                TranslationStatus::Paused
+            };
+            translation.error = None;
+        })
     }
 }
 
@@ -1031,9 +1065,14 @@ fn get_translation_task_control(job_id: &str) -> Option<Arc<TranslationTaskContr
         .cloned()
 }
 
-fn clear_translation_task_control(job_id: &str) {
+fn clear_translation_task_control(job_id: &str, owner: &Arc<TranslationTaskControl>) {
     if let Ok(mut controls) = translation_task_controls().lock() {
-        controls.remove(job_id);
+        if controls
+            .get(job_id)
+            .is_some_and(|control| Arc::ptr_eq(control, owner))
+        {
+            controls.remove(job_id);
+        }
     }
 }
 
@@ -1046,14 +1085,24 @@ struct LlmClient {
     client: Client,
     profile: LlmProfile,
     progress: Option<TranslationProgressSink>,
+    rate_limit: Arc<RateLimitGate>,
+    scheduler: Arc<scheduler::RequestScheduler>,
+    interactive: bool,
+    output: Option<TranslationTextSink>,
+    activity: Option<TranslationActivitySink>,
 }
 
 impl LlmClient {
     fn new(profile: LlmProfile) -> Self {
         Self {
             client: Client::new(),
+            rate_limit: RateLimitGate::for_profile(&profile),
             profile,
             progress: None,
+            scheduler: scheduler::request_scheduler(),
+            interactive: false,
+            output: None,
+            activity: None,
         }
     }
 
@@ -1085,13 +1134,22 @@ impl LlmClient {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let diagrams_by_segment_uid = batch
+            .iter()
+            .map(|segment| {
+                (
+                    segment.uid.clone(),
+                    diagrams::DiagramText::prepare(&source_text(segment)),
+                )
+            })
+            .collect::<HashMap<_, _>>();
         let protected_by_segment_uid = batch
             .iter()
             .map(|segment| {
                 (
                     segment.uid.clone(),
                     protect_formula_spans(
-                        &source_text(segment),
+                        &diagrams_by_segment_uid[&segment.uid].text,
                         matches!(segment.segment_type, SegmentType::Math),
                     ),
                 )
@@ -1103,251 +1161,30 @@ impl LlmClient {
                 let protected = protected_by_segment_uid
                     .get(&segment.uid)
                     .expect("formula protection prepared for every segment");
-                format!(
-                    "<segment uid=\"{}\" type=\"{:?}\" page=\"{}\">\n{}\n</segment>",
-                    segment.uid,
-                    segment.segment_type,
-                    segment.page_idx + 1,
-                    protected.text
-                )
+                json!({
+                    "segment_uid": segment.uid,
+                    "type": segment_type_key(segment.segment_type),
+                    "content_format": if diagrams_by_segment_uid[&segment.uid].contains_mermaid() { "mermaid" } else { "text" },
+                    "page": segment.page_idx + 1,
+                    "translation_rules": prompts::rules(segment.segment_type),
+                    "source_text": protected.text,
+                    "diagram_labels": diagrams_by_segment_uid[&segment.uid].input_labels(),
+                })
             })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let prompt = format!(
-            "Paper title: {entry_title}\n\nPaper context:\n{}\n\nTerminology:\n{}\n\nTranslate these segments:\n{}",
-            context.summary,
-            if terminology.is_empty() {
-                "None".to_string()
-            } else {
-                terminology
-            },
-            segments
-        );
-        let text = self
-            .generate_text(
-                &[
-                    "You are an academic paper translator.",
-                    "Translate source segments into Simplified Chinese.",
-                    "Preserve citations, numbers, code, markdown tables, list boundaries, and technical symbols.",
-                    "Formula spans are replaced by tokens such as ⟪NEUINK_MATH_0⟫. Copy every formula token exactly once and never alter, translate, remove, duplicate, or move it.",
-                    "Keep surrounding inline and display math layout unchanged.",
-                    "Do not translate references or image placeholders.",
-                    "Return strict JSON only: {\"segments\":[{\"segment_uid\":\"...\",\"translated_text\":\"...\"}]}",
-                    "Return one translation per segment_uid only.",
-                ]
-                .join("\n"),
-                &prompt,
-            )
-            .await?;
-        let parsed: BatchTranslationJson = parse_json_object(&text)?;
-        let mut translations = HashMap::new();
-        for segment in parsed.segments {
-            let Some(uid) = segment.segment_uid.map(SegmentUid::from_string) else {
-                continue;
-            };
-            let Some(text) = segment.translated_text else {
-                continue;
-            };
-            let Some(protected) = protected_by_segment_uid.get(&uid) else {
-                continue;
-            };
-            translations.insert(uid, restore_formula_spans(&text, &protected.formulas)?);
-        }
-        Ok(translations)
-    }
-
-    async fn generate_text(&self, system: &str, prompt: &str) -> Result<String, String> {
-        // 流式优先：能在生成过程中收到增量，向 job 推送实时进度；
-        // 失败（服务端不支持流式、网络异常等）则回退到带超时递增重试的非流式调用。
-        match self.generate_text_streaming(system, prompt).await {
-            Ok(text) => Ok(text),
-            Err(stream_error) => self
-                .generate_text_once(system, prompt)
-                .await
-                .map_err(|error| format!("{error}（流式回退前错误：{stream_error}）")),
-        }
-    }
-
-    async fn generate_text_once(&self, system: &str, prompt: &str) -> Result<String, String> {
-        let (url, headers, body) = crate::commands::llm_http::build_chat_request(
-            &self.profile,
-            system,
-            prompt,
-            crate::commands::llm_http::ChatFallbacks {
-                max_tokens: Some(8_192),
-                temperature: Some(0.2),
-                top_p: Some(1.0),
-            },
-        )?;
-        // 超时专属重试：每次超时后放宽 60 秒再试，最多 3 次；其余错误（HTTP/解析）
-        // 不重试，交给批次级的失败处理（标记 failed 并继续后续批次）。
-        let mut last_timeout_error = String::new();
-        for attempt in 0..LLM_REQUEST_MAX_ATTEMPTS {
-            let timeout_duration = request_timeout_for_attempt(attempt);
-            let response = match timeout(
-                timeout_duration,
-                self.client
-                    .post(url.clone())
-                    .headers(headers.clone())
-                    .json(&body)
-                    .send(),
-            )
-            .await
-            {
-                Ok(response) => response,
-                Err(_) => {
-                    last_timeout_error =
-                        format!("LLM request timed out after {} seconds.", timeout_duration.as_secs());
-                    continue;
-                }
-            }
-            .map_err(|error| error.to_string())?;
-            let status = response.status();
-            let body = response.text().await.map_err(|error| error.to_string())?;
-            if !status.is_success() {
-                return Err(format!("LLM request failed ({status}): {body}"));
-            }
-            return crate::commands::llm_http::parse_chat_response(
-                self.profile.api_protocol,
-                &body,
-            );
-        }
-        Err(format!(
-            "LLM request timed out {LLM_REQUEST_MAX_ATTEMPTS} times (last limit {} seconds): {last_timeout_error}",
-            request_timeout_for_attempt(LLM_REQUEST_MAX_ATTEMPTS - 1).as_secs(),
-        ))
-    }
-
-    /// SSE 流式接收一次 LLM 调用。空闲超时（连续 {timeout} 秒收不到任何字节）
-    /// 与整体超时同样触发递增重试；已收到部分内容后中断则直接报错，
-    /// 由上层回退到非流式重试。
-    async fn generate_text_streaming(&self, system: &str, prompt: &str) -> Result<String, String> {
-        let (url, headers, body) = crate::commands::llm_http::build_chat_stream_request(
-            &self.profile,
-            system,
-            prompt,
-            crate::commands::llm_http::ChatFallbacks {
-                max_tokens: Some(8_192),
-                temperature: Some(0.2),
-                top_p: Some(1.0),
-            },
-        )?;
-
-        let mut last_timeout_error = String::new();
-        for attempt in 0..LLM_REQUEST_MAX_ATTEMPTS {
-            let idle_timeout = request_timeout_for_attempt(attempt);
-            let response = match timeout(
-                idle_timeout,
-                self.client
-                    .post(url.clone())
-                    .headers(headers.clone())
-                    .json(&body)
-                    .send(),
-            )
-            .await
-            {
-                Ok(response) => response.map_err(|error| error.to_string())?,
-                Err(_) => {
-                    last_timeout_error = format!(
-                        "LLM request timed out after {} seconds.",
-                        idle_timeout.as_secs()
-                    );
-                    continue;
-                }
-            };
-            let status = response.status();
-            if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                return Err(format!("LLM request failed ({status}): {body}"));
-            }
-
-            let mut stream = response.bytes_stream();
-            let mut accumulated = String::new();
-            let mut line_buffer = String::new();
-            let mut raw_body = String::new();
-            let mut saw_sse_data = false;
-            let mut received_chars = 0usize;
-            loop {
-                let chunk = match timeout(
-                    idle_timeout,
-                    tokio_stream::StreamExt::next(&mut stream),
-                )
-                .await
-                {
-                    Ok(chunk) => chunk,
-                    Err(_) => {
-                        // 空闲超时：还没收到任何内容就升级超时重试；已有内容则报错，
-                        // 让上层用非流式路径重新完整请求。
-                        if received_chars == 0 {
-                            last_timeout_error = format!(
-                                "LLM stream idle after {} seconds.",
-                                idle_timeout.as_secs()
-                            );
-                            break;
-                        }
-                        return Err(format!(
-                            "LLM stream stalled after {received_timeout} seconds of silence.",
-                            received_timeout = idle_timeout.as_secs()
-                        ));
-                    }
-                };
-                let Some(chunk) = chunk else {
-                    break;
-                };
-                let chunk = chunk.map_err(|error| error.to_string())?;
-                received_chars += chunk.len();
-                let lossy = String::from_utf8_lossy(&chunk);
-                raw_body.push_str(&lossy);
-                line_buffer.push_str(&lossy);
-                // SSE 事件以空行分隔，逐行解析已完整的 data: 行。
-                while let Some(newline) = line_buffer.find('\n') {
-                    let line = line_buffer[..newline].trim_end_matches('\r').to_string();
-                    line_buffer.drain(..newline + 1);
-                    if let Some(data) = line.strip_prefix("data:") {
-                        saw_sse_data = true;
-                        crate::commands::llm_http::append_chat_stream_delta(
-                            self.profile.api_protocol,
-                            data,
-                            &mut accumulated,
-                        )?;
-                    }
-                }
-                if let Some(progress) = &self.progress {
-                    progress(received_chars);
-                }
-                // 流自然结束：部分服务端最后一行 data: 不带换行符，冲刷残余缓冲。
-                if let Some(data) = line_buffer.trim().strip_prefix("data:") {
-                    saw_sse_data = true;
-                    crate::commands::llm_http::append_chat_stream_delta(
-                        self.profile.api_protocol,
-                        data,
-                        &mut accumulated,
-                    )?;
-                }
-            }
-            if !last_timeout_error.is_empty() && received_chars == 0 && accumulated.is_empty() {
-                continue;
-            }
-            let trimmed = accumulated.trim().to_string();
-            if !trimmed.is_empty() {
-                return Ok(trimmed);
-            }
-            // 服务端忽略了 stream 参数、直接返回了完整的普通 JSON 响应：
-            // 就地解析，避免非流式路径再完整请求一遍（否则每次调用耗时翻倍）。
-            if !saw_sse_data && !raw_body.trim().is_empty() {
-                return crate::commands::llm_http::parse_chat_response(
-                    self.profile.api_protocol,
-                    raw_body.trim(),
-                );
-            }
-            if !last_timeout_error.is_empty() {
-                continue;
-            }
-            return Err("LLM stream ended without content.".to_string());
-        }
-        Err(format!(
-            "LLM streaming timed out {LLM_REQUEST_MAX_ATTEMPTS} times: {last_timeout_error}"
-        ))
+            .collect::<Vec<_>>();
+        let prompt = json!({
+            "paper_title": entry_title,
+            "paper_context": context.summary,
+            "terminology": terminology,
+            "segments": segments,
+        })
+        .to_string();
+        let text = self.generate_text(prompts::SYSTEM, &prompt).await?;
+        batch_response::restore_batch_translations(
+            &text,
+            &protected_by_segment_uid,
+            &diagrams_by_segment_uid,
+        )
     }
 }
 
@@ -1367,20 +1204,6 @@ struct TranslationTermJson {
     target: Option<String>,
     #[serde(default)]
     note: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BatchTranslationJson {
-    #[serde(default)]
-    segments: Vec<BatchSegmentJson>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BatchSegmentJson {
-    #[serde(default)]
-    segment_uid: Option<String>,
-    #[serde(default)]
-    translated_text: Option<String>,
 }
 
 fn update_translation(
@@ -1422,6 +1245,7 @@ fn new_translation(
 ) -> EntryTranslation {
     let now = Utc::now();
     EntryTranslation {
+        task: None,
         schema_version: 1,
         entry_id,
         source_language,
@@ -1447,6 +1271,10 @@ fn upsert_segments(
     segments: impl IntoIterator<Item = TranslatedSegment>,
 ) {
     for segment in segments {
+        if let Some(task) = translation.task.as_mut() {
+            task.remaining_segment_uids
+                .retain(|uid| uid != &segment.segment_uid);
+        }
         if let Some(existing) = translation
             .segments
             .iter_mut()
@@ -1516,6 +1344,38 @@ fn failed_segment(segment: &SourceSegment, reason: &str) -> TranslatedSegment {
     let mut failed = translated_segment(segment, None);
     failed.error = Some(reason.to_string());
     failed
+}
+
+/// Preserve successful responses; after one merged request, retry unresolved members once
+/// each. A failed individual request is terminal for that segment, never re-enqueued.
+fn retry_individually_or_fail(
+    segments: Vec<SourceSegment>,
+    reason: &str,
+    individual_retry: bool,
+    pending: &mut Vec<(Vec<SourceSegment>, bool)>,
+    completed: &mut Vec<TranslatedSegment>,
+) {
+    if individual_retry {
+        completed.extend(
+            segments
+                .iter()
+                .map(|segment| failed_segment(segment, reason)),
+        );
+        return;
+    }
+    pending.extend(
+        segments
+            .into_iter()
+            .rev()
+            .map(|segment| (vec![segment], true)),
+    );
+}
+
+fn should_retry_individually(error: &str) -> bool {
+    // Invalid credentials/configuration and rate limits are not fixed by smaller payloads.
+    !error.contains("LLM request failed (4")
+        && !error.contains("rate limit")
+        && !error.contains("RateLimited")
 }
 
 /// 并发批次的闭包里不能用 `?` 上抛，致命错误先记到共享槽位（保留首个错误）。
@@ -1641,7 +1501,7 @@ fn completed_translation_status(translation: &EntryTranslation) -> TranslationSt
 }
 
 fn should_translate_segment(segment: &SourceSegment) -> bool {
-    !source_text(segment).trim().is_empty() && !matches!(segment.segment_type, SegmentType::Figure)
+    !source_text(segment).trim().is_empty()
 }
 
 fn segment_type_key(segment_type: SegmentType) -> &'static str {
@@ -1934,10 +1794,15 @@ fn translation_payload(translation: &EntryTranslation) -> Value {
 }
 
 #[cfg(test)]
+#[path = "translation/stop_tests.rs"]
+mod stop_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
-        list_translation_units, parse_json_object, protect_formula_spans, request_timeout_for_attempt,
-        restore_formula_spans, should_translate_segment, split_list_translation_units,
+        list_translation_units, parse_json_object, protect_formula_spans,
+        request_timeout_for_attempt, restore_formula_spans, retry_individually_or_fail,
+        should_retry_individually, should_translate_segment, split_list_translation_units,
         translation_budgets, MAX_PAPER_CONTEXT_BUDGET,
     };
     use std::time::Duration;
@@ -1979,6 +1844,65 @@ mod tests {
     }
 
     #[test]
+    fn failed_merged_batch_retries_each_unresolved_segment_once() {
+        let segments = (0..4)
+            .map(|index| {
+                SourceSegment::new(SegmentType::Paragraph, index, None, format!("text {index}"))
+            })
+            .collect::<Vec<_>>();
+        let mut pending = Vec::new();
+        let mut completed = Vec::new();
+        retry_individually_or_fail(
+            segments,
+            "invalid JSON",
+            false,
+            &mut pending,
+            &mut completed,
+        );
+        assert_eq!(pending.len(), 4);
+        assert!(pending
+            .iter()
+            .all(|(batch, individual)| batch.len() == 1 && *individual));
+        assert!(completed.is_empty());
+        let (first, individual) = pending.pop().unwrap();
+        assert_eq!(first[0].page_idx, 0);
+        retry_individually_or_fail(
+            first,
+            "invalid JSON",
+            individual,
+            &mut pending,
+            &mut completed,
+        );
+        assert_eq!(pending.len(), 3);
+        assert_eq!(completed.len(), 1);
+        assert!(matches!(
+            completed[0].status,
+            neuink_workspace::TranslatedSegmentStatus::Failed
+        ));
+        // Recovery is awaited one member at a time, in original source order;
+        // a failure is recorded without preventing the following members.
+        for expected_page in 1..4 {
+            let (batch, individual) = pending.pop().unwrap();
+            assert!(individual);
+            assert_eq!(batch.len(), 1);
+            assert_eq!(batch[0].page_idx, expected_page);
+        }
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn provider_configuration_errors_do_not_multiply_requests() {
+        assert!(!should_retry_individually(
+            "LLM request failed (403 Forbidden): denied"
+        ));
+        assert!(!should_retry_individually("rate limit exceeded"));
+        assert!(should_retry_individually("EOF while parsing a list"));
+        assert!(should_retry_individually(
+            "LLM response did not contain message content"
+        ));
+    }
+
+    #[test]
     fn repairs_invalid_backslash_escapes_in_llm_json() {
         let parsed: Value =
             parse_json_object(r#"{"segments":[{"translated_text":"keep \\[x\\] and \\_"}]}"#)
@@ -2016,7 +1940,7 @@ mod tests {
     }
 
     #[test]
-    fn skips_figure_segments_from_translation() {
+    fn allows_translation_of_original_display_segments() {
         let segment_types = [
             SegmentType::Paragraph,
             SegmentType::Heading,
@@ -2034,11 +1958,7 @@ mod tests {
 
         for segment_type in segment_types {
             let segment = SourceSegment::new(segment_type, 0, None, "English source".to_string());
-            assert_eq!(
-                should_translate_segment(&segment),
-                segment_type != SegmentType::Figure,
-                "{segment_type:?}"
-            );
+            assert_eq!(should_translate_segment(&segment), true, "{segment_type:?}");
         }
     }
 

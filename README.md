@@ -1,190 +1,92 @@
 <p align="center">
-  <img src="apps/desktop/src-tauri/logo_assets/neuink_logo_transparent_1024.png" width="108" alt="Neuink logo">
+  <img src="apps/desktop/src-tauri/logo_assets/neuink_logo_transparent_1024.png" alt="Neuink" width="108">
 </p>
 
 <h1 align="center">Neuink</h1>
-
+<p align="center"><strong>让每一次阅读，都留下可追溯的理解。</strong></p>
+<p align="center">本地优先的 Windows 文献阅读与知识工作台</p>
 <p align="center">
-  <strong>简体中文</strong> · <a href="README_EN.md">English</a>
+  <a href="https://sugrsertraline.github.io/neuink/">官网与使用手册</a> ·
+  <a href="https://cdn.sugrsertraline.top/Neuink-windows-x64-portable.zip">下载 Windows 便携版</a> ·
+  <a href="https://github.com/SugrSertraline/neuink/releases">GitHub 下载</a> ·
+  <a href="README_EN.md">English</a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/SugrSertraline/neuink">GitHub Repository</a>
-</p>
+Neuink 把论文整理、PDF 阅读、双语对照、证据笔记和 AI 助手放在同一个工作台里。你可以从一篇 PDF 开始，也可以接入已有的 Zotero 资料，在阅读过程中逐步形成自己的知识库。
 
-<p align="center">
-  <strong>让每一次阅读，都留下可追溯的理解。</strong><br>
-  A local-first workspace for reading, thinking, and building knowledge from PDFs.
-</p>
+资料默认保存在本机。基础阅读与笔记不要求登录；解析、翻译、AI 和校园网同步按需启用。
 
-<p align="center">
-  <img src="https://img.shields.io/badge/desktop-Windows%20%7C%20macOS-1f2937?style=flat-square" alt="Desktop platforms: Windows and macOS">
-  <img src="https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square" alt="Tauri 2">
-  <img src="https://img.shields.io/badge/React-18-61dafb?style=flat-square" alt="React 18">
-  <img src="https://img.shields.io/badge/license-Apache--2.0-2563eb?style=flat-square" alt="Apache-2.0 license">
-  <a href="https://linux.do"><img src="https://img.shields.io/badge/LINUX-DO-FFB003.svg?logo=data:image/svg%2bxml;base64,DQo8c3ZnIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiPjxwYXRoIGQ9Ik00Ni44Mi0uMDU1aDYuMjVxMjMuOTY5IDIuMDYyIDM4IDIxLjQyNmM1LjI1OCA3LjY3NiA4LjIxNSAxNi4xNTYgOC44NzUgMjUuNDV2Ni4yNXEtMi4wNjQgMjMuOTY4LTIxLjQzIDM4LTExLjUxMiA3Ljg4NS0yNS40NDUgOC44NzRoLTYuMjVxLTIzLjk3LTIuMDY0LTM4LjAwNC0yMS40M1EuOTcxIDY3LjA1Ni0uMDU0IDUzLjE4di02LjQ3M0MxLjM2MiAzMC43ODEgOC41MDMgMTguMTQ4IDIxLjM3IDguODE3IDI5LjA0NyAzLjU2MiAzNy41MjcuNjA0IDQ2LjgyMS0uMDU2IiBzdHlsZT0ic3Ryb2tlOm5vbmU7ZmlsbC1ydWxlOmV2ZW5vZGQ7ZmlsbDojZWNlY2VjO2ZpbGwtb3BhY2l0eToxIi8+PHBhdGggZD0iTTQ3LjI2NiAyLjk1N3EyMi41My0uNjUgMzcuNzc3IDE1LjczOGE0OS43IDQ5LjcgMCAwIDEgNi44NjcgMTAuMTU3cS00MS45NjQuMjIyLTgzLjkzIDAgOS43NS0xOC42MTYgMzAuMDI0LTI0LjM4N2E2MSA2MSAwIDAgMSA5LjI2Mi0xLjUwOCIgc3R5bGU9InN0cm9rZTpub25lO2ZpbGwtcnVsZTpldmVub2RkO2ZpbGw6IzE5MTkxOTtmaWxsLW9wYWNpdHk6MSIvPjxwYXRoIGQ9Ik03Ljk4IDcwLjkyNmMyNy45NzctLjAzNSA1NS45NTQgMCA4My45My4xMTNRODMuNDI2IDg3LjQ3MyA2Ni4xMyA5NC4wODZxLTE4LjgxIDYuNTQ0LTM2LjgzMi0xLjg5OC0xNC4yMDMtNy4wOS0yMS4zMTctMjEuMjYyIiBzdHlsZT0ic3Ryb2tlOm5vbmU7ZmlsbC1ydWxlOmV2ZW5vZGQ7ZmlsbDojZjlhZjAwO2ZpbGwtb3BhY2l0eToxIi8+PC9zdmc+" alt="LINUX DO"></a>
-</p>
+## 一边阅读，一边留下证据
 
-<p align="center">
-  <img src="docs/assets/screenshots/reading-workspace.png" alt="Neuink 阅读工作台：PDF 原文、来源片段和双语预览" width="100%">
-</p>
+- **PDF 与重排阅读**：保留原始版式，也能按段落、公式、表格和图片连续阅读。多标签与左右分屏方便原文、译文和笔记相互对照。
+- **双语与阅读详略**：从原文切换到精简、要点、结论或主题；生成中英对应结果，按需要切换详略。支持划词、片段和全文翻译。
+- **带来源的笔记**：文档笔记、标签综合笔记、片段记录和批注各有位置。来源链接保留快照，点击即可回到对应原文。
+- **接着上次读**：保留阅读位置、收藏与阅读记录，从最近阅读继续；同主题论文可以平行阅读。
 
-> **Neuink** 是一个面向论文、报告、标准和书籍章节的本地优先知识工作台。它把 PDF 阅读、结构化解析、笔记、检索和 AI 协作放进同一个 Workspace，并让结论始终能够回到原始证据。
+## 按你的方式整理资料
 
-## 从 PDF 到可验证的理解
+条目库有 **纯表格、纯标签文件夹、标签与表格** 三种视图。像浏览文件夹一样逐层寻找论文，也可以在表格里比较年份、期刊、会议和其他属性。
 
-```text
-导入资料  →  解析结构  →  阅读与标注  →  连接笔记与来源  →  检索、提问与沉淀
-```
+**标签负责归类，属性负责描述。** 同一篇论文可以属于多个主题，无需重复复制 PDF。
 
-Neuink 不把文献阅读理解成“看完一份文件”。它帮助你把页面、段落、表格和公式变成可定位的上下文；把笔记与证据相连；再用搜索和 AI 协作把零散阅读变成可以复查、复用的知识。
+| 能力 | 可以怎样使用 |
+| --- | --- |
+| 统一属性管理 | 在独立页面定义整个资料库的属性；支持文本、数字、日期、单选、多选和是否。日期可精确到年、月或日。 |
+| 常用发表信息 | 内置出版类型、期刊／会议名称、发表年份、DOI、JCR 分区、CCF 等级等字段，也可添加自己的属性。 |
+| 表格内快速编辑 | 点击属性值即可编辑；选项更换后自动保存，也可以留空，无需逐篇打开详情。 |
+| 自定义表头 | 在表头设置对话框中拖动排序、调整显示列；表格支持改变列宽，操作按空间自动收进“更多”。 |
+| 在线查找属性 | 从 arXiv、Crossref 搜索候选，核对后填充支持的空白属性；保留已有值。论文评价等级由你填写。 |
 
-| 原文与结构化阅读 | 来源驱动的笔记 | 本地检索与 AI 协作 |
-| :--- | :--- | :--- |
-| 在 PDF 原始排版和 Reflow 重排阅读之间切换，定位章节、段落、列表、公式、表格与视觉块。 | 用 Markdown 记录想法，并插入可展开、可跳转、可导出脚注的 Source Link。 | 搜索条目、标签、字段、笔记、页面和片段；用显式上下文获得带来源的回答。 |
+已有 Zotero 资料可以直接接入，先浏览来源缓存，再按需导入独立本地副本。查看、隐藏来源不会删除 Zotero 原件，也不会自动把整库变成 Neuink 本地论文。需要沿用笔记时，可以导入、比较差异，再决定是否明确写回。
 
-## 看得见的工作流
+## 让解析和 AI 按需参与
 
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/assets/screenshots/assistant-and-notes.png" alt="Neuink 的 AI 助手与学习笔记编辑器" />
-      <br /><br />
-      <strong>在上下文中写笔记</strong><br />
-      AI 助手、来源链接和 Markdown 编辑器位于同一工作区。助手读取的是明确选择的上下文，任何笔记或元数据修改都会先以 Proposal 提出，等待你确认应用。
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/assets/screenshots/pdf-notes-split-view.png" alt="Neuink 的 PDF 与笔记分屏阅读界面" />
-      <br /><br />
-      <strong>让原文与思考并排出现</strong><br />
-      左侧保留 PDF 的原始版式和片段导航，右侧整理你的学习笔记。每个关键论断都可以带着页码和片段回到证据本身。
-    </td>
-  </tr>
-</table>
+**先读 PDF，再决定是否解析。** 原文阅读不依赖 MinerU。需要重排、结构化片段和图表时，可以选择：
 
-## 核心能力
+- **账号解析服务**：在支持的校园网环境连接 Neuink 服务器并登录，使用统一的 MinerU 解析队列；右下角查看排队、进度和失败原因。
+- **自建 MinerU 服务**：填写自己的兼容服务地址和可选密钥，与账号解析服务二选一。
+- **导入已有结果**：导入 MinerU 结果目录、ZIP 或 RAR，沿用已经生成的解析内容。
 
-### 读得更深，而不是更快地翻页
+AI 助手可以结合当前论文、笔记和选中的材料回答问题，保留来源引用，并在修改前提供审阅。可配置自己的大模型服务，或接入本机已安装和登录的 Claude Code、Codex、OpenCode。
 
-- 导入 PDF，追踪解析状态，失败后可重试；保留原始 PDF 与规范化后的 Source Segment。
-- 使用 PDF.js 阅读原文，利用悬停预览、片段定位、右键操作和来源面板保持阅读上下文。
-- 在 Reflow 视图中阅读解析后的主体文本、列表、公式、表格与视觉内容；需要时可执行全文翻译、暂停、重试与导出。
+还可以用关键词、语义或混合检索找回本地内容，在线查找文献与网页，核对候选后导入论文。模型生成的摘要、翻译和研究卡片用于辅助理解，原文始终是核对依据。
 
-### 让笔记成为证据网络
+## 本地使用，也能按需同步
 
-- 使用 TipTap Markdown 编辑器编写标题、列表、引用、代码、数学公式、图片、提示块和表格。
-- 为笔记、批注、标签和自定义字段建立结构；Source Link 保留条目、页码、片段和文本快照。
-- 从笔记预览原文、跳转回 PDF、查看反向引用，导出的 Markdown 仍保留可读脚注。
+Windows 便携版把资料和设置保存在程序旁的 `data` 文件夹。退出程序后备份整个 `data`，就能保存论文、笔记和自己的配置。
 
-### 在本地资料库中检索与协作
+云端同步默认关闭。当前账号服务面向**东北大学校园网内测环境**：先填写管理员提供的服务器地址，验证连接，再登录；核对同步范围并确认后才开启。账号由管理员提供，暂不开放自助注册。
 
-- Keyword 搜索覆盖条目、标签、字段、Markdown Note、Segment Note、PDF 页面和 PDF Segment。
-- 选配本地 embedding 模型后可使用 Semantic 与 Hybrid 搜索；模型不可用时，界面会明确提示并回退，不伪装为语义结果。
-- AI 对话使用显式 `@` 上下文、资料库搜索和来源链接；工具过程、会话和提案状态会保存到 Workspace 中。
+开启后可同步支持的本地论文与阅读成果，在条目库查看云端状态，在账户页查看云端内容；下载、解析和同步任务集中在右下角。Zotero 来源缓存不按本地论文上传。云端同步不能替代独立备份，也不会迁移整套模型凭据或本机工具环境。
 
-## 本地优先，但不牺牲扩展能力
+## 下载与开始使用
 
-| 默认在本地完成 | 按需接入的能力 | 你始终拥有控制权 |
-| :--- | :--- | :--- |
-| Workspace 是普通本地文件夹，是 PDF、笔记、标签、会话和派生文件的权威来源。阅读、编辑和关键词搜索不依赖网络。 | 解析可连接 MinerU Cloud 或兼容的自定义端点；AI 模型由你自行选择和配置。 | API Key 不写入 Workspace 或导出内容；缓存可删除重建；AI 不会静默写入，需由你确认 Proposal 后才会应用。 |
+当前仅维护 **Windows 10 / Windows 11 x64** 版本，不再提供或维护 macOS 版本。
 
-### MinerU、模型与服务边界
+**[下载 Windows x64 便携版](https://cdn.sugrsertraline.top/Neuink-windows-x64-portable.zip)** · [查看 GitHub 发行版本](https://github.com/SugrSertraline/neuink/releases)
 
-- **MinerU**：Neuink 集成 MinerU Cloud 和兼容解析端点，用于将 PDF 转换为适合重排阅读、片段定位和来源链接的结构化结果。MinerU 是可选外部解析能力，不随本仓库或主应用捆绑；使用云端服务时请自行核对其服务条款与数据处理规则。
-- **本地语义模型**：Semantic / Hybrid 搜索使用可选的本地 `intfloat/multilingual-e5-small` 兼容资源。模型文件很大、默认不提交 Git，也不会在运行时静默下载；没有模型时，应用依然可用，只是不提供语义搜索。
-- **LLM**：Neuink 不内置大语言模型。你可在设置中配置自己的模型服务；基础阅读、笔记和关键词搜索不依赖 LLM。
+1. 完整解压到可写文件夹，双击 `Neuink.exe`。不要在压缩包内运行。
+2. 导入一篇 PDF，或在“导入与解析”中接入 Zotero。
+3. 打开论文，建立笔记；需要时再配置解析、翻译与模型。
 
-## 快速开始
+运行便携版不需要安装 Node.js 或 Rust；Windows 需要 WebView2 Runtime。更新前退出程序并备份 `data`，替换程序时保留自己的数据目录。下载包的具体内容以对应发行说明为准。
 
-### 环境要求
+## 继续了解
 
-- Node.js 与 npm
-- Rust stable，以及 [Tauri 2 平台前置依赖](https://v2.tauri.app/start/prerequisites/)
-- 仅在需要 PDF 解析时准备 MinerU Cloud Token 或兼容 Parser Endpoint
-- 仅在需要 AI 协作时配置 LLM Profile
+| 想做什么 | 使用指南 |
+| --- | --- |
+| 完成第一次阅读 | [第一次使用](https://sugrsertraline.github.io/neuink/start.html) |
+| 整理论文与属性 | [条目、标签与属性](https://sugrsertraline.github.io/neuink/library.html) |
+| 配置解析 | [PDF 导入与 MinerU](https://sugrsertraline.github.io/neuink/import.html) |
+| 双语精读 | [重排与阅读详略](https://sugrsertraline.github.io/neuink/reflow.html) · [翻译](https://sugrsertraline.github.io/neuink/translation.html) |
+| 积累可追溯的笔记 | [来源与反向引用](https://sugrsertraline.github.io/neuink/sources.html) |
+| 导出与分享 | [Word、Markdown 与阅读成果](https://sugrsertraline.github.io/neuink/export.html) |
+| 连接其他设备 | [云端同步](https://sugrsertraline.github.io/neuink/sync.html) · [备份与恢复](https://sugrsertraline.github.io/neuink/data.html) |
 
-```powershell
-npm install
-npm run desktop:dev
-```
+## 反馈与参与
 
-首次启动后可以创建或打开一个本地 Workspace。即使未配置 `.env`、模型或 LLM，也可以进行基础阅读、笔记和关键词搜索。
+遇到问题或有新的想法，欢迎在 [GitHub Issues](https://github.com/SugrSertraline/neuink/issues) 反馈。请附版本、操作步骤和必要截图，并遮挡密钥、服务器凭据及私人资料。
 
-<details>
-<summary><strong>可选：配置 MinerU Cloud</strong></summary>
+Neuink 使用 [Apache-2.0](LICENSE) 开源协议。开发者可从[开发指南](docs/development/engineering-guidelines.md)与[构建说明](docs/deployment/packaging-and-distribution.md)了解项目。
 
-复制模板后按需填写。不要提交真实的 `.env` 或任何 API Key。
-
-```powershell
-Copy-Item .env.example .env
-```
-
-</details>
-
-<details>
-<summary><strong>可选：启用本地语义搜索</strong></summary>
-
-将兼容的 `intfloat/multilingual-e5-small` 资源置于：
-
-```text
-apps/desktop/src-tauri/resources/embedding-models/default/
-```
-
-模型目录受 Git 忽略规则保护。完整发行带模型的应用前，请核对模型许可证、文件完整性和实际加载结果。
-
-</details>
-
-## 构建与验证
-
-```powershell
-# TypeScript 检查与前端构建
-npm run desktop:build
-
-# Rust 检查、Rust 测试、前端测试
-npm run check
-npm run test
-npm --workspace apps/desktop run test:frontend
-
-# 构建原生 Tauri bundle
-npm --workspace apps/desktop run tauri -- build
-```
-
-构建 Windows 便携版 ZIP：
-
-```powershell
-npm run desktop:release:portable
-```
-
-该命令输出 `release/Neuink-portable-<timestamp>.zip`，仅携带 `.env.example`，不会打包本机 `.env` 凭据。当前便携版流程要求本地 embedding 资源存在。
-
-## 项目结构
-
-```text
-apps/desktop/   Tauri 桌面壳、React UI 与打包脚本
-crates/         Rust 领域、Workspace、解析、搜索、任务、配置与 IPC
-docs/           产品、架构、工程规范、回归与发行文档
-```
-
-从 [文档索引](docs/README.md) 开始；进一步可查看[产品需求](docs/product/01-prd.md)、[系统架构](docs/architecture/system-architecture.md)和[打包与发行](docs/deployment/packaging-and-distribution.md)。
-
-## 开源组件与许可证
-
-Neuink 自身采用 [Apache License 2.0](LICENSE)。项目使用下列主要直接依赖；它们各自的许可证与声明在分发构建产物时仍然有效。
-
-| 组件 | 在 Neuink 中的作用 | 许可证 |
-| :--- | :--- | :--- |
-| [Tauri](https://tauri.app/) 与 Tauri Plugins | 桌面运行时、原生对话框、HTTP | Apache-2.0 OR MIT |
-| [React](https://react.dev/)、[Vite](https://vite.dev/)、[Tailwind CSS](https://tailwindcss.com/) | 用户界面与构建工具 | MIT |
-| [PDF.js](https://mozilla.github.io/pdf.js/) | 原始 PDF 渲染 | Apache-2.0 |
-| [TipTap](https://tiptap.dev/)、[KaTeX](https://katex.org/)、[Mermaid](https://mermaid.js.org/) | Markdown 编辑、数学公式、图表 | MIT |
-| [assistant-ui](https://www.assistant-ui.com/) | AI 对话界面 | MIT |
-| [Vercel AI SDK](https://ai-sdk.dev/) 与 `@ai-sdk/openai-compatible` | 模型服务接入与流式响应 | Apache-2.0 |
-| [FastEmbed](https://crates.io/crates/fastembed)、[Tokio](https://tokio.rs/)、[Reqwest](https://crates.io/crates/reqwest)、[Serde](https://serde.rs/)、[Rayon](https://github.com/rayon-rs/rayon) | 本地 embedding、异步、网络、序列化与并行搜索 | Apache-2.0、MIT 或 MIT OR Apache-2.0（以各 crate 声明为准） |
-| [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small) | 可选本地 embedding 模型 | MIT |
-| [MinerU](https://github.com/opendatalab/MinerU) | 可选 PDF 解析集成，不随本仓库分发 | MinerU Open Source License（基于 Apache-2.0，含附加条款） |
-
-这是主要组件的可读摘要，不替代完整的第三方声明。精确的解析版本分别锁定在 [`package-lock.json`](package-lock.json) 与 [`Cargo.lock`](Cargo.lock)。发布安装包前，请为所有已解析的 npm / Cargo 依赖生成完整 notices，并复核任何一并分发的模型文件和外部服务条款。
-
-## License
-
-Neuink is licensed under [Apache-2.0](LICENSE). Third-party component guidance is available in [NOTICE](NOTICE).
+[作者主页](https://sugrsertraline.top/)

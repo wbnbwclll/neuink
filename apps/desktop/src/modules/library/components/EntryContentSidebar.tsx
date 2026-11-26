@@ -1,6 +1,6 @@
 import { open } from '@tauri-apps/plugin-dialog';
-import { ArrowLeft, CopyPlus, FilePlus2, FileText, FileType, LayoutDashboard, Link2, Loader2, PanelRightOpen, Pencil, Plus, ScrollText, StickyNote, Trash2 } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { FilePlus2, FileText, FileType, LayoutDashboard, Link2, Loader2, PanelRightOpen, Plus, ScrollText, StickyNote, Trash2 } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -17,10 +17,10 @@ import {
 } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
+import { useToast } from '@/shared/hooks/useToast';
 import type { TagMeta } from '@/shared/types/domain';
 
 import { StatusBadge } from '../../reader/components/EntryDisplay';
-import { EntryEditDialog } from './EntryEditDialog';
 import {
   CompactEntryDescription,
   CompactEntryFields,
@@ -36,26 +36,15 @@ type EntryContentSidebarProps = {
   entry: LibraryEntry;
   tags: TagMeta[];
   tagNotes?: EntryTagNotesContext;
-  onBack: () => void;
   onOpenTrash: () => void;
   onCreateMarkdownNote: () => Promise<void> | void;
   onDeleteMarkdownNote: (entryId: string, noteId: string) => Promise<void> | void;
   onAttachPdf: (entryId: string, pdfPath: string) => Promise<void> | void;
-  onCreatePdfVersion: (entryId: string, pdfPath: string) => Promise<void> | void;
-  onImportMineruClientResult: (entryId: string, zipPath: string) => Promise<unknown> | unknown;
   onOpenMarkdownInPdfPane: (noteId: string) => void;
   onOpenContentInRight: (contentId: string) => void;
   onRenameMarkdownNote: (entryId: string, noteId: string, title: string) => Promise<unknown> | unknown;
   onRenamePdfDisplayName: (entryId: string, fileName: string) => Promise<unknown> | unknown;
   onSelectContent: (contentId: string) => void;
-  onUpdateEntry: (
-    entryId: string,
-    request: {
-      fields: Record<string, string>;
-      tagPaths: string[];
-      title: string;
-    }
-  ) => Promise<unknown> | unknown;
 };
 
 export function EntryContentSidebar({
@@ -63,24 +52,21 @@ export function EntryContentSidebar({
   entry,
   tags,
   tagNotes,
-  onBack,
   onOpenTrash,
   onCreateMarkdownNote,
   onDeleteMarkdownNote,
   onAttachPdf,
-  onCreatePdfVersion,
-  onImportMineruClientResult,
   onOpenMarkdownInPdfPane,
   onOpenContentInRight,
   onRenameMarkdownNote,
   onRenamePdfDisplayName,
-  onSelectContent,
-  onUpdateEntry
+  onSelectContent
 }: EntryContentSidebarProps) {
   const [creating, setCreating] = useState(false);
   const [notesOpen, setNotesOpen] = useState(true);
-  const [pdfAction, setPdfAction] = useState<'attach' | 'version' | null>(null);
-  const [editOpen, setEditOpen] = useState(false);
+  const [attachingPdf, setAttachingPdf] = useState(false);
+  const pdfBusy = useRef(false);
+  const { notify } = useToast();
   const [notePendingDelete, setNotePendingDelete] = useState<{
     noteId: string;
     title: string;
@@ -95,15 +81,16 @@ export function EntryContentSidebar({
   const [renamingNote, setRenamingNote] = useState<{
     busy: boolean;
     draft: string;
+    error: string | null;
     noteId: string;
     originalTitle: string;
   } | null>(null);
   const [renamingPdf, setRenamingPdf] = useState<{
     busy: boolean;
     draft: string;
+    error: string | null;
     originalFileName: string;
   } | null>(null);
-  const renameBlurSuppressed = useRef(false);
   const notes = entry.contents.filter((content) => content.kind === 'note');
   const fields = Object.entries(entry.fields).filter(([key]) => key !== 'description');
 
@@ -136,15 +123,18 @@ export function EntryContentSidebar({
     }
   };
 
-  const choosePdf = async (action: 'attach' | 'version') => {
-    if (pdfAction) return;
-    const selected = await open({ multiple: false, directory: false, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
-    if (typeof selected !== 'string') return;
-    setPdfAction(action);
+  const choosePdf = async () => {
+    if (pdfBusy.current) return;
+    pdfBusy.current = true;
+    setAttachingPdf(true);
     try {
-      await (action === 'attach' ? onAttachPdf(entry.id, selected) : onCreatePdfVersion(entry.id, selected));
+      const selected = await open({ multiple: false, directory: false, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+      if (typeof selected === 'string') await onAttachPdf(entry.id, selected);
+    } catch (caught) {
+      notify({ tone: 'danger', title: '上传 PDF 失败', description: caught instanceof Error ? caught.message : String(caught) });
     } finally {
-      setPdfAction(null);
+      pdfBusy.current = false;
+      setAttachingPdf(false);
     }
   };
 
@@ -161,6 +151,7 @@ export function EntryContentSidebar({
     setRenamingNote({
       busy: false,
       draft: title,
+      error: null,
       noteId,
       originalTitle: title
     });
@@ -174,15 +165,12 @@ export function EntryContentSidebar({
     setRenamingPdf({
       busy: false,
       draft: entry.pdfFileName,
+      error: null,
       originalFileName: entry.pdfFileName
     });
   };
 
   const commitRenameNote = async () => {
-    if (renameBlurSuppressed.current) {
-      renameBlurSuppressed.current = false;
-      return;
-    }
     if (!renamingNote || renamingNote.busy) {
       return;
     }
@@ -197,22 +185,23 @@ export function EntryContentSidebar({
     try {
       await onRenameMarkdownNote(entry.id, renamingNote.noteId, nextTitle);
       setRenamingNote(null);
-    } catch {
-      setRenamingNote((current) => (current ? { ...current, busy: false } : current));
+    } catch (caught) {
+      setRenamingNote((current) => (current ? { ...current, busy: false,
+        error: caught instanceof Error ? caught.message : '保存标题失败，请重试。' } : current));
     }
   };
 
   const commitRenamePdf = async () => {
-    if (renameBlurSuppressed.current) {
-      renameBlurSuppressed.current = false;
-      return;
-    }
     if (!renamingPdf || renamingPdf.busy) {
       return;
     }
 
     const fileName = renamingPdf.draft.trim();
-    if (!fileName || fileName === renamingPdf.originalFileName) {
+    if (!fileName) {
+      setRenamingPdf((current) => (current ? { ...current, error: '文件名不能为空。' } : current));
+      return;
+    }
+    if (fileName === renamingPdf.originalFileName) {
       setRenamingPdf(null);
       return;
     }
@@ -221,26 +210,16 @@ export function EntryContentSidebar({
     try {
       await onRenamePdfDisplayName(entry.id, fileName);
       setRenamingPdf(null);
-    } catch {
-      setRenamingPdf((current) => (current ? { ...current, busy: false } : current));
+    } catch (caught) {
+      setRenamingPdf((current) => (current ? { ...current, busy: false,
+        error: caught instanceof Error ? caught.message : '保存文件名失败，请重试。' } : current));
     }
   };
 
   return (
     <>
       <ScrollArea className="side-body [&_[data-slot=scroll-area-viewport]>div]:!block">
-        <div className="min-w-0 space-y-3 p-2">
-          <Button
-            className="w-full justify-start text-muted-foreground"
-            size="sm"
-            type="button"
-            variant="ghost"
-            onClick={onBack}
-          >
-            <ArrowLeft size={14} aria-hidden="true" />
-            返回条目库
-          </Button>
-
+        <div data-guide="entry-sidebar" className="min-w-0 space-y-3 p-2">
           <section className="min-w-0 space-y-3 rounded-md border bg-muted/25 p-2">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1 overflow-hidden">
@@ -250,15 +229,6 @@ export function EntryContentSidebar({
                 </div>
               </div>
 
-              <Button
-                size="icon-sm"
-                title="编辑条目"
-                type="button"
-                variant="outline"
-                onClick={() => setEditOpen(true)}
-              >
-                <Pencil size={14} aria-hidden="true" />
-              </Button>
             </div>
 
             <InfoBlock label="描述">
@@ -300,45 +270,18 @@ export function EntryContentSidebar({
 
             {entry.pdfFileName ? (
               <>
-                <div className="flex items-center justify-between gap-2 rounded-md bg-muted/45 px-2 py-1.5 text-xs">
-                  <span className="min-w-0 truncate text-muted-foreground">原 PDF 保持不变</span>
-                  <Button disabled={pdfAction !== null} size="xs" type="button" variant="outline" onClick={() => void choosePdf('version')}>
-                    {pdfAction === 'version' ? <Loader2 className="animate-spin" size={13} /> : <CopyPlus size={13} />}
-                    创建新版 PDF
-                  </Button>
-                </div>
-                <ContentRow
+                {renamingPdf ? <InlineRenameField
+                  label="修改 PDF 文件名"
+                  value={renamingPdf.draft}
+                  busy={renamingPdf.busy}
+                  error={renamingPdf.error}
+                  onChange={(draft) => setRenamingPdf((current) => current ? { ...current, draft, error: null } : current)}
+                  onCancel={() => setRenamingPdf(null)}
+                  onSave={() => void commitRenamePdf()}
+                /> : <ContentRow
                   active={activeContentId === 'pdf'}
                   icon={<FileType size={14} />}
                   label={entry.pdfFileName}
-                  labelContent={
-                    renamingPdf ? (
-                      <Input
-                        autoFocus
-                        className="h-7 min-w-0 text-xs"
-                        disabled={renamingPdf.busy}
-                        value={renamingPdf.draft}
-                        onBlur={() => void commitRenamePdf()}
-                        onChange={(event) =>
-                          setRenamingPdf((current) =>
-                            current ? { ...current, draft: event.target.value } : current
-                          )
-                        }
-                        onClick={(event) => event.stopPropagation()}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault();
-                            void commitRenamePdf();
-                          }
-                          if (event.key === 'Escape') {
-                            event.preventDefault();
-                            renameBlurSuppressed.current = true;
-                            setRenamingPdf(null);
-                          }
-                        }}
-                      />
-                    ) : undefined
-                  }
                   meta="PDF"
                   action={<OpenInRightButton onClick={() => onOpenContentInRight('pdf')} />}
                   onContextMenu={(event) => {
@@ -347,8 +290,9 @@ export function EntryContentSidebar({
                     setPdfContextMenu({ x: event.clientX, y: event.clientY });
                   }}
                   onClick={() => onSelectContent('pdf')}
-                />
+                />}
                 <ContentRow
+                  guideId="entry-reflow"
                   active={activeContentId === 'reflow'}
                   icon={<ScrollText size={14} />}
                   label="重排视图"
@@ -357,6 +301,7 @@ export function EntryContentSidebar({
                   onClick={() => onSelectContent('reflow')}
                 />
                 <ContentRow
+                  guideId="entry-segment-notes"
                   active={activeContentId === 'segment-notes'}
                   icon={<StickyNote size={14} />}
                   label="片段记录"
@@ -376,8 +321,8 @@ export function EntryContentSidebar({
             ) : (
               <div className="flex items-center justify-between gap-2 rounded-md bg-muted/45 px-2 py-1.5 text-xs text-muted-foreground">
                 <span>未附带 PDF</span>
-                <Button disabled={pdfAction !== null} size="xs" type="button" variant="outline" onClick={() => void choosePdf('attach')}>
-                  {pdfAction === 'attach' ? <Loader2 className="animate-spin" size={13} /> : <FilePlus2 size={13} />}
+                <Button disabled={attachingPdf} size="xs" type="button" variant="outline" onClick={() => void choosePdf()}>
+                  {attachingPdf ? <Loader2 className="animate-spin" size={13} /> : <FilePlus2 size={13} />}
                   补充 PDF
                 </Button>
               </div>
@@ -385,7 +330,7 @@ export function EntryContentSidebar({
 
           </section>
 
-          <section className="min-w-0 space-y-1">
+          <section data-guide="entry-document-notes" className="min-w-0 space-y-1">
             <SidebarSectionHeader label={`文档笔记 · ${notes.length}`} open={notesOpen} onToggle={() => setNotesOpen(value => !value)} action={
               <Button aria-label="新建文档笔记" disabled={creating} size="icon-xs" title="新建文档笔记" type="button" variant="ghost" onClick={() => { setNotesOpen(true); void createNote(); }}>
                 <Plus size={13} aria-hidden="true" />
@@ -393,39 +338,20 @@ export function EntryContentSidebar({
             } />
             <div hidden={!notesOpen}>
             {notes.map((note) => (
-              <ContentRow
+              renamingNote?.noteId === note.note_id ? <InlineRenameField
+                key={note.note_id}
+                label="修改笔记标题"
+                value={renamingNote.draft}
+                busy={renamingNote.busy}
+                error={renamingNote.error}
+                onChange={(draft) => setRenamingNote((current) => current ? { ...current, draft, error: null } : current)}
+                onCancel={() => setRenamingNote(null)}
+                onSave={() => void commitRenameNote()}
+              /> : <ContentRow
                 active={activeContentId === `note:${note.note_id}`}
                 icon={<FileText size={14} />}
                 key={note.note_id}
                 label={note.title}
-                labelContent={
-                  renamingNote?.noteId === note.note_id ? (
-                    <Input
-                      autoFocus
-                      className="h-7 min-w-0 text-xs"
-                      disabled={renamingNote.busy}
-                      value={renamingNote.draft}
-                      onBlur={() => void commitRenameNote()}
-                      onChange={(event) =>
-                        setRenamingNote((current) =>
-                          current ? { ...current, draft: event.target.value } : current
-                        )
-                      }
-                      onClick={(event) => event.stopPropagation()}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-                          void commitRenameNote();
-                        }
-                        if (event.key === 'Escape') {
-                          event.preventDefault();
-                          renameBlurSuppressed.current = true;
-                          setRenamingNote(null);
-                        }
-                      }}
-                    />
-                  ) : undefined
-                }
                 meta="文档笔记"
                 action={
                   <div className="flex items-center gap-0.5">
@@ -543,17 +469,6 @@ export function EntryContentSidebar({
         </ViewportContextMenu>
       ) : null}
 
-      <EntryEditDialog
-        entry={entry}
-        open={editOpen}
-        tags={tags}
-        onOpenChange={setEditOpen}
-        onAttachPdf={onAttachPdf}
-        onCreatePdfVersion={onCreatePdfVersion}
-        onImportMineruClientResult={onImportMineruClientResult}
-        onUpdateEntry={onUpdateEntry}
-      />
-
       <Dialog
         open={Boolean(notePendingDelete)}
         onOpenChange={(open) => {
@@ -586,6 +501,34 @@ export function EntryContentSidebar({
       </Dialog>
     </>
   );
+}
+
+function InlineRenameField({ label, value, busy, error, onChange, onCancel, onSave }: {
+  label: string;
+  value: string;
+  busy: boolean;
+  error: string | null;
+  onChange: (value: string) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}) {
+  const inputId = useId();
+  return <div className="min-w-0 space-y-2 rounded-md border border-primary/30 bg-background p-2 text-foreground" role="group" aria-label={label}>
+    <label className="block text-xs font-medium" htmlFor={inputId}>{label}</label>
+    <Input id={inputId} autoFocus className="h-8 min-w-0 text-sm" disabled={busy} value={value}
+      aria-invalid={Boolean(error)} aria-describedby={error ? `${inputId}-error` : undefined}
+      onFocus={(event) => event.currentTarget.select()}
+      onChange={(event) => onChange(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); onSave(); }
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onCancel(); }
+      }} />
+    {error ? <p id={`${inputId}-error`} className="text-xs text-destructive" role="alert">{error}</p> : null}
+    <div className="flex items-center justify-end gap-1">
+      <Button size="xs" type="button" variant="ghost" disabled={busy} onClick={onCancel}>取消</Button>
+      <Button size="xs" type="button" disabled={busy} onClick={onSave}>{busy ? '保存中…' : '保存'}</Button>
+    </div>
+  </div>;
 }
 
 function InfoBlock({

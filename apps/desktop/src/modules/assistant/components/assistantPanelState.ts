@@ -168,8 +168,8 @@ type AssistantPanelProps = {
   onComposerDraftChange: (draft: AssistantComposerDraft | null) => void;
   onCreateAssistantEntry: (title: string) => Promise<LibraryEntry>;
   onApplyNoteProposal: (proposal: AssistantNoteProposal) => Promise<AssistantNoteProposal>;
-  onApplyEntryMetaProposal: (proposal: AssistantEntryMetaProposal) => Promise<void>;
-  onApplyTagProposal: (proposal: AssistantTagProposal) => Promise<void>;
+  onApplyEntryMetaProposal: (proposal: AssistantEntryMetaProposal, confirmation: import('@/shared/ipc/assistantProposalApi').AssistantProposalConfirmation) => Promise<void>;
+  onApplyTagProposal: (proposal: AssistantTagProposal, confirmation: import('@/shared/ipc/assistantProposalApi').AssistantProposalConfirmation) => Promise<void>;
   onAddAssistantContext: (context: AssistantContextInput) => void;
   onDraftQuestionConsumed: () => void;
   onExportConversation: (conversation: Conversation) => Promise<void>;
@@ -396,6 +396,7 @@ export function buildAssistantMessageParts({
   for (const event of toolEvents) {
     parts.push({
       args: event.input,
+      recovered: event.recovered,
       id: event.id,
       status: event.status,
       toolName: event.toolName,
@@ -405,7 +406,9 @@ export function buildAssistantMessageParts({
     if (event.summary) {
       parts.push({
         id: event.id,
+        diagram: event.diagram,
         sourceLinks: event.sources,
+        researchPapers: event.researchPapers,
         summary: event.summary,
         toolName: event.toolName,
         type: 'tool-result'
@@ -689,7 +692,7 @@ export function patchConversationNoteProposal(
   conversation: Conversation,
   proposalId: string,
   patch: Partial<AssistantNoteProposal>
-) {
+): { conversation: Conversation; message: ConversationMessage } | null {
   let patchedMessage: ConversationMessage | null = null;
   const messages = conversation.messages.map((message) => {
     const proposals = noteProposalsFromMessage(message);

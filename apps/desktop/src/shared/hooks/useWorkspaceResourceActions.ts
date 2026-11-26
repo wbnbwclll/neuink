@@ -3,6 +3,7 @@ import { listTagArchives, restoreTagArchive } from '@/shared/ipc/tagReadingApi';
 import { updateTagDescription } from '@/shared/ipc/noteCatalogApi';
 
 import {
+  applyEntryTagPaths as mergeEntryTagPaths,
   applyTagProposal,
   applyEntryMetaProposal,
   createAnnotation,
@@ -175,6 +176,7 @@ export function useWorkspaceResourceActions({
       setParseSubmissionCount((count) => count + 1);
       void submitQueuedPdfParse(workspaceRoot, entryId, endpoint, apiKey)
         .then((response) => {
+          if (currentRoot.current !== workspaceRoot) return;
           setEntries((current) => [
             response.entry,
             ...current.filter((entry) => entry.id !== response.entry.id)
@@ -186,6 +188,7 @@ export function useWorkspaceResourceActions({
           );
         })
         .catch(async (caught) => {
+          if (currentRoot.current !== workspaceRoot) return;
           setError(caught instanceof Error ? caught.message : String(caught));
           await refreshEntries(workspaceRoot);
         })
@@ -238,7 +241,7 @@ export function useWorkspaceResourceActions({
         setError(null);
 
         if (request.pdfPath) {
-          const queued = await queuePdfParse(root, created.id, request.pdfPath);
+          const queued = await queuePdfParse(root, created.id, request.pdfPath, readAutoParseOnPdfImport());
           setEntries((current) => [
             queued,
             ...current.filter((entry) => entry.id !== queued.id)
@@ -279,7 +282,7 @@ export function useWorkspaceResourceActions({
         return;
       }
       try {
-        const queued = await queuePdfParse(root, entryId, pdfPath);
+        const queued = await queuePdfParse(root, entryId, pdfPath, readAutoParseOnPdfImport());
         setEntries((current) =>
           current.map((entry) => (entry.id === queued.id ? queued : entry))
         );
@@ -312,6 +315,7 @@ export function useWorkspaceResourceActions({
       }
       try {
         const response = await retryPdfParse(root, entryId, endpoint, apiKey);
+        if (currentRoot.current !== root) return;
         setEntries((current) =>
           current.map((entry) => (entry.id === response.entry.id ? response.entry : entry))
         );
@@ -333,6 +337,7 @@ export function useWorkspaceResourceActions({
     async (entryId: string, endpoint: string, apiKey?: string) => {
       if (!root) return;
       const response = await submitQueuedPdfParse(root, entryId, endpoint, apiKey);
+      if (currentRoot.current !== root) return;
       setEntries((current) =>
         current.map((entry) => (entry.id === response.entry.id ? response.entry : entry))
       );
@@ -486,30 +491,12 @@ export function useWorkspaceResourceActions({
 
   const applyEntryTagPaths = useCallback(
     async (entryId: string, tagPaths: string[]) => {
-      if (!root) {
-        return;
-      }
-
-      const entry = entries.find((item) => item.id === entryId);
-      if (!entry) {
-        return;
-      }
+      if (!root) throw new Error('请先打开资料库');
 
       try {
-        let nextTags = tags;
-        const tagIds = new Set<TagId>(entry.tags);
-        for (const tagPath of cleanTagPaths(tagPaths)) {
-          const result = await ensureTagPath(tagPath, nextTags);
-          nextTags = result.tags;
-          if (result.tagId) {
-            tagIds.add(result.tagId);
-          }
-        }
+        const { entry: updated, tags: nextTags } = await mergeEntryTagPaths(root, entryId, cleanTagPaths(tagPaths));
+        if (currentRoot.current !== root) return updated;
         setTags(nextTags);
-
-        const updated = await updateEntryMeta(root, entryId, entry.title, entry.fields, [
-          ...tagIds
-        ]);
         setEntries((current) =>
           current.map((item) => (item.id === updated.id ? updated : item))
         );
@@ -518,24 +505,25 @@ export function useWorkspaceResourceActions({
         return updated;
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));
-        await refreshEntries(root);
         throw caught;
       }
     },
-    [ensureTagPath, entries, refreshEntries, root, tags]
+    [root, setEntries, setError, setSelectedEntryId, setTags]
   );
 
   const applyWorkspaceTagProposal = useCallback(
-    async (proposal: AssistantTagProposal) => {
+    async (proposal: AssistantTagProposal, confirmation: import('../ipc/assistantProposalApi').AssistantProposalConfirmation) => {
       if (!root) {
         throw new Error('workspace is not open');
       }
       try {
-        const response = await applyTagProposal(root, proposal);
-        setEntries(response.entries);
-        setTags(response.tags);
-        selectFirstEntry(response.entries);
-        setError(null);
+        const response = await applyTagProposal(root, proposal, confirmation);
+        if (currentRoot.current === root) {
+          setEntries(response.entries);
+          setTags(response.tags);
+          selectFirstEntry(response.entries);
+          setError(null);
+        }
         return response;
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));
@@ -547,14 +535,14 @@ export function useWorkspaceResourceActions({
   );
 
   const applyWorkspaceEntryMetaProposal = useCallback(
-    async (proposal: AssistantEntryMetaProposal) => {
+    async (proposal: AssistantEntryMetaProposal, confirmation: import('../ipc/assistantProposalApi').AssistantProposalConfirmation) => {
       if (!root) throw new Error('workspace is not open');
       try {
-        const updated = await applyEntryMetaProposal(root, proposal);
-        setEntries((current) =>
-          current.map((entry) => (entry.id === updated.id ? updated : entry))
-        );
-        setError(null);
+        const updated = await applyEntryMetaProposal(root, proposal, confirmation);
+        if (currentRoot.current === root) {
+          setEntries((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
+          setError(null);
+        }
         return updated;
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));

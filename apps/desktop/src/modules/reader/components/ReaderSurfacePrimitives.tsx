@@ -15,7 +15,7 @@ export function ReaderSurfaceBody({
   width?: 'reading' | 'wide' | 'full';
 }) {
   return (
-    <div className={cn('min-h-0 overflow-auto px-4 py-4 sm:px-6 sm:py-5', className)}>
+    <div data-reader-body data-reader-scroll className={cn('min-h-0 overflow-auto px-4 py-4 sm:px-6 sm:py-5', className)}>
       <div
         className={cn(
           'mx-auto grid min-w-0 gap-4',
@@ -115,17 +115,19 @@ export function ReaderSection({
   actions,
   children,
   className,
+  guideId,
   description,
   title
 }: {
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
+  guideId?: string;
   description?: ReactNode;
   title: ReactNode;
 }) {
   return (
-    <section className={cn('overflow-hidden rounded-lg border bg-card', className)}>
+    <section data-guide={guideId} className={cn('overflow-hidden rounded-lg border bg-card', className)}>
       <div className="flex min-w-0 items-start justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0">
           <div className="text-sm font-semibold text-foreground">{title}</div>

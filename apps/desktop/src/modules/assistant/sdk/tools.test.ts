@@ -52,23 +52,38 @@ describe('modelToolName', () => {
 });
 
 describe('scopedEnabledToolIds', () => {
-  it('adds tools required by the invocation plan to a stale agent preset', () => {
+  it('never lets a model-generated plan grant tools missing from the agent policy', () => {
     const tools = scopedEnabledToolIds(
-      ['skill.search', 'skill.load'],
+      ['task.run_subagent'],
       null,
       {
         enabledToolIds: ['read_entry_assistant_context', 'entry.propose_meta_patch'],
         mainAssistantId: 'main-assistant', missing: [], mode: 'agent_execute', rationale: '',
-        skillIdsToLoad: [], subagentTasks: [], writePolicy: 'proposal_only'
+        subagentTasks: [], writePolicy: 'proposal_only'
       }
     );
 
-    expect(tools).toContain('read_entry_assistant_context');
-    expect(tools).toContain('entry.propose_meta_patch');
+    expect(tools).toEqual([]);
   });
 });
 
 describe('model-driven side-effect tools', () => {
+  it('always offers the host diagram presenter to the main agent and persists its artifact', async () => {
+    const runtime = await createAssistantTools({
+      activeExecution: { agent: DEFAULT_AGENT_RUNTIME_SETTINGS.mainAssistant },
+      invocationPlan: { enabledToolIds: [], mainAssistantId: 'main-assistant', missing: [],
+        mode: 'agent_execute', rationale: '', subagentTasks: [], writePolicy: 'chat_only' },
+      root: 'C:/workspace', scope, runtimeSettings: DEFAULT_AGENT_RUNTIME_SETTINGS
+    });
+    expect(runtime.toolNames).toContain('present_diagram');
+    await (runtime.tools.present_diagram.execute as NonNullable<typeof runtime.tools.present_diagram.execute>)(
+      { kind: 'mindmap', title: '整理', nodes: [{ id: 'root', label: '论文整理' }] },
+      { toolCallId: 'diagram-1', messages: [] } as never
+    );
+    expect(runtime.events).toContainEqual(expect.objectContaining({ id: 'diagram-1', status: 'done',
+      diagram: expect.objectContaining({ code: 'mindmap\n  n0["论文整理"]' }) }));
+    expect(runtime.snapshot().events[0].diagram?.title).toBe('整理');
+  });
   it('creates an Entry from model-chosen arguments and replays idempotently', async () => {
     const create = vi.fn(async (title: string) => ({
       description: '', id: 'entry-1', title, updatedAt: '2026-07-15T00:00:00Z'
@@ -76,15 +91,15 @@ describe('model-driven side-effect tools', () => {
     const state = createAgentLoopState('帮我取名并创建');
     const runtime = await createAssistantTools({
       activeExecution: {
-        agent: DEFAULT_AGENT_RUNTIME_SETTINGS.mainAssistant,
-        skillPackages: []
+        agent: { ...DEFAULT_AGENT_RUNTIME_SETTINGS.mainAssistant, sandbox: 'workspace-write' }
       },
       invocationPlan: {
         enabledToolIds: ['create_entry'], mainAssistantId: 'main-assistant', missing: [],
-        mode: 'agent_execute', rationale: '', skillIdsToLoad: [], subagentTasks: [],
+        mode: 'agent_execute', rationale: '', subagentTasks: [],
         writePolicy: 'workspace_write'
       },
       loopGuard: new AgentLoopGuard(state),
+      plan: { intent: 'entry_create' } as never,
       onCreateEntry: create,
       root: 'C:/workspace',
       scope,
@@ -93,6 +108,7 @@ describe('model-driven side-effect tools', () => {
     const execute = runtime.tools.create_entry.execute as NonNullable<
       typeof runtime.tools.create_entry.execute
     >;
+    expect(runtime.tools.create_entry.needsApproval).toBe(true);
     const options = { toolCallId: 'call-1', messages: [] } as never;
 
     const first = await execute({ title: '软件工程论文学习' }, options);
@@ -116,10 +132,10 @@ describe('model-driven side-effect tools', () => {
     });
     const proposals: Array<{ beforeMarkdown?: string | null }> = [];
     const runtime = await createAssistantTools({
-      activeExecution: { agent: DEFAULT_AGENT_RUNTIME_SETTINGS.mainAssistant, skillPackages: [] },
+      activeExecution: { agent: DEFAULT_AGENT_RUNTIME_SETTINGS.mainAssistant },
       invocationPlan: {
         enabledToolIds: ['read_note', 'note.propose_patch'], mainAssistantId: 'main-assistant',
-        missing: [], mode: 'agent_execute', rationale: '', skillIdsToLoad: [], subagentTasks: [],
+        missing: [], mode: 'agent_execute', rationale: '', subagentTasks: [],
         writePolicy: 'proposal_only'
       },
       onNoteProposal: (proposal) => proposals.push(proposal),

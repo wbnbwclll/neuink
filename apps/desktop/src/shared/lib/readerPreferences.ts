@@ -1,3 +1,5 @@
+import { REFLOW_COMPONENT_KEYS, normalizeReflowComponentContent, type ReflowComponentContent } from './reflowContentPreferences';
+
 export type PdfHoverPreviewFontSize = 'small' | 'standard' | 'large';
 export type PdfHoverPreviewSize = 'compact' | 'standard' | 'large';
 
@@ -17,6 +19,7 @@ export type ReflowVisualComponentPreference = {
   size: ReflowVisualSize;
 };
 export type ReflowComponentPreferences = {
+  content?: ReflowComponentContent;
   heading: ReflowTextComponentPreference;
   paragraph: ReflowTextComponentPreference;
   list: ReflowTextComponentPreference;
@@ -45,41 +48,85 @@ export const DEFAULT_REFLOW_COMPONENT_PREFERENCES: ReflowComponentPreferences = 
 };
 
 export type ReaderPreferences = {
+  openEntryPdfByDefault: boolean;
   autoTranslateTextSelection: boolean;
   closeSegmentOverlayOnBlankClick: boolean;
   closeSegmentOverlayOnSameSegmentClick: boolean;
   hoverPreviewEnabled: boolean;
+  pdfSentenceHoverEnabled: boolean;
+  pdfSentenceHoverShowOriginal: boolean;
+  pdfSentenceHoverShowTranslation: boolean;
   pdfHoverPreviewFontSize: PdfHoverPreviewFontSize;
   pdfHoverPreviewSize: PdfHoverPreviewSize;
   hoverPreviewShowRegion: boolean;
   hoverPreviewShowOriginal: boolean;
   hoverPreviewShowNote: boolean;
   hoverPreviewShowAnnotation: boolean;
+  inlineAnnotationHoverEnabled: boolean;
+  paperReferenceHoverEnabled: boolean;
   hoverPreviewShowTranslation: boolean;
   leftClickOpensNotePane: boolean;
   segmentNoteOpenGesture: 'button' | 'single' | 'modifier';
   reflowBackgroundColor: string;
   reflowComponents: ReflowComponentPreferences;
   reflowFontSize: number;
-  reflowTranslationMode: 'source' | 'translation' | 'bilingual';
+  reflowTranslationMode: 'source' | 'translation' | 'bilingual' | 'sentences';
   reflowHoverSourceEnabled: boolean;
   showRegions: boolean;
   pageDisplayMode: 'single' | 'dual';
+  pageTurningMode?: 'scroll' | 'book';
 };
+
+export type ReflowOriginalDisplay = 'hidden' | 'original' | 'sentences';
+
+export function reflowDisplayOptions(preferences: ReaderPreferences) {
+  const content = normalizeReflowComponentContent(preferences.reflowComponents.content)?.paragraph;
+  const parsed = content?.parsed ?? preferences.reflowTranslationMode !== 'translation';
+  const translation = content?.translation ?? preferences.reflowTranslationMode !== 'source';
+  const translationView = content?.translationView ?? (preferences.reflowTranslationMode === 'sentences' ? 'sentences' : 'paragraph');
+  return {
+    original: !parsed ? 'hidden' : translationView === 'sentences' ? 'sentences' : 'original',
+    translation,
+  } as const;
+}
+
+export function withReflowDisplayOptions(preferences: ReaderPreferences, original: ReflowOriginalDisplay,
+  translation: boolean): ReaderPreferences {
+  const mode: ReaderPreferences['reflowTranslationMode'] = original === 'sentences' ? 'sentences'
+    : original === 'hidden' ? 'translation' : translation ? 'bilingual' : 'source';
+  return { ...preferences, reflowTranslationMode: mode, reflowComponents: {
+    ...preferences.reflowComponents,
+    content: Object.fromEntries(REFLOW_COMPONENT_KEYS.map(key => [key, {
+      ...preferences.reflowComponents.content?.[key], parsed: original !== 'hidden', translation,
+      translationView: original === 'sentences' ? 'sentences' : 'paragraph',
+    }])),
+  } };
+}
+
+export function withReflowTranslationMode(preferences: ReaderPreferences, mode: ReaderPreferences['reflowTranslationMode']): ReaderPreferences {
+  return withReflowDisplayOptions(preferences, mode === 'translation' ? 'hidden' : mode === 'sentences' ? 'sentences' : 'original',
+    mode !== 'source');
+}
 
 const READER_PREFERENCES_STORAGE_KEY = 'neuink.reader.preferences';
 
 const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
+  openEntryPdfByDefault: true,
   autoTranslateTextSelection: false,
   closeSegmentOverlayOnBlankClick: true,
   closeSegmentOverlayOnSameSegmentClick: true,
   hoverPreviewEnabled: true,
+  pdfSentenceHoverEnabled: true,
+  pdfSentenceHoverShowOriginal: true,
+  pdfSentenceHoverShowTranslation: true,
   pdfHoverPreviewFontSize: 'standard',
   pdfHoverPreviewSize: 'standard',
   hoverPreviewShowRegion: true,
   hoverPreviewShowOriginal: true,
   hoverPreviewShowNote: true,
   hoverPreviewShowAnnotation: true,
+  inlineAnnotationHoverEnabled: true,
+  paperReferenceHoverEnabled: true,
   hoverPreviewShowTranslation: true,
   leftClickOpensNotePane: false,
   segmentNoteOpenGesture: 'button',
@@ -90,6 +137,7 @@ const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   reflowHoverSourceEnabled: true,
   showRegions: false,
   pageDisplayMode: 'single' as const,
+  pageTurningMode: 'scroll',
 };
 
 export function readStoredReaderPreferences(): ReaderPreferences {
@@ -122,17 +170,23 @@ export function persistReaderPreferences(preferences: ReaderPreferences) {
 
 export function equalReaderPreferences(left: ReaderPreferences, right: ReaderPreferences) {
   return (
+    left.openEntryPdfByDefault === right.openEntryPdfByDefault &&
     left.autoTranslateTextSelection === right.autoTranslateTextSelection &&
     left.closeSegmentOverlayOnBlankClick === right.closeSegmentOverlayOnBlankClick &&
     left.closeSegmentOverlayOnSameSegmentClick ===
       right.closeSegmentOverlayOnSameSegmentClick &&
     left.hoverPreviewEnabled === right.hoverPreviewEnabled &&
+    left.pdfSentenceHoverEnabled === right.pdfSentenceHoverEnabled &&
+    left.pdfSentenceHoverShowOriginal === right.pdfSentenceHoverShowOriginal &&
+    left.pdfSentenceHoverShowTranslation === right.pdfSentenceHoverShowTranslation &&
     left.pdfHoverPreviewFontSize === right.pdfHoverPreviewFontSize &&
     left.pdfHoverPreviewSize === right.pdfHoverPreviewSize &&
     left.hoverPreviewShowRegion === right.hoverPreviewShowRegion &&
     left.hoverPreviewShowOriginal === right.hoverPreviewShowOriginal &&
     left.hoverPreviewShowNote === right.hoverPreviewShowNote &&
     left.hoverPreviewShowAnnotation === right.hoverPreviewShowAnnotation &&
+    left.inlineAnnotationHoverEnabled === right.inlineAnnotationHoverEnabled &&
+    left.paperReferenceHoverEnabled === right.paperReferenceHoverEnabled &&
     left.hoverPreviewShowTranslation === right.hoverPreviewShowTranslation &&
     left.leftClickOpensNotePane === right.leftClickOpensNotePane &&
     left.segmentNoteOpenGesture === right.segmentNoteOpenGesture &&
@@ -142,7 +196,8 @@ export function equalReaderPreferences(left: ReaderPreferences, right: ReaderPre
     left.reflowTranslationMode === right.reflowTranslationMode &&
     left.reflowHoverSourceEnabled === right.reflowHoverSourceEnabled &&
     left.showRegions === right.showRegions &&
-    left.pageDisplayMode === right.pageDisplayMode
+    left.pageDisplayMode === right.pageDisplayMode &&
+    (left.pageTurningMode ?? 'scroll') === (right.pageTurningMode ?? 'scroll')
   );
 }
 
@@ -154,6 +209,10 @@ function normalizeReaderPreferences(value: unknown): ReaderPreferences {
   const candidate = value as Partial<ReaderPreferences>;
 
   return {
+    openEntryPdfByDefault:
+      typeof candidate.openEntryPdfByDefault === 'boolean'
+        ? candidate.openEntryPdfByDefault
+        : DEFAULT_READER_PREFERENCES.openEntryPdfByDefault,
     autoTranslateTextSelection:
       typeof candidate.autoTranslateTextSelection === 'boolean'
         ? candidate.autoTranslateTextSelection
@@ -170,6 +229,18 @@ function normalizeReaderPreferences(value: unknown): ReaderPreferences {
       typeof candidate.hoverPreviewEnabled === 'boolean'
         ? candidate.hoverPreviewEnabled
         : DEFAULT_READER_PREFERENCES.hoverPreviewEnabled,
+    pdfSentenceHoverEnabled:
+      typeof candidate.pdfSentenceHoverEnabled === 'boolean'
+        ? candidate.pdfSentenceHoverEnabled
+        : DEFAULT_READER_PREFERENCES.pdfSentenceHoverEnabled,
+    pdfSentenceHoverShowOriginal:
+      typeof candidate.pdfSentenceHoverShowOriginal === 'boolean'
+        ? candidate.pdfSentenceHoverShowOriginal
+        : DEFAULT_READER_PREFERENCES.pdfSentenceHoverShowOriginal,
+    pdfSentenceHoverShowTranslation:
+      typeof candidate.pdfSentenceHoverShowTranslation === 'boolean'
+        ? candidate.pdfSentenceHoverShowTranslation
+        : DEFAULT_READER_PREFERENCES.pdfSentenceHoverShowTranslation,
     pdfHoverPreviewFontSize:
       candidate.pdfHoverPreviewFontSize === 'small' ||
       candidate.pdfHoverPreviewFontSize === 'standard' ||
@@ -198,6 +269,14 @@ function normalizeReaderPreferences(value: unknown): ReaderPreferences {
       typeof candidate.hoverPreviewShowAnnotation === 'boolean'
         ? candidate.hoverPreviewShowAnnotation
         : DEFAULT_READER_PREFERENCES.hoverPreviewShowAnnotation,
+    inlineAnnotationHoverEnabled:
+      typeof candidate.inlineAnnotationHoverEnabled === 'boolean'
+        ? candidate.inlineAnnotationHoverEnabled
+        : candidate.hoverPreviewEnabled !== false && candidate.hoverPreviewShowAnnotation !== false,
+    paperReferenceHoverEnabled:
+      typeof candidate.paperReferenceHoverEnabled === 'boolean'
+        ? candidate.paperReferenceHoverEnabled
+        : DEFAULT_READER_PREFERENCES.paperReferenceHoverEnabled,
     hoverPreviewShowTranslation:
       typeof candidate.hoverPreviewShowTranslation === 'boolean'
         ? candidate.hoverPreviewShowTranslation
@@ -218,7 +297,7 @@ function normalizeReaderPreferences(value: unknown): ReaderPreferences {
     reflowComponents: normalizeReflowComponentPreferences(candidate.reflowComponents),
     reflowFontSize: normalizeReflowFontSize(candidate.reflowFontSize),
     reflowTranslationMode:
-      candidate.reflowTranslationMode === 'translation' || candidate.reflowTranslationMode === 'bilingual'
+      candidate.reflowTranslationMode === 'translation' || candidate.reflowTranslationMode === 'bilingual' || candidate.reflowTranslationMode === 'sentences'
         ? candidate.reflowTranslationMode
         : DEFAULT_READER_PREFERENCES.reflowTranslationMode,
     reflowHoverSourceEnabled:
@@ -233,6 +312,7 @@ function normalizeReaderPreferences(value: unknown): ReaderPreferences {
       candidate.pageDisplayMode === 'single' || candidate.pageDisplayMode === 'dual'
         ? candidate.pageDisplayMode
         : DEFAULT_READER_PREFERENCES.pageDisplayMode,
+    pageTurningMode: candidate.pageTurningMode === 'book' ? 'book' : 'scroll',
   };
 }
 
@@ -266,6 +346,7 @@ function normalizeReflowComponentPreferences(value: unknown): ReflowComponentPre
 
   return {
     heading: normalizeTextComponent(candidate.heading, DEFAULT_REFLOW_COMPONENT_PREFERENCES.heading),
+    ...(candidate.content ? { content: normalizeReflowComponentContent(candidate.content) } : {}),
     paragraph: normalizeTextComponent(candidate.paragraph, DEFAULT_REFLOW_COMPONENT_PREFERENCES.paragraph),
     list: normalizeTextComponent(candidate.list, DEFAULT_REFLOW_COMPONENT_PREFERENCES.list),
     table: normalizeTextComponent(candidate.table, DEFAULT_REFLOW_COMPONENT_PREFERENCES.table),

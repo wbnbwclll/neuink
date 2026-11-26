@@ -1,72 +1,15 @@
-use std::path::PathBuf;
-
-use neuink_config::LlmProfile;
-use neuink_domain::{EntryId, TagId};
 use serde::{Deserialize, Serialize};
-
-use super::super::{AssistantContextSnapshotResponse, EntryAssistantSource};
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct RunAgentSubagentTaskRequest {
-    pub root: PathBuf,
-    pub agent_id: String,
-    pub instruction: String,
-    pub question: String,
-    pub runtime_settings: AgentRuntimeSettings,
-    #[serde(default)]
-    pub profiles: Vec<LlmProfile>,
-    #[serde(default)]
-    pub context_snapshot: Option<AssistantContextSnapshotResponse>,
-    #[serde(default)]
-    pub conversation_history: Vec<AgentConversationMessage>,
-    pub scope: AgentScopeSnapshot,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct RunAgentSubagentTaskResponse {
-    pub agent_id: String,
-    pub agent_name: String,
-    pub answer: String,
-    pub sources: Vec<EntryAssistantSource>,
-    pub trace: Vec<AgentRuntimeTraceEvent>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct AgentRuntimeTraceEvent {
-    pub id: String,
-    pub label: String,
-    pub elapsed_ms: u128,
-    pub summary: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AgentConversationMessage {
-    pub role: String,
-    pub content: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AgentScopeSnapshot {
-    #[serde(default)]
-    pub tag_ids: Vec<TagId>,
-    #[serde(default)]
-    pub tag_names: Vec<String>,
-    #[serde(default)]
-    pub entry_ids: Vec<EntryId>,
-    #[serde(default)]
-    pub entry_titles: Vec<String>,
-}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeSettings {
+    #[serde(default)]
+    pub capability_revision: u32,
     pub main_assistant: AgentProfile,
     #[serde(default)]
     pub mcp_servers: Vec<AgentMcpServer>,
     #[serde(default)]
     pub subagents: Vec<AgentProfile>,
-    #[serde(default)]
-    pub skill_packages: Vec<SkillPackage>,
     #[serde(default)]
     pub tool_packages: Vec<AgentToolPackage>,
     pub version: u32,
@@ -116,8 +59,6 @@ pub struct AgentProfile {
     #[serde(default)]
     pub description: String,
     #[serde(default)]
-    pub allowed_skill_package_ids: Vec<String>,
-    #[serde(default)]
     pub enabled_tool_ids: Vec<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -132,8 +73,6 @@ pub struct AgentProfile {
     pub permissions: AgentPermissions,
     #[serde(default)]
     pub sandbox: Option<String>,
-    #[serde(default)]
-    pub subagent_manifest_path: Option<String>,
     pub system_prompt: String,
     #[serde(default)]
     pub visible_in_ui: bool,
@@ -153,60 +92,24 @@ pub struct AgentPermissions {
     #[serde(default)]
     pub can_read_workspace_wide: bool,
     #[serde(default)]
-    pub can_use_skills: bool,
-    #[serde(default)]
     pub can_write_proposals: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillPackage {
-    pub category: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub files: Vec<SkillPackageFile>,
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub resource_paths: SkillResourcePaths,
-    #[serde(default)]
-    pub readme: String,
-    #[serde(default)]
-    pub script_execution: Option<String>,
-    #[serde(default)]
-    pub source_archive_path: Option<String>,
-    #[serde(default)]
-    pub suggested_tool_ids: Vec<String>,
-    #[serde(default)]
-    pub triggers: Vec<String>,
-    #[serde(default)]
-    pub version: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillPackageFile {
-    pub path: String,
-    #[serde(default)]
-    pub size_bytes: u64,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillResourcePaths {
-    #[serde(default)]
-    pub assets: Vec<String>,
-    #[serde(default)]
-    pub references: Vec<String>,
-    #[serde(default)]
-    pub scripts: Vec<String>,
-}
-
-pub(crate) struct EvidenceBundle {
-    pub text: String,
-    pub sources: Vec<EntryAssistantSource>,
-    pub trace: Vec<AgentRuntimeTraceEvent>,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn capability_revision_survives_native_storage_and_unknown_extension_fields_do_not() {
+        let settings:AgentRuntimeSettings=serde_json::from_value(serde_json::json!({
+            "version":4,"capabilityRevision":1,"unusedExtension":{},
+            "mainAssistant":{"id":"main-assistant","name":"Main","permissions":{},"systemPrompt":"Host tools only","enabledToolIds":["read_note"]}
+        })).unwrap();
+        let stored = serde_json::to_value(settings).unwrap();
+        assert_eq!(stored["capabilityRevision"], 1);
+        assert_eq!(
+            stored["mainAssistant"]["enabledToolIds"],
+            serde_json::json!(["read_note"])
+        );
+        assert!(stored.get("unusedExtension").is_none());
+    }
 }

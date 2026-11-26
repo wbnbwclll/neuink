@@ -1,15 +1,13 @@
 import { ExternalLink, FolderOpen, Loader2, RotateCcw } from 'lucide-react';
 import type {
   MouseEvent as ReactMouseEvent,
-  RefObject,
-  WheelEvent as ReactWheelEvent
+  RefObject
 } from 'react';
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect } from 'react';
+import type { AssistantContextAddOptions } from '@/shared/types/assistant';
 
 import type {
   Annotation,
-  AnnotationImportance,
-  AnnotationTextSelection,
   SegmentBlockNote,
   SourceSegment,
 } from '@/shared/types/domain';
@@ -28,6 +26,13 @@ import type { PageSegments } from './types';
 import { useVisiblePdfPages } from './useVisiblePdfPages';
 import { PDF_SPREAD_GAP } from './readerConstants';
 import { centeredPdfScrollLeft } from './pdfViewportLayout';
+import { usePdfBookNavigation } from './usePdfBookNavigation';
+import { PdfBookControls } from './PdfBookControls';
+import { scrollToPage } from './readerUtils';
+import { PdfLayoutAnchor } from './PdfLayoutAnchor';
+import { usePdfPan } from './usePdfPan';
+import type { ApplyTextSelectionAnnotation } from './textSelectionAnnotation';
+import type { PdfWheelZoomRequest } from './pdfWheelZoom';
 
 export function PdfReaderDocumentPane({
   activeAnnotationId,
@@ -39,6 +44,9 @@ export function PdfReaderDocumentPane({
   annotationsBySegmentUid,
   notesBySegmentUid,
   pageWidth,
+  bookMode = false,
+  zoom = 1,
+  resumePageIdx,
   leftInset = 0,
   hoverPreviewEnabled,
   hoverPreviewFontSize,
@@ -47,7 +55,10 @@ export function PdfReaderDocumentPane({
   hoverPreviewShowOriginal,
   hoverPreviewShowNote,
   hoverPreviewShowAnnotation,
+  inlineAnnotationHoverEnabled,
   hoverPreviewShowTranslation,
+  sentenceHoverShowOriginal,
+  sentenceHoverShowTranslation,
   rows,
   searchMatchCountsByPage,
   searchQuery,
@@ -82,6 +93,8 @@ export function PdfReaderDocumentPane({
   onCreateTextSelectionAnnotation,
   onTranslateTextSelection,
   onToggleSegment,
+  sentenceLinkEnabled = false,
+  sentenceHoverEnabled = false,
   onVisiblePageIndexesChange,
   altClickOpensNote = false
 }: {
@@ -94,6 +107,9 @@ export function PdfReaderDocumentPane({
   annotationsBySegmentUid: Map<string, Annotation[]>;
   notesBySegmentUid: Map<string, SegmentBlockNote>;
   pageWidth: number;
+  bookMode?: boolean;
+  zoom?: number;
+  resumePageIdx?: number | null;
   leftInset?: number;
   hoverPreviewEnabled: boolean;
   hoverPreviewFontSize: PdfHoverPreviewFontSize;
@@ -102,7 +118,10 @@ export function PdfReaderDocumentPane({
   hoverPreviewShowOriginal: boolean;
   hoverPreviewShowNote: boolean;
   hoverPreviewShowAnnotation: boolean;
+  inlineAnnotationHoverEnabled: boolean;
   hoverPreviewShowTranslation: boolean;
+  sentenceHoverShowOriginal: boolean;
+  sentenceHoverShowTranslation: boolean;
   rows: PageSegments[][];
   searchMatchCountsByPage?: Map<number, number>;
   searchQuery?: string;
@@ -120,12 +139,7 @@ export function PdfReaderDocumentPane({
   translationMode: 'replace' | 'hover';
   translationVisible: boolean;
   workspaceRoot: string | null;
-  onCtrlWheelZoom: (request: {
-    clientX: number;
-    clientY: number;
-    container: HTMLDivElement;
-    direction: 1 | -1;
-  }) => void;
+  onCtrlWheelZoom: (request: PdfWheelZoomRequest) => void;
   onOpenPdf?: () => void;
   onRevealPdf?: () => void;
   onAddSourceLink?: (segment: SourceSegment) => void;
@@ -133,59 +147,58 @@ export function PdfReaderDocumentPane({
   onCopySourceLink?: (segment: SourceSegment) => void;
   onInsertSegmentImage?: (segment: SourceSegment) => void;
   onTranslateSegment?: (segment: SourceSegment) => void;
-  onOpenSegmentAnnotation: (segment: SourceSegment) => void;
+  onOpenSegmentAnnotation: (segment: SourceSegment, annotationId?: string) => void;
   onOpenSegmentNote: (segment: SourceSegment) => void;
   onOpenSegmentWorkspace?: (segment: SourceSegment) => void;
   onOpenSourceBacklink: (backlink: SourceBacklink) => void;
-  onAddAssistantContext?: (segment: SourceSegment) => void;
+  onAddAssistantContext?: (segment: SourceSegment, options?: AssistantContextAddOptions) => void;
   onCloseSegmentOverlay: () => void;
-  onCreateTextSelectionAnnotation: (input: {
-    content: string;
-    importance: AnnotationImportance;
-    segment: SourceSegment;
-    selection: AnnotationTextSelection;
-  }) => Promise<void> | void;
+  onCreateTextSelectionAnnotation: ApplyTextSelectionAnnotation;
   onTranslateTextSelection?: (input: { segment: SourceSegment; text: string }) => Promise<string>;
-  onToggleSegment: (segment: SourceSegment) => void;
+  onToggleSegment: (segment: SourceSegment, sentenceIndex?: number) => void;
+  sentenceLinkEnabled?: boolean;
+  sentenceHoverEnabled?: boolean;
   onVisiblePageIndexesChange?: (pageIndexes: number[]) => void;
   altClickOpensNote?: boolean;
 }) {
   const pageCount = rows.reduce((sum, row) => sum + row.length, 0);
-  const { renderPageIndexes, visiblePageIndexes } = useVisiblePdfPages({
+  const pan = usePdfPan({ scrollRef: pdfScrollRef, context: `${entry.id}:${bookMode}:${pageWidth}`,
+    enabled: pdfState.status === 'ready' && !suppressRegions });
+  const continuous = useVisiblePdfPages({
     pageCount,
+    enabled: !bookMode && pdfState.status === 'ready',
     scrollRef: pdfScrollRef
   });
+  const book = usePdfBookNavigation({ enabled: bookMode, entryId: entry.id, rows,
+    scrollRef: pdfScrollRef, document: pdfState.status === 'ready' ? pdfState.document : null,
+    continuousPages: continuous.visiblePageIndexes, pageWidth, zoom, leftInset });
+  const spreadLength = rows[book.rowIndex]?.length ?? 1;
+  const bookWidth = (book.pageWidth + 2) * spreadLength + (spreadLength - 1) * 2;
+  const renderPageIndexes = bookMode ? book.render : continuous.renderPageIndexes;
+  const visiblePageIndexes = bookMode ? book.visible : continuous.visiblePageIndexes;
   useEffect(() => {
     onVisiblePageIndexesChange?.([...visiblePageIndexes].sort((left, right) => left - right));
   }, [onVisiblePageIndexesChange, visiblePageIndexes]);
+  useLayoutEffect(() => {
+    const element = pdfScrollRef.current;
+    if (!element || pdfState.status !== 'ready') return;
+    // Center on opening only. PdfLayoutAnchor owns zoom, including manual pans.
+    element.scrollLeft = centeredPdfScrollLeft(element.scrollWidth, element.clientWidth);
+  }, [entry.id, bookMode, pdfState.status, pdfScrollRef]);
   useEffect(() => {
     const element = pdfScrollRef.current;
-    if (!element) return undefined;
-
-    const animationFrame = window.requestAnimationFrame(() => {
-      const nextScrollLeft = centeredPdfScrollLeft(
-        element.scrollWidth,
-        element.clientWidth
-      );
-      if (element.scrollLeft !== nextScrollLeft) {
-        element.scrollLeft = nextScrollLeft;
-      }
-    });
-    return () => window.cancelAnimationFrame(animationFrame);
-  }, [pageWidth, pdfScrollRef]);
-  const handleWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!event.ctrlKey || event.deltaY === 0) {
-      return;
-    }
-
-    event.preventDefault();
-    onCtrlWheelZoom({
-      clientX: event.clientX,
-      clientY: event.clientY,
-      container: event.currentTarget,
-      direction: event.deltaY < 0 ? 1 : -1
-    });
-  };
+    if (!element || pdfState.status !== 'ready') return;
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey || event.deltaY === 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onCtrlWheelZoom({ deltaY: event.deltaY, deltaMode: event.deltaMode,
+        timeStamp: event.timeStamp, viewportHeight: element.clientHeight });
+    };
+    // React's delegated wheel listener is passive; this viewport must own Ctrl+wheel.
+    element.addEventListener('wheel', handleWheel, { passive: false });
+    return () => element.removeEventListener('wheel', handleWheel);
+  }, [onCtrlWheelZoom, pdfScrollRef, pdfState.status]);
   const handleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (hasActiveTextSelection()) {
       return;
@@ -200,24 +213,43 @@ export function PdfReaderDocumentPane({
   };
 
   return (
+    <PdfLayoutAnchor scrollRef={pdfScrollRef} documentKey={entry.id} pageWidth={book.pageWidth} zoom={zoom} bookMode={bookMode} leftInset={leftInset}>
     <div
       ref={bindPdfScrollElement}
+      data-reader-scroll
+      data-book-mode={bookMode || undefined}
+      tabIndex={0}
+      aria-label={bookMode ? '书页阅读区，PageUp 和 PageDown 翻页，按住空格拖动' : 'PDF 阅读区，按住空格拖动'}
       className="pdf-document-scroll h-full w-full min-h-0 min-w-0 max-w-full overflow-auto px-3 py-2"
+      onPointerEnter={pan.onPointerEnter}
+      onPointerLeave={pan.onPointerLeave}
+      onPointerDownCapture={pan.onPointerDownCapture}
+      onClickCapture={pan.onClickCapture}
+      onKeyDown={event => {
+        if (!bookMode || event.target !== event.currentTarget || hasActiveTextSelection() || event.ctrlKey || event.metaKey || event.altKey) return;
+        const page = event.key === 'PageDown' ? book.nextPage : event.key === 'PageUp' ? book.previousPage : undefined;
+        if (page !== undefined) { event.preventDefault(); scrollToPage(page, pdfScrollRef.current); }
+      }}
       onClick={handleClick}
-      onWheel={handleWheel}
     >
       {pdfState.status === 'ready' ? (
         <div
+          data-pdf-document-stage
+          className={bookMode ? 'pdf-book-stage' : undefined}
           style={{
             marginLeft: leftInset,
-            width: `calc(100% - ${leftInset}px)`
+              // Let the stage grow with the paper so both outer paddings remain
+              // scrollable when crossing from fitted width into overflow.
+              width: bookMode ? `max(calc(100% - ${leftInset}px), ${bookWidth + 88}px)` : 'max-content',
+              minWidth: bookMode ? undefined : `calc(100% - ${leftInset}px)`
           }}
         >
-          {rows.map((row) => (
+          {rows.map((row, rowIndex) => (
             <div
               key={row[0].pageIdx}
+              data-book-spread={bookMode && rowIndex === book.rowIndex ? true : undefined}
               className="flex w-max min-w-full justify-center"
-              style={{ gap: PDF_SPREAD_GAP }}
+              style={{ gap: bookMode ? 2 : PDF_SPREAD_GAP, display: bookMode && rowIndex !== book.rowIndex ? 'none' : undefined }}
             >
               {row.map((page) => {
                 const renderEnabled = renderPageIndexes.has(page.pageIdx);
@@ -239,11 +271,14 @@ export function PdfReaderDocumentPane({
                     hoverPreviewShowOriginal={hoverPreviewShowOriginal}
                     hoverPreviewShowNote={hoverPreviewShowNote}
                     hoverPreviewShowAnnotation={hoverPreviewShowAnnotation}
+                    inlineAnnotationHoverEnabled={inlineAnnotationHoverEnabled}
                     hoverPreviewShowTranslation={hoverPreviewShowTranslation}
+                    sentenceHoverShowOriginal={sentenceHoverShowOriginal}
+                    sentenceHoverShowTranslation={sentenceHoverShowTranslation}
                     key={page.pageIdx}
                     notesBySegmentUid={notesBySegmentUid}
                     page={page}
-                    pageWidth={pageWidth}
+                    pageWidth={book.pageWidth}
                     pdfDocument={pdfState.document}
                     renderPriority={visible ? 'visible' : 'preload'}
                     renderEnabled={renderEnabled}
@@ -253,7 +288,7 @@ export function PdfReaderDocumentPane({
                     sourceLinkHint={sourceLinkHint}
                     // A page in the render window must remain interactive even
                     // while IntersectionObserver catches up after a smooth scroll.
-                    suppressRegions={suppressRegions || !renderEnabled}
+                    suppressRegions={suppressRegions || pan.active || !renderEnabled}
                     translationBySegmentUid={translationBySegmentUid}
                     translationStatus={translationStatus}
                     translationMode={translationMode}
@@ -273,12 +308,17 @@ export function PdfReaderDocumentPane({
                     onCreateTextSelectionAnnotation={onCreateTextSelectionAnnotation}
                     onTranslateTextSelection={onTranslateTextSelection}
                     onToggleSegment={onToggleSegment}
+                    sentenceLinkEnabled={sentenceLinkEnabled}
+                    sentenceHoverEnabled={sentenceHoverEnabled}
                     altClickOpensNote={altClickOpensNote}
                   />
                 );
               })}
             </div>
           ))}
+          {bookMode ? <PdfBookControls previousPage={book.previousPage} nextPage={book.nextPage} scrollRef={pdfScrollRef}
+            width={bookWidth}
+            currentPage={(rows[book.rowIndex]?.[0]?.pageIdx ?? 0) + 1} pageCount={pageCount} resumePageIdx={resumePageIdx} /> : null}
         </div>
       ) : pdfBytesState.status === 'loading' || pdfState.status === 'loading' ? (
         <ReaderMessage
@@ -325,6 +365,7 @@ export function PdfReaderDocumentPane({
         />
       )}
     </div>
+    </PdfLayoutAnchor>
   );
 }
 

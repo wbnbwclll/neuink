@@ -1,3 +1,16 @@
+import { useAppearance } from '@/shared/components/AppearanceProvider';
+import { warmAssistantRouter } from '@/shared/ipc/assistantRoutingApi';
+import { createApplicationActions } from '../runtime/applicationActions';
+import { ExecutionRecovery } from './ExecutionRecovery';
+import { ToolApprovalPanel } from './ToolApprovalPanel';
+import { UserInputPanel } from './UserInputPanel';
+import { getUserInputs, subscribeUserInputs } from '../runtime/userInput';
+import { getToolApprovals, subscribeToolApprovals } from '../runtime/toolApproval';
+import { decideStoredProposal } from '../review/decideStoredProposal';
+import type { AssistantProposalConfirmation } from '@/shared/ipc/assistantProposalApi';
+import { useNoteReviewBridge } from '../review/useNoteReviewBridge';
+import { useNoteReviewActions } from '../review/useNoteReviewActions';
+import { useNoteReview } from '../review/NoteReviewContext';
 import {
   Archive,
   History,
@@ -7,11 +20,13 @@ import {
   Square,
   Settings
 } from 'lucide-react';
+import { ASSISTANT_ACTION_INCOMPLETE, ASSISTANT_TOOL_PENDING, formatAssistantError, readAssistantDebug, useAssistantDebug } from '@/shared/lib/assistantDebug';
 import {
   useCallback,
   useEffect,
   useMemo,
   useRef,
+  useSyncExternalStore,
   useState
 } from 'react';
 
@@ -74,14 +89,19 @@ import {
   AssistantMessageList
 } from './assistantPanelViews';
 import { AssistantExternalContextItems } from './AssistantExternalContextItems';
+import { AssistantReadingContextControl } from './AssistantReadingContextControl';
+import { resolveAssistantReadingContext, type AssistantReadingChoice } from './assistantReadingContext';
 import { SciversePaperDetailDrawer } from '@/modules/sciverse/components/SciversePaperDetailDrawer';
 import {
   getAssistantBackgroundRun,
   runAssistantPanelTask,
-  setAssistantBackgroundRun,
   subscribeAssistantBackgroundRun,
   type QueuedAssistantDraft
 } from './assistantRunController';
+import { findAssistantBackgroundRun, getAssistantBackgroundRuns, getAssistantMessageQueues, guardAssistantView, queueAssistantBackgroundRun, stopAssistantBackgroundRun, syncAssistantMessageQueueConversation, type AssistantBackgroundRunSnapshot, type AssistantMessageQueueSnapshot } from './assistantBackgroundRuns';
+import { subscribeAssistantConversationNavigation } from './assistantConversationNavigation';
+import { AssistantMessageQueue } from './AssistantMessageQueue';
+import { AssistantBackgroundTasks } from './AssistantBackgroundTasks';
 import {
   AssistantComposerEditor,
   type AssistantComposerDraft
@@ -99,14 +119,15 @@ import {
   scopeLabel
 } from './assistantContextTargets';
 import { planAssistantContext } from '../harness/contextPlanner';
+import { LOCAL_AGENTS, localAgentName, readLastAssistantEngine, saveLastAssistantEngine, useLocalAgentEnabled, type AssistantEngine } from '@/shared/lib/localAgentSettings';
+import { localAgentProfile, localAgentSelection, selectionLocalProvider, conversationLocalSession } from '../local-agent/session';
+import { useLocalAgentDetections } from '@/shared/lib/useLocalAgentDetections';
 import { latestConversationMemory } from '../harness/conversationMemory';
 import {
   analyzeConversationLength,
   cloneAssistantContextItems,
   contextItemToInput,
   patchConversationNoteProposal,
-  patchMessageEntryMetaProposal,
-  patchMessageTagProposal,
   rebaseProposalQuestion,
   updateNoteProposalList,
   upsertAssistantContextTarget,
@@ -130,8 +151,8 @@ type AssistantPanelProps = {
   onComposerDraftChange: (draft: AssistantComposerDraft | null) => void;
   onCreateAssistantEntry: (title: string) => Promise<LibraryEntry>;
   onApplyNoteProposal: (proposal: AssistantNoteProposal) => Promise<AssistantNoteProposal>;
-  onApplyEntryMetaProposal: (proposal: AssistantEntryMetaProposal) => Promise<void>;
-  onApplyTagProposal: (proposal: AssistantTagProposal) => Promise<void>;
+  onApplyEntryMetaProposal: (proposal: AssistantEntryMetaProposal, confirmation: AssistantProposalConfirmation) => Promise<void>;
+  onApplyTagProposal: (proposal: AssistantTagProposal, confirmation: AssistantProposalConfirmation) => Promise<void>;
   onAddAssistantContext: (context: AssistantContextInput) => void;
   onDraftQuestionConsumed: () => void;
   onExportConversation: (conversation: Conversation) => Promise<void>;
@@ -176,11 +197,20 @@ export function AssistantPanel({
   onReplaceAssistantContext,
   onRemoveAssistantContextItem
 }: AssistantPanelProps) {
-  const { notify } = useToast();
+  const { notify, dismiss } = useToast();
+  const { appearance, setAppearance } = useAppearance();
   const [profiles, setProfiles] = useState<LlmProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const localAgentEnabled = useLocalAgentEnabled();
+  const [selectedEngine, setSelectedEngine] = useState<AssistantEngine>(readLastAssistantEngine);
+  const engineSelectionRevision = useRef(0);
+  const {results:localDetections} = useLocalAgentDetections(localAgentEnabled,true);
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [conversation, setConversation] = useState<Conversation | null>(null);
+  const toolApprovals = useSyncExternalStore(subscribeToolApprovals, getToolApprovals);
+  const awaitingApproval = toolApprovals.some(item => item.root === root && item.conversationId === conversation?.id);
+  const awaitingUserInput = useSyncExternalStore(subscribeUserInputs,
+    () => getUserInputs().some(item => item.root === root && item.conversationId === conversation?.id));
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -200,9 +230,12 @@ export function AssistantPanel({
       : { mentions: [], text: '' }
   );
   const [composerPrefill, setComposerPrefill] = useState<string | null>(null);
-  const [queuedDraft, setQueuedDraft] = useState<QueuedAssistantDraft | null>(null);
+  const [messageQueues, setMessageQueues] = useState<AssistantMessageQueueSnapshot[]>([]);
   const [busy, setBusy] = useState(false);
+  const [decidingProposal, setDecidingProposal] = useState<string | null>(null);
+  const proposalDecisionLock = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  const debug = useAssistantDebug();
   const [optimisticMessages, setOptimisticMessages] = useState<ConversationMessage[]>([]);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [toolEventsByMessageId, setToolEventsByMessageId] = useState<
@@ -212,22 +245,34 @@ export function AssistantPanel({
     Record<string, AssistantNoteProposal[]>
   >({});
   const runAbortControllerRef = useRef<AbortController | null>(null);
+  const viewRef = useRef({ generation: 0, conversationId: null as string | null });
+  const [backgroundRuns, setBackgroundRuns] = useState<AssistantBackgroundRunSnapshot[]>([]);
+  const messageQueue = messageQueues.find(queue => queue.root === root && queue.conversationId !== null && queue.conversationId === conversation?.id) ?? null;
+  const previousRootRef = useRef(root);
+  const currentRootRef = useRef(root);
+  currentRootRef.current = root;
+  const [readingChoice, setReadingChoice] = useState<{ root: string | null; value: AssistantReadingChoice }>({ root, value: null });
+  const chosenReadingObject = readingChoice.root === root ? readingChoice.value : null;
+  const readingContext = resolveAssistantReadingContext({ choice: chosenReadingObject, entries, tags, items: assistantContext.items,
+    activeEntry, activeNote, activeSegment, activeSurface });
 
   const selectedTagIds = useMemo(
     () =>
-      composerSnapshot.mentions
+      [...(readingContext.tag ? [readingContext.tag.id] : []), ...composerSnapshot.mentions
         .filter((mention) => mention.kind === 'tag' && mention.tagId)
-        .map((mention) => mention.tagId as string),
-    [composerSnapshot.mentions]
+        .map((mention) => mention.tagId as string)],
+    [composerSnapshot.mentions, readingContext.tag]
   );
   const scope = useMemo(
-    () => buildAssistantScope({ activeEntry, activeTag, entries, selectedTagIds, tags }),
-    [activeEntry, activeTag, entries, selectedTagIds, tags]
+    () => buildAssistantScope({ activeEntry: readingContext.entry, activeTag: readingContext.bound || readingContext.entry || readingContext.surface.kind !== 'library' ? null : activeTag, entries, selectedTagIds, tags }),
+    [readingContext.entry, readingContext.bound, readingContext.surface.kind, activeTag, entries, selectedTagIds, tags]
   );
-  const selectedProfile = useMemo(
-    () => profiles.find((profile) => profile.id === selectedProfileId) ?? null,
-    [profiles, selectedProfileId]
-  );
+  const localConversation = conversationLocalSession(conversation)?.provider ?? null;
+  const localProvider = conversation?.messages.length ? localConversation : selectedEngine === 'model' ? null : selectedEngine;
+  const usingLocalAgent = Boolean(localProvider);
+  const localDetection = localProvider ? localDetections[localProvider] : null;
+  const selectedProfile = localProvider ? (localAgentEnabled && localDetection?.status === 'detected' ? localAgentProfile(localProvider) : null)
+    : profiles.find(profile => profile.id === selectedProfileId) ?? null;
   const visibleMessages = useMemo(
     () => [...(conversation?.messages ?? []), ...optimisticMessages],
     [conversation?.messages, optimisticMessages]
@@ -272,6 +317,7 @@ export function AssistantPanel({
     contentRef: messagesContentRef,
     endRef: messagesEndRef,
     forceNextScroll,
+    pauseAutoScroll,
     handleScroll: handleMessagesScroll,
     isAtBottom: messagesAtBottom
   } = useAssistantAutoScroll({
@@ -295,6 +341,10 @@ export function AssistantPanel({
     return externalAssistantContextItems(assistantContext.items, composerSnapshot);
   }, [assistantContext.items, composerSnapshot.mentions]);
   const composerDisabled = !root || !selectedProfile;
+
+  useEffect(() => {
+    if (root && selectedProfile && !usingLocalAgent) void warmAssistantRouter();
+  }, [root, selectedProfile?.id]);
 
   useEffect(() => {
     setMessageRenderLimit(INITIAL_MESSAGE_RENDER_LIMIT);
@@ -330,12 +380,42 @@ export function AssistantPanel({
   }, []);
 
   useEffect(() => {
-    const syncBackgroundRun = () => {
-      const run = getAssistantBackgroundRun();
+    let mounted = true;
+    if (previousRootRef.current !== root) {
+      engineSelectionRevision.current += 1;
+      previousRootRef.current = root;
+      setConversation(null);
+      setSelectedEngine(readLastAssistantEngine());
+      setBusy(false);
+      setError(null);
+      setMessageQueues([]);
+      setOptimisticMessages([]);
+      setStreamingMessageId(null);
+      setToolEventsByMessageId({});
+      setNoteProposalsByMessageId({});
+    }
+    const syncBackgroundRun = (finished?: AssistantBackgroundRunSnapshot) => {
+      if (finished && finished.root === root) {
+        if (finished.conversationId !== viewRef.current.conversationId &&
+            (!getAssistantMessageQueues(root).some(queue => queue.conversationId === finished.conversationId && !queue.paused) || finished.error || finished.abortController.signal.aborted)) {
+          notify({ title: finished.abortController.signal.aborted ? '后台对话已停止' : finished.error ? '后台对话运行失败' : '后台对话已完成',
+            description: finished.conversation?.title ?? finished.question,
+            tone: finished.error && !finished.abortController.signal.aborted ? 'danger' : 'success' });
+        }
+        void listConversations(root).then(items => { if (mounted) setConversations(items); })
+          .catch(() => { if (mounted) setHistoryError('聊天历史刷新失败，请重新打开历史记录。'); });
+      }
+      setBackgroundRuns(root ? getAssistantBackgroundRuns(root) : []);
+      setMessageQueues(root ? getAssistantMessageQueues(root) : []);
+      const run = root && viewRef.current.conversationId
+        ? findAssistantBackgroundRun(root, viewRef.current.conversationId)
+        : runAbortControllerRef.current ? getAssistantBackgroundRun(runAbortControllerRef.current) : null;
       if (!run) {
-        setBusy(false);
-        setStreamingMessageId(null);
-        runAbortControllerRef.current = null;
+        if (runAbortControllerRef.current) {
+          setBusy(false);
+          setStreamingMessageId(null);
+          runAbortControllerRef.current = null;
+        }
         return;
       }
       if (run.root !== root) {
@@ -343,6 +423,7 @@ export function AssistantPanel({
       }
       setBusy(true);
       setError(run.error);
+      viewRef.current.conversationId = run.conversationId;
       setConversation(run.conversation);
       setOptimisticMessages([]);
       setStreamingMessageId(run.streamingMessageId);
@@ -352,7 +433,13 @@ export function AssistantPanel({
     };
 
     syncBackgroundRun();
-    return subscribeAssistantBackgroundRun(syncBackgroundRun);
+    const unsubscribe = subscribeAssistantBackgroundRun(syncBackgroundRun);
+    return () => {
+      mounted = false;
+      unsubscribe();
+      viewRef.current = { generation: viewRef.current.generation + 1, conversationId: null };
+      runAbortControllerRef.current = null;
+    };
   }, [root]);
 
   useEffect(() => {
@@ -378,31 +465,27 @@ export function AssistantPanel({
     };
   }, [root, status]);
 
-  useEffect(() => {
-    if (busy || !queuedDraft) {
-      return;
-    }
-    const draft = queuedDraft;
-    setQueuedDraft(null);
-    void send(draft);
-  }, [busy, queuedDraft]);
-
-  const send = async (queued?: QueuedAssistantDraft) => {
-    const trimmed = (queued?.question ?? question).trim();
+  const send = async (queued?: QueuedAssistantDraft, resumeExecutionId?: string,
+    continuedConversation?: Conversation, continuedGeneration?: number) => {
+    const trimmed = resumeExecutionId ? '继续未完成任务' : (queued?.question ?? question).trim();
     if (!root || !selectedProfile || !trimmed) {
       return;
     }
-    if (busy && !queued) {
+    if (!queued && !resumeExecutionId && readingContext.unavailable) return;
+    const currentRun = conversation ? findAssistantBackgroundRun(root, conversation.id)
+      : runAbortControllerRef.current ? getAssistantBackgroundRun(runAbortControllerRef.current) : null;
+    if (!queued && !currentRun && (busy || messageQueue?.items.length)) return;
+    if (currentRun && !queued) {
       const snapshot: AssistantComposerSnapshot = {
         mentions: composerSnapshot.mentions.map((mention) => ({ ...mention })),
         text: composerSnapshot.text
       };
       const contextItems = orderedAssistantContextItems(assistantContext.items, snapshot);
-      setQueuedDraft({
-        activeEntry: activeEntry ? { id: activeEntry.id, title: activeEntry.title } : null,
-        activeNote: activeNote ? { ...activeNote } : null,
-        activeSegment: activeSegment ? { ...activeSegment } : null,
-        activeSurface: { ...activeSurface, capturedAt: new Date().toISOString() },
+      const draft: QueuedAssistantDraft = {
+        activeEntry: readingContext.entry ? { id: readingContext.entry.id, title: readingContext.entry.title } : null,
+        activeNote: readingContext.note ? { ...readingContext.note } : null,
+        activeSegment: readingContext.segment ? { ...readingContext.segment } : null,
+        activeSurface: { ...readingContext.surface, capturedAt: new Date().toISOString() },
         contextItems,
         contextPlan: planAssistantContext({
           composerSnapshot: snapshot,
@@ -410,8 +493,14 @@ export function AssistantPanel({
           question: trimmed
         }),
         question: trimmed,
+        scope: structuredClone(scope),
         snapshot
-      });
+      };
+      const controller = currentRun.abortController;
+      const queuedGeneration = viewRef.current.generation;
+      if (!queueAssistantBackgroundRun(controller, draft, (latest, frozenDraft) =>
+        send(frozenDraft, undefined, latest, queuedGeneration))) return;
+      setComposerSnapshot({ mentions: [], text: '' });
       setComposerResetKey((key) => key + 1);
       return;
     }
@@ -438,42 +527,52 @@ export function AssistantPanel({
       });
     const runEntry = queued
       ? queued.activeEntry
-      : activeEntry
-        ? { id: activeEntry.id, title: activeEntry.title }
+      : readingContext.entry
+        ? { id: readingContext.entry.id, title: readingContext.entry.title }
         : null;
-    const runNote = queued ? queued.activeNote : activeNote;
-    const runSegment = queued ? queued.activeSegment : activeSegment;
+    const runNote = queued ? queued.activeNote : readingContext.note;
+    const runSegment = queued ? queued.activeSegment : readingContext.segment;
     const runSurface = queued
       ? queued.activeSurface
-      : { ...activeSurface, capturedAt: new Date().toISOString() };
+      : { ...readingContext.surface, capturedAt: new Date().toISOString() };
+    const generation = continuedGeneration ?? viewRef.current.generation;
+    const guard = <Args extends unknown[],>(callback: (...args: Args) => void) =>
+      guardAssistantView(() => viewRef.current.generation === generation, callback);
     await runAssistantPanelTask({
-      conversation,
+      resumeExecutionId,
+      applicationActions: createApplicationActions(appearance, setAppearance),
+      conversation: continuedConversation ?? conversation,
       entries,
-      forceNextScroll,
+      forceNextScroll: guard(forceNextScroll),
       messageContextItems,
       noteProposalsByMessageId,
-      onAddAssistantContext,
+      onAddAssistantContext: guard(onAddAssistantContext),
       onCreateAssistantEntry,
       profiles,
-      resetComposer: !queued,
+      resetComposer: !queued && !resumeExecutionId,
       root,
-      runAbortControllerRef,
+      runAbortControllerRef: continuedConversation ? { current: null } : runAbortControllerRef,
       runEntry,
       runNote,
       runSegment,
       runSurface,
-      scope,
+      scope: queued?.scope ?? scope,
       selectedProfile,
-      setBusy,
-      setComposerResetKey,
-      setConversation,
-      setConversations,
-      setError,
-      setHistoryOpen,
-      setNoteProposalsByMessageId,
-      setOptimisticMessages,
-      setStreamingMessageId,
-      setToolEventsByMessageId,
+      setBusy: guard(setBusy),
+      setComposerResetKey: guard(setComposerResetKey),
+      setConversation: guard((update) => setConversation(current => {
+        if (viewRef.current.generation !== generation) return current;
+        const next = typeof update === 'function' ? update(current) : update;
+        viewRef.current.conversationId = next?.id ?? null;
+        return next;
+      })),
+      setConversations: guard(setConversations),
+      setError: guard(setError),
+      setHistoryOpen: guard(setHistoryOpen),
+      setNoteProposalsByMessageId: guard(setNoteProposalsByMessageId),
+      setOptimisticMessages: guard(setOptimisticMessages),
+      setStreamingMessageId: guard(setStreamingMessageId),
+      setToolEventsByMessageId: guard(setToolEventsByMessageId),
       submittedComposerSnapshot,
       submittedContextPlan,
       tags,
@@ -483,7 +582,7 @@ export function AssistantPanel({
   };
 
   const cancelRun = () => {
-    runAbortControllerRef.current?.abort();
+    if (runAbortControllerRef.current) stopAssistantBackgroundRun(runAbortControllerRef.current);
   };
 
   const retryAgentRun = (retryQuestion: string) => {
@@ -509,20 +608,38 @@ export function AssistantPanel({
   };
 
   const selectProfile = async (profileId: string) => {
+    const selectionRevision = ++engineSelectionRevision.current;
+    const nextProvider = selectionLocalProvider(profileId);
+    const nextEngine = nextProvider ?? 'model';
+    if (conversation?.messages.length && nextProvider !== localConversation) {
+      // Switching execution engines starts a separate history, preserving the reading target.
+      startNewConversation(true);
+    }
+    setSelectedEngine(nextEngine);
+    const remember = () => {
+      if (!saveLastAssistantEngine(nextEngine)) setError('本次选择已生效，但未能保存；下次打开时可能无法恢复。');
+    };
+    if (nextProvider) { remember(); return; }
     setSelectedProfileId(profileId);
     try {
       const settingsState = await setTaskLlmProfile('assistant', profileId);
+      if (selectionRevision !== engineSelectionRevision.current) return;
       setProfiles(settingsState.profiles);
       setSelectedProfileId(settingsState.assistant_profile_id ?? profileId);
+      remember();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      if (selectionRevision === engineSelectionRevision.current) setError(caught instanceof Error ? caught.message : String(caught));
     }
   };
 
   const openConversation = async (conversationId: string) => {
     if (!root) {
-      return;
+      return false;
     }
+    const generation = ++viewRef.current.generation;
+    viewRef.current.conversationId = conversationId;
+    runAbortControllerRef.current = null;
+    setConversation(null);
     setBusy(true);
     setError(null);
     setOptimisticMessages([]);
@@ -530,15 +647,32 @@ export function AssistantPanel({
     setToolEventsByMessageId({});
     setNoteProposalsByMessageId({});
     try {
-      const loaded = await loadConversation(root, conversationId);
-      setConversation(loaded);
+      const running = findAssistantBackgroundRun(root, conversationId);
+      const loaded = running?.conversation ?? await loadConversation(root, conversationId);
+      if (viewRef.current.generation !== generation) return false;
+      const latest = findAssistantBackgroundRun(root, conversationId);
+      if (!latest) syncAssistantMessageQueueConversation(root, loaded);
+      setConversation(latest?.conversation ?? loaded);
+      setSelectedEngine(conversationLocalSession(loaded)?.provider ?? 'model');
+      setStreamingMessageId(latest?.streamingMessageId ?? null);
+      setToolEventsByMessageId(latest?.toolEventsByMessageId ?? {});
+      setNoteProposalsByMessageId(latest?.noteProposalsByMessageId ?? {});
+      setError(latest?.error ?? null);
+      setMessageQueues(getAssistantMessageQueues(root));
+      runAbortControllerRef.current = latest?.abortController ?? null;
       setHistoryOpen(false);
+      return true;
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      if (viewRef.current.generation === generation) setError(caught instanceof Error ? caught.message : String(caught));
+      return false;
     } finally {
-      setBusy(false);
+      if (viewRef.current.generation === generation) setBusy(Boolean(findAssistantBackgroundRun(root, conversationId)));
     }
   };
+
+  const navigateConversation = useStableEvent((id: string) => { void openConversation(id); });
+  useEffect(() => root ? subscribeAssistantConversationNavigation(root, request => navigateConversation(request.conversationId)) : undefined,
+    [root, navigateConversation]);
 
   const toggleConversationHistory = async () => {
     if (historyOpen) {
@@ -567,7 +701,7 @@ export function AssistantPanel({
   };
 
   const deleteConversationHistory = async (item: ConversationMeta) => {
-    if (!root || busy) {
+    if (!root || busy || findAssistantBackgroundRun(root, item.id) || getAssistantMessageQueues(root).some(queue => queue.conversationId === item.id)) {
       return;
     }
 
@@ -600,7 +734,7 @@ export function AssistantPanel({
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
       notify({
-        description: message,
+        description: formatAssistantError(message, { debug: readAssistantDebug(), fallback: ASSISTANT_ACTION_INCOMPLETE }),
         title: '删除失败',
         tone: 'danger'
       });
@@ -611,7 +745,7 @@ export function AssistantPanel({
   };
 
   const renameConversationHistory = async (item: ConversationMeta, nextTitle: string) => {
-    if (!root || busy) {
+    if (!root || busy || findAssistantBackgroundRun(root, item.id) || getAssistantMessageQueues(root).some(queue => queue.conversationId === item.id)) {
       return;
     }
 
@@ -638,7 +772,7 @@ export function AssistantPanel({
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
       notify({
-        description: message,
+        description: formatAssistantError(message, { debug: readAssistantDebug(), fallback: ASSISTANT_ACTION_INCOMPLETE }),
         title: '重命名失败',
         tone: 'danger'
       });
@@ -649,7 +783,7 @@ export function AssistantPanel({
   };
 
   const exportConversationHistory = async (item: ConversationMeta) => {
-    if (!root || busy) {
+    if (!root || busy || findAssistantBackgroundRun(root, item.id) || getAssistantMessageQueues(root).some(queue => queue.conversationId === item.id)) {
       return;
     }
 
@@ -668,7 +802,7 @@ export function AssistantPanel({
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
       notify({
-        description: message,
+        description: formatAssistantError(message, { debug: readAssistantDebug(), fallback: ASSISTANT_ACTION_INCOMPLETE }),
         title: '导出失败',
         tone: 'danger'
       });
@@ -695,7 +829,7 @@ export function AssistantPanel({
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
       notify({
-        description: message,
+        description: formatAssistantError(message, { debug: readAssistantDebug(), fallback: ASSISTANT_ACTION_INCOMPLETE }),
         title: '导出失败',
         tone: 'danger'
       });
@@ -704,16 +838,24 @@ export function AssistantPanel({
     }
   };
 
-  const startNewConversation = () => {
+  const startNewConversation = (preserveContext = false) => {
+    setSelectedEngine(readLastAssistantEngine());
+    if (!preserveContext) setReadingChoice({ root, value: null });
+    viewRef.current = { generation: viewRef.current.generation + 1, conversationId: null };
+    runAbortControllerRef.current = null;
+    setBusy(false);
+    setError(null);
+    if (!preserveContext) setComposerResetKey(key => key + 1);
     setConversation(null);
     setOptimisticMessages([]);
     setStreamingMessageId(null);
     setToolEventsByMessageId({});
     setNoteProposalsByMessageId({});
-    onClearAssistantContext();
+    if (!preserveContext) onClearAssistantContext();
     setHistoryOpen(false);
   };
 
+  const noteReview = useNoteReview();
   const applyNoteProposal = async (proposal: AssistantNoteProposal) => {
     updateNoteProposalStatus(proposal.id, {
       error: undefined,
@@ -727,135 +869,84 @@ export function AssistantPanel({
         appliedAt: new Date().toISOString(),
         status: 'applied'
       });
-      void persistUpdatedConversationMessage(updatedMessage);
+      await persistUpdatedConversationMessage(updatedMessage);
     } catch (caught) {
       const updatedMessage = updateNoteProposalStatus(proposal.id, {
         error: caught instanceof Error ? caught.message : String(caught),
         status: 'error'
       });
-      void persistUpdatedConversationMessage(updatedMessage);
+      await persistUpdatedConversationMessage(updatedMessage);
     }
   };
 
-  const rejectNoteProposal = (proposal: AssistantNoteProposal) => {
+  const rejectNoteProposal = async (proposal: AssistantNoteProposal) => {
     const updatedMessage = updateNoteProposalStatus(proposal.id, {
       status: 'rejected'
     });
-    void persistUpdatedConversationMessage(updatedMessage);
+    await persistUpdatedConversationMessage(updatedMessage);
   };
 
-  const applyTagProposal = async (proposal: AssistantTagProposal) => {
-    updateTagProposalStatus(proposal.id, {
-      error: undefined,
-      status: 'applying'
-    });
+  const decideMutationProposal = async (proposal: AssistantTagProposal | AssistantEntryMetaProposal, decision: 'apply' | 'reject') => {
+    if (!root || !conversation || busy || proposalDecisionLock.current || noteReview?.deciding.length || proposal.status !== 'pending') return;
+    const conversationId = conversation.id;
+    proposalDecisionLock.current = true;
+    setDecidingProposal(proposal.id);
+    setError(null);
     try {
-      await onApplyTagProposal(proposal);
-      const updated = updateTagProposalStatus(proposal.id, {
-        appliedAt: new Date().toISOString(),
-        status: 'applied'
+      await decideStoredProposal({ root, conversationId, proposal, decision,
+        apply: confirmation => 'action' in proposal ? onApplyTagProposal(proposal, confirmation) : onApplyEntryMetaProposal(proposal, confirmation),
+        onConversation: saved => {
+          syncAssistantMessageQueueConversation(root, saved);
+          setConversation(current => currentRootRef.current === root && current?.id === saved.id ? saved : current);
+        }
       });
-      void persistUpdatedConversationMessage(updated);
     } catch (caught) {
-      const updated = updateTagProposalStatus(proposal.id, {
-        error: caught instanceof Error ? caught.message : String(caught),
-        status: 'error'
-      });
-      void persistUpdatedConversationMessage(updated);
+      const message = caught instanceof Error ? caught.message : String(caught);
+      if (currentRootRef.current === root && viewRef.current.conversationId === conversationId) setError(message);
+      notify({ title: '修改未确认完成', description: formatAssistantError(message, { debug: readAssistantDebug(), fallback: '请核对目标数据；系统不会自动重试。' }), tone: 'danger' });
+    } finally {
+      proposalDecisionLock.current = false;
+      setDecidingProposal(null);
     }
   };
-
-  const applyEntryMetaProposal = async (proposal: AssistantEntryMetaProposal) => {
-    updateEntryMetaProposalStatus(proposal.id, { error: undefined, status: 'applying' });
-    try {
-      await onApplyEntryMetaProposal(proposal);
-      const updated = updateEntryMetaProposalStatus(proposal.id, {
-        appliedAt: new Date().toISOString(),
-        status: 'applied'
-      });
-      void persistUpdatedConversationMessage(updated);
-    } catch (caught) {
-      const updated = updateEntryMetaProposalStatus(proposal.id, {
-        error: caught instanceof Error ? caught.message : String(caught),
-        status: 'error'
-      });
-      void persistUpdatedConversationMessage(updated);
-    }
-  };
-
-  const rejectEntryMetaProposal = (proposal: AssistantEntryMetaProposal) => {
-    const updated = updateEntryMetaProposalStatus(proposal.id, { status: 'rejected' });
-    void persistUpdatedConversationMessage(updated);
-  };
-
-  const updateEntryMetaProposalStatus = (
-    proposalId: string,
-    patch: Partial<AssistantEntryMetaProposal>
-  ) => {
-    const sourceConversation = conversation;
-    if (!sourceConversation) return null;
-    let updatedMessage: ConversationMessage | null = null;
-    const nextConversation = {
-      ...sourceConversation,
-      messages: sourceConversation.messages.map((message) => {
-        const next = patchMessageEntryMetaProposal(message, proposalId, patch);
-        if (next !== message) updatedMessage = next;
-        return next;
-      })
-    };
-    if (!updatedMessage) return null;
-    setConversation(nextConversation);
-    return { conversationId: nextConversation.id, message: updatedMessage };
-  };
-
-  const rejectTagProposal = (proposal: AssistantTagProposal) => {
-    const updated = updateTagProposalStatus(proposal.id, {
-      status: 'rejected'
-    });
-    void persistUpdatedConversationMessage(updated);
-  };
-
-  const updateTagProposalStatus = (proposalId: string, patch: Partial<AssistantTagProposal>) => {
-    const sourceConversation = conversation;
-    if (!sourceConversation) return null;
-    let updatedMessage: ConversationMessage | null = null;
-    const nextConversation = {
-      ...sourceConversation,
-      messages: sourceConversation.messages.map((message) => {
-        const next = patchMessageTagProposal(message, proposalId, patch);
-        if (next !== message) updatedMessage = next;
-        return next;
-      })
-    };
-    if (!updatedMessage) return null;
-    setConversation(nextConversation);
-    return { conversationId: nextConversation.id, message: updatedMessage };
-  };
+  const applyTagProposal = (proposal: AssistantTagProposal) => decideMutationProposal(proposal, 'apply');
+  const applyEntryMetaProposal = (proposal: AssistantEntryMetaProposal) => decideMutationProposal(proposal, 'apply');
+  const rejectTagProposal = (proposal: AssistantTagProposal) => { void decideMutationProposal(proposal, 'reject'); };
+  const rejectEntryMetaProposal = (proposal: AssistantEntryMetaProposal) => { void decideMutationProposal(proposal, 'reject'); };
 
   const updateNoteProposalStatus = (proposalId: string, patch: Partial<AssistantNoteProposal>) => {
     const conversationPatch = conversation
       ? patchConversationNoteProposal(conversation, proposalId, patch)
       : null;
 
-    setNoteProposalsByMessageId((current) =>
-      Object.fromEntries(
-        Object.entries(current).map(([messageId, proposals]) => [
-          messageId,
-          updateNoteProposalList(proposals, proposalId, patch)
-        ])
-      )
-    );
-    setOptimisticMessages((messages) =>
-      messages.map((message) => ({
-        ...message,
-        note_proposals: message.note_proposals
-          ? updateNoteProposalList(message.note_proposals, proposalId, patch)
-          : message.note_proposals
-      }))
-    );
+    // Completion belongs to its original conversation even if the user switches
+    // chats while a review decision is being written.
+    if (viewRef.current.conversationId === conversation?.id) {
+      setNoteProposalsByMessageId((current) =>
+        Object.fromEntries(
+          Object.entries(current).map(([messageId, proposals]) => [
+            messageId,
+            updateNoteProposalList(proposals, proposalId, patch)
+          ])
+        )
+      );
+      setOptimisticMessages((messages) =>
+        messages.map((message) => ({
+          ...message,
+          note_proposals: message.note_proposals
+            ? updateNoteProposalList(message.note_proposals, proposalId, patch)
+            : message.note_proposals
+        }))
+      );
+    }
 
     if (conversationPatch) {
-      setConversation(conversationPatch.conversation);
+      const updated = conversationPatch.message.note_proposals?.find(value => value.id === proposalId)
+        ?? conversationPatch.message.parts?.flatMap(part => part.type === 'note-proposal' ? [part.proposal] : []).find(value => value.id === proposalId);
+      if (updated) noteReview?.publish([{ conversationId: conversationPatch.conversation.id,
+        messageId: conversationPatch.message.message_id, proposal: updated }]);
+      setConversation(current => current?.id === conversationPatch.conversation.id
+        ? patchConversationNoteProposal(current, proposalId, patch)?.conversation ?? current : current);
       return {
         conversationId: conversationPatch.conversation.id,
         message: conversationPatch.message
@@ -885,6 +976,7 @@ export function AssistantPanel({
           tool_events: updated.message.tool_events ?? []
         }
       );
+      syncAssistantMessageQueueConversation(root, conversationState);
       setConversation((current) =>
         current?.id === conversationState.id ? conversationState : current
       );
@@ -893,7 +985,7 @@ export function AssistantPanel({
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
       notify({
-        description: message,
+        description: formatAssistantError(message, { debug: readAssistantDebug(), fallback: ASSISTANT_ACTION_INCOMPLETE }),
         title: '无法保存对话状态',
         tone: 'danger'
       });
@@ -901,6 +993,7 @@ export function AssistantPanel({
   };
 
   const handleMessageApplyNoteProposal = useStableEvent((proposal: AssistantNoteProposal) => {
+    if (proposalDecisionLock.current || busy) return;
     void applyNoteProposal(proposal);
   });
   const handleMessageApplyEntryMetaProposal = useStableEvent(
@@ -924,21 +1017,30 @@ export function AssistantPanel({
   const handleMessageRegenerateNoteProposal = useStableEvent(regenerateNoteProposal);
   const handleMessageRetryAgentRun = useStableEvent(retryAgentRun);
 
+  useNoteReviewActions({ conversationId: conversation?.id ?? null, disabled: busy || decidingProposal !== null,
+    apply: applyNoteProposal, reject: rejectNoteProposal });
+
+  useNoteReviewBridge({ conversation, messages: visibleMessages, proposals: noteProposalsByMessageId,
+    backgroundRuns, openConversation, scrollRef: messagesScrollRef, pauseAutoScroll,
+    revealAllMessages: () => setMessageRenderLimit(Number.MAX_SAFE_INTEGER),
+    closeHistory: () => setHistoryOpen(false),
+    onMissing: () => notify({ tone: 'default', title: '未找到对应修改', description: '这条提案可能已移除，请在当前对话中确认。' }) });
+
   return (
     <aside className="app-sidebar" data-assistant-context-dropzone="true">
       <div className="side-head min-w-0">
-        <span className="min-w-0 truncate">Assistant</span>
+        <span className="min-w-0 truncate">助手</span>
         <AssistantRunStatus
           busy={busy}
           error={error}
-          queued={Boolean(queuedDraft)}
+          queued={Boolean(messageQueue?.items.length)}
           streaming={Boolean(streamingMessageId)}
           toolEvents={runStatusToolEvents}
         />
       </div>
 
       <div className="relative grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
-        <div className="min-w-0 border-b p-2">
+        <div className="min-w-0 border-b p-2" data-material="sidebar-toolbar">
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="truncate text-xs font-medium">{scopeLabel(scope)}</div>
@@ -946,7 +1048,8 @@ export function AssistantPanel({
             <div className="flex shrink-0 items-center gap-1">
               <Button
                 size="icon-sm"
-                title="History"
+                title="聊天历史"
+                aria-label="聊天历史"
                 type="button"
                 variant={historyOpen ? 'secondary' : 'ghost'}
                 onClick={() => void toggleConversationHistory()}
@@ -955,10 +1058,11 @@ export function AssistantPanel({
               </Button>
               <Button
                 size="icon-sm"
-                title="New conversation"
+                title="新建对话"
+                aria-label="新建对话"
                 type="button"
                 variant="ghost"
-                onClick={startNewConversation}
+                onClick={() => startNewConversation()}
               >
                 <MessageSquarePlus />
               </Button>
@@ -976,14 +1080,15 @@ export function AssistantPanel({
 
           <div className="mt-2 min-w-0">
             <Select
-              disabled={profiles.length === 0 || busy}
-              value={selectedProfile?.id ?? ''}
+              disabled={(!localAgentEnabled && profiles.length === 0 && !usingLocalAgent) || busy}
+              value={localProvider ? localAgentSelection(localProvider) : selectedProfile?.id ?? ''}
               onValueChange={(value) => void selectProfile(value)}
             >
-              <SelectTrigger className="w-full" size="sm">
+              <SelectTrigger className="w-full" size="sm" aria-label="对话模型">
                 <SelectValue placeholder="Select model" />
               </SelectTrigger>
               <SelectContent>
+                {(localAgentEnabled || usingLocalAgent) && LOCAL_AGENTS.map(agent => <SelectItem key={agent.id} value={localAgentSelection(agent.id)} disabled={!localAgentEnabled || localDetections[agent.id]?.status !== 'detected'}>{agent.name} · 本地 Agent</SelectItem>)}
                 {profiles.map((profile) => (
                   <SelectItem key={profile.id} value={profile.id}>
                     {profile.name} · {profile.model}
@@ -995,13 +1100,14 @@ export function AssistantPanel({
 
           {!selectedProfile ? (
             <div className="mt-2 rounded-md border bg-muted/30 p-2 text-xs leading-5 text-muted-foreground">
-              Add an OpenAI-compatible model in Settings first.
+              {usingLocalAgent ? !localAgentEnabled ? '本地 Agent 已关闭，请在设置 → 检索与工具中启用。'
+                : localDetection?.message ?? `正在检测 ${localProvider ? localAgentName(localProvider) : '本地 Agent'}…` : '请先在设置中配置模型或启用本地 Agent。'}
             </div>
           ) : null}
 
           {error ? (
             <div className="mt-2 rounded-md border border-destructive/25 bg-destructive/5 p-2 text-xs leading-5 text-destructive">
-              {error}
+              {formatAssistantError(error, { debug, fallback: busy ? ASSISTANT_TOOL_PENDING : '助手未完成本次操作，请核对结果后再继续。' })}
             </div>
           ) : null}
 
@@ -1014,26 +1120,35 @@ export function AssistantPanel({
             </div>
           ) : null}
 
-          <AssistantConversationHistory
-            busy={busy}
-            conversationId={conversation?.id ?? null}
-            error={historyError}
-            items={visibleConversations}
-            loading={historyLoading}
-            open={historyOpen}
-            onClose={() => setHistoryOpen(false)}
-            onDelete={setConversationPendingDelete}
-            onExport={(item) => void exportConversationHistory(item)}
-            onOpen={(conversationId) => void openConversation(conversationId)}
-            onRename={(item) => {
-              setConversationRenameValue(item.title);
-              setConversationPendingRename(item);
-            }}
-          />
+          <AssistantBackgroundTasks runs={backgroundRuns} currentConversationId={conversation?.id ?? null}
+            onOpen={id => void openConversation(id)} onStop={stopAssistantBackgroundRun} />
         </div>
 
-        <div className="relative min-h-0 min-w-0 overflow-hidden">
+        {/* Keep the overlay anchored to the full panel: glass hover makes the toolbar positioned. */}
+        <AssistantConversationHistory
+          busy={busy}
+          runningConversationIds={[...backgroundRuns.flatMap(run => run.conversationId ? [run.conversationId] : []),
+            ...messageQueues.flatMap(queue => queue.conversationId ? [queue.conversationId] : [])]}
+          conversationId={conversation?.id ?? null}
+          error={historyError}
+          items={visibleConversations}
+          loading={historyLoading}
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          onDelete={setConversationPendingDelete}
+          onExport={(item) => void exportConversationHistory(item)}
+          onOpen={(conversationId) => void openConversation(conversationId)}
+          onRename={(item) => {
+            setConversationRenameValue(item.title);
+            setConversationPendingRename(item);
+          }}
+        />
+
+        <div className="assistant-message-layout relative min-h-0 min-w-0 overflow-hidden">
           <AssistantMessageList
+            awaitingApproval={awaitingApproval}
+            proposalsDisabled={busy || decidingProposal !== null || Boolean(noteReview?.deciding.length)}
+            decidingProposalId={decidingProposal}
             contentRef={messagesContentRef}
             endRef={messagesEndRef}
             hiddenMessageCount={hiddenMessageCount}
@@ -1078,7 +1193,11 @@ export function AssistantPanel({
           ) : null}
         </div>
 
-        <div className="min-w-0 border-t p-2">
+        <div className="min-w-0 border-t p-2" data-material="sidebar-toolbar">
+          <AssistantMessageQueue queue={messageQueue} running={busy} />
+          <ToolApprovalPanel root={root} conversationId={conversation?.id ?? null} onOpen={id => void openConversation(id)} />
+          <UserInputPanel root={root} conversationId={conversation?.id ?? null} onOpen={id => void openConversation(id)} onOpenSource={onOpenSource} />
+          <div hidden={awaitingUserInput}>
           {longConversation.isLong ? (
             <div className="mb-2 min-w-0 rounded-md border border-warning-border bg-warning-surface p-2 text-xs leading-5 text-warning">
               <div className="flex min-w-0 gap-2">
@@ -1102,11 +1221,10 @@ export function AssistantPanel({
                       Export
                     </Button>
                     <Button
-                      disabled={busy}
                       size="xs"
                       type="button"
                       variant="ghost"
-                      onClick={startNewConversation}
+                      onClick={() => startNewConversation()}
                     >
                       <MessageSquarePlus size={12} aria-hidden="true" />
                       New chat
@@ -1119,11 +1237,49 @@ export function AssistantPanel({
 
           <AssistantExternalContextItems
             items={externalContextItems}
-            onRemove={onRemoveAssistantContextItem}
+            onRemove={id => {
+              const item = externalContextItems.find(item => item.id === id);
+              onRemoveAssistantContextItem(id);
+              if (!item) return;
+              const toastId = notify({ title: '已移除引用', action: <Button size="xs" variant="ghost" onClick={() => {
+                if (currentRootRef.current === root) onAddAssistantContext(contextItemToInput(item));
+                dismiss(toastId);
+              }}>撤销</Button> });
+            }}
           />
 
+          <AssistantReadingContextControl context={readingContext} entries={entries} tags={tags} busy={busy} choice={chosenReadingObject}
+            onChange={value => setReadingChoice({ root, value })} />
+
+          <ExecutionRecovery root={root} conversationId={conversation?.id} busy={busy}
+            onResume={(id) => { void send(undefined, id); }} />
           <AssistantComposerEditor
+            actions={busy ? <>
+              <Button size="sm" type="button" variant="outline" onClick={cancelRun}>
+                <Square />
+                停止
+              </Button>
+              <Button
+                disabled={!selectedProfile || !question.trim() || readingContext.unavailable || !conversation || Boolean(runAbortControllerRef.current?.signal.aborted)}
+                size="sm"
+                type="button"
+                onClick={() => void send()}
+              >
+                <Send />
+                排队发送
+              </Button>
+            </> : <Button
+              data-guide="assistant-send"
+              disabled={!selectedProfile || !question.trim() || readingContext.unavailable || Boolean(messageQueue?.items.length)}
+              size="sm"
+              type="button"
+              onClick={() => void send()}
+            >
+              <Send />
+              发送
+            </Button>}
             composerDraft={composerDraft}
+            workspaceRoot={root}
             contextItems={assistantContext.items}
             disabled={composerDisabled}
             draftQuestion={composerPrefill ?? draftQuestion}
@@ -1152,34 +1308,6 @@ export function AssistantPanel({
             }}
             onSubmit={() => void send()}
           />
-          <div className="mt-2 flex justify-end gap-2">
-            {busy ? (
-              <>
-                <Button size="sm" type="button" variant="outline" onClick={cancelRun}>
-                  <Square />
-                  Stop
-                </Button>
-                <Button
-                  disabled={!selectedProfile || !question.trim() || Boolean(queuedDraft)}
-                  size="sm"
-                  type="button"
-                  onClick={() => void send()}
-                >
-                  <Send />
-                  {queuedDraft ? 'Queued' : 'Queue'}
-                </Button>
-              </>
-            ) : (
-              <Button
-                disabled={!selectedProfile || !question.trim()}
-                size="sm"
-                type="button"
-                onClick={() => void send()}
-              >
-                <Send />
-                Send
-              </Button>
-            )}
           </div>
         </div>
       </div>

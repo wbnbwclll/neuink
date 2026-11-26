@@ -1,4 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
+import { runLocalBackgroundJob } from '../lib/localBackgroundJobs';
+import { noteMutation, SEGMENT_BOOKMARK_CHANGED } from './noteCatalogApi';
 
 import type {
   EntryId,
@@ -18,7 +20,8 @@ import type {
   TagId,
   TagMeta
 } from '../types/domain';
-import type { AssistantEntryMetaProposal } from '../types/assistant';
+import type { AssistantEntryMetaProposal, AssistantTagProposal } from '../types/assistant';
+import { decideAssistantProposal, type AssistantProposalConfirmation } from './assistantProposalApi';
 
 export type SearchMode = 'keyword' | 'semantic' | 'hybrid';
 
@@ -143,6 +146,8 @@ export type OpenDevWorkspaceResponse = {
 };
 
 export type WorkspaceSettings = {
+  data_root?: string | null;
+  legacy_import_notice?: string | null;
   default_root: string;
   root: string;
   custom_root: string | null;
@@ -173,12 +178,6 @@ export type TranslationAutomationSettings = {
   segment_types: string[];
 };
 
-export type MigrateWorkspaceRootResponse = {
-  from_root: string;
-  root: string;
-  restart_requested: boolean;
-};
-
 export async function openDevWorkspace(): Promise<OpenDevWorkspaceResponse> {
   return invoke<OpenDevWorkspaceResponse>('open_dev_workspace');
 }
@@ -207,12 +206,6 @@ export async function updateTranslationAutomationSettings(
 
 export async function setWorkspaceRoot(root: string): Promise<OpenDevWorkspaceResponse> {
   return invoke<OpenDevWorkspaceResponse>('set_workspace_root', {
-    request: { root }
-  });
-}
-
-export async function migrateWorkspaceRoot(root: string): Promise<MigrateWorkspaceRootResponse> {
-  return invoke<MigrateWorkspaceRootResponse>('migrate_workspace_root', {
     request: { root }
   });
 }
@@ -293,6 +286,16 @@ export async function updateEntryMeta(
       fields,
       tags
     }
+  });
+}
+
+export async function applyEntryTagPaths(
+  root: string,
+  entryId: EntryId,
+  paths: string[]
+): Promise<{ entry: EntryMeta; tags: TagMeta[] }> {
+  return invoke('apply_entry_tag_paths', {
+    request: { root, entry_id: entryId, paths }
   });
 }
 
@@ -428,17 +431,13 @@ export async function updateNote(
 
 export async function applyEntryMetaProposal(
   root: string,
-  proposal: AssistantEntryMetaProposal
+  proposal: AssistantEntryMetaProposal,
+  confirmation: AssistantProposalConfirmation
 ): Promise<EntryMeta> {
-  return invoke<EntryMeta>('apply_entry_meta_proposal', {
-    request: {
-      base_updated_at: proposal.baseUpdatedAt,
-      description: proposal.afterDescription,
-      entry_id: proposal.entryId,
-      root,
-      title: proposal.afterTitle
-    }
-  });
+  const result = await decideAssistantProposal(root, proposal, confirmation, 'apply');
+  const entry = result.entries.find(value => value.id === proposal.entryId);
+  if (!entry) throw new Error('条目已提交，但无法刷新显示，请重新打开资料库核对。');
+  return entry;
 }
 
 export type ApplyTagProposalResponse = {
@@ -448,24 +447,10 @@ export type ApplyTagProposalResponse = {
 
 export async function applyTagProposal(
   root: string,
-  proposal: {
-    action: 'attach' | 'create' | 'detach' | 'rename';
-    entryIds: EntryId[];
-    name?: string;
-    newName?: string;
-    tagId?: TagId;
-  }
+  proposal: AssistantTagProposal,
+  confirmation: AssistantProposalConfirmation
 ): Promise<ApplyTagProposalResponse> {
-  return invoke<ApplyTagProposalResponse>('apply_tag_proposal', {
-    request: {
-      root,
-      action: proposal.action,
-      entry_ids: proposal.entryIds,
-      name: proposal.name ?? null,
-      new_name: proposal.newName ?? null,
-      tag_id: proposal.tagId ?? null
-    }
-  });
+  return decideAssistantProposal(root, proposal, confirmation, 'apply');
 }
 
 export async function getNoteFilePath(root: string, entryId: EntryId, noteId: NoteId): Promise<string> {
@@ -662,6 +647,14 @@ export type RefreshParseStatusResponse = {
   segment_count: number | null;
 };
 
+export async function setSegmentNoteBookmark(root: string, entryId: string, segmentUid: string, bookmarked: boolean) {
+  const notes = await noteMutation(root, invoke<SegmentBlockNote[]>('set_segment_note_bookmark', {
+    request: { root, entry_id: entryId, segment_uid: segmentUid, bookmarked }
+  }));
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(SEGMENT_BOOKMARK_CHANGED, { detail: { root, entryId } }));
+  return notes;
+}
+
 export type PdfReaderResponse = {
   pdf_path: string;
   segments: SourceSegment[];
@@ -688,7 +681,7 @@ export type AnnotationCatalogRecord = {
   segment_status: 'current' | 'page_anchored' | 'orphaned' | 'missing';
 };
 
-export type TranslationStatus = 'idle' | 'running' | 'succeeded' | 'failed' | 'partial';
+export type TranslationStatus = 'idle' | 'running' | 'succeeded' | 'failed' | 'partial' | 'paused' | 'canceled';
 
 export type TranslatedSegmentStatus = 'pending' | 'translated' | 'skipped' | 'failed';
 
@@ -724,6 +717,7 @@ export type TranslatedSegment = {
 };
 
 export type EntryTranslation = {
+  task?: { job_id: string; profile_id: string; force: boolean; source_hashes: Record<string, string>; remaining_segment_uids: string[]; created_at: string } | null;
   created_at: string;
   entry_id: EntryId;
   error: string | null;
@@ -743,6 +737,7 @@ export type EntryTranslationResponse = {
 };
 
 export type JobKind =
+  | 'paragraph_translation'
   | 'pdf_import'
   | 'parser'
   | 'index_build'
@@ -750,7 +745,7 @@ export type JobKind =
   | 'vectorize'
   | 'llm';
 
-export type JobStatus = 'queued' | 'processing' | 'succeeded' | 'failed' | 'canceled';
+export type JobStatus = 'queued' | 'processing' | 'paused' | 'succeeded' | 'failed' | 'canceled';
 
 // Rust 侧 JobScope 用内部标签 + 扁平字段序列化：
 // {"kind":"entry","root":...,"entry_id":...} / {"kind":"workspace","root":...}
@@ -779,7 +774,7 @@ export type Job = {
 export type JobEvent = {
   emitted_at: string;
   job: Job;
-  kind: 'queued' | 'started' | 'progress' | 'succeeded' | 'failed' | 'canceled';
+  kind: 'queued' | 'started' | 'progress' | 'paused' | 'succeeded' | 'failed' | 'canceled';
   payload: unknown;
 };
 
@@ -809,13 +804,15 @@ export async function importAndParsePdf(
 export async function queuePdfParse(
   root: string,
   entryId: EntryId,
-  pdfPath: string
+  pdfPath: string,
+  enqueue = true
 ): Promise<EntryMeta> {
   return invoke<EntryMeta>('queue_pdf_parse', {
     request: {
       root,
       entry_id: entryId,
-      pdf_path: pdfPath
+      pdf_path: pdfPath,
+      enqueue
     }
   });
 }
@@ -960,9 +957,31 @@ export async function translateEntrySegment(
   entryId: EntryId,
   segmentUid: string
 ): Promise<EntryTranslationResponse> {
-  return invoke<EntryTranslationResponse>('translate_entry_segment', {
-    request: { root, entry_id: entryId, segment_uid: segmentUid }
+  return runLocalBackgroundJob({
+    idPrefix: 'single-segment-translation',
+    kind: 'paragraph_translation',
+    scope: { kind: 'entry', root, entry_id: entryId },
+    message: '正在翻译片段',
+    successMessage: '片段翻译完成',
+    failureMessage: '片段翻译未完成，请返回论文重试。'
+  }, async () => {
+    const response = await invoke<EntryTranslationResponse>('translate_entry_segment', {
+      request: { root, entry_id: entryId, segment_uid: segmentUid }
+    });
+    const segment = response.translation?.segments.find(item => item.segment_uid === segmentUid);
+    if (!segment || segment.status !== 'translated' || !segment.translated_text?.trim()) {
+      throw new Error('片段翻译未返回有效译文，请返回论文重试。');
+    }
+    return response;
   });
+}
+
+export async function resumeEntryTranslation(root: string, entryId: string, jobId: string): Promise<RunEntryTranslationResponse> {
+  return invoke('resume_entry_translation', { request: { root, entry_id: entryId, job_id: jobId } });
+}
+
+export async function cancelTranslationTask(root: string, entryId: string, jobId: string): Promise<RunEntryTranslationResponse> {
+  return invoke('cancel_translation_task', { request: { root, entry_id: entryId, job_id: jobId } });
 }
 
 export async function pauseEntryTranslation(jobId: string): Promise<Job | null> {
@@ -1077,14 +1096,14 @@ export async function upsertSegmentNote(
   segmentUid: string,
   text: string
 ): Promise<SegmentBlockNote[]> {
-  return invoke<SegmentBlockNote[]>('upsert_segment_note', {
+  return noteMutation(root, invoke<SegmentBlockNote[]>('upsert_segment_note', {
     request: {
       root,
       entry_id: entryId,
       segment_uid: segmentUid,
       text
     }
-  });
+  }));
 }
 
 export async function listAnnotations(root: string): Promise<AnnotationCatalogRecord[]> {
@@ -1214,13 +1233,13 @@ export async function deleteSegmentNote(
   entryId: EntryId,
   segmentUid: string
 ): Promise<SegmentBlockNote[]> {
-  return invoke<SegmentBlockNote[]>('delete_segment_note', {
+  return noteMutation(root, invoke<SegmentBlockNote[]>('delete_segment_note', {
     request: {
       root,
       entry_id: entryId,
       segment_uid: segmentUid
     }
-  });
+  }));
 }
 
 export async function getSearchIndexBuildStatus(

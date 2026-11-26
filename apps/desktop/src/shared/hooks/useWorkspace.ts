@@ -54,7 +54,9 @@ import type {
 } from '../types/domain';
 import type { AssistantEntryMetaProposal, AssistantTagProposal } from '../types/assistant';
 import { useWorkspaceResourceActions } from './useWorkspaceResourceActions';
-import { listTagArchives } from '../ipc/tagReadingApi';
+import { listTagArchives, TAG_ARCHIVES_CHANGED } from '../ipc/tagReadingApi';
+import { createWorkspaceReadScope } from './workspaceReadScope';
+import { onResearchLibraryChanged } from '../ipc/researchApi';
 
 type WorkspaceStatus = 'loading' | 'ready' | 'error';
 
@@ -80,6 +82,8 @@ export type RefreshParsingEntriesResult = {
 };
 
 export function useWorkspace() {
+  const [readScope] = useState(createWorkspaceReadScope);
+  useEffect(() => () => readScope.open(null), [readScope]);
   const [root, setRoot] = useState<string | null>(null);
   const [entries, setEntries] = useState<EntryMeta[]>([]);
   const [annotationRecords, setAnnotationRecords] = useState<AnnotationCatalogRecord[]>([]);
@@ -89,9 +93,18 @@ export function useWorkspace() {
   const [tagArchiveCount, setTagArchiveCount] = useState(0);
   useEffect(() => {
     let cancelled = false;
+    let revision = 0;
     setTagArchiveCount(0);
-    if (root) void listTagArchives(root).then((items) => { if (!cancelled) setTagArchiveCount(items.length); }).catch(() => undefined);
-    return () => { cancelled = true; };
+    const refresh = () => {
+      const current = ++revision;
+      if (root) void listTagArchives(root).then((items) => { if (!cancelled && current === revision) setTagArchiveCount(items.length); }).catch(() => undefined);
+    };
+    const onArchivesChanged = (event: Event) => {
+      if ((event as CustomEvent<string>).detail === root) refresh();
+    };
+    refresh();
+    window.addEventListener(TAG_ARCHIVES_CHANGED, onArchivesChanged);
+    return () => { cancelled = true; window.removeEventListener(TAG_ARCHIVES_CHANGED, onArchivesChanged); };
   }, [root, tags]);
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
   const [status, setStatus] = useState<WorkspaceStatus>('loading');
@@ -115,18 +128,30 @@ export function useWorkspace() {
       if (!workspaceRoot) {
         return;
       }
+      const entriesCurrent = readScope.begin(workspaceRoot, 'entries');
+      const trashCurrent = readScope.begin(workspaceRoot, 'trash');
       const [nextEntries, nextTrashedEntries, nextTrashItems] = await Promise.all([
         listEntries(workspaceRoot),
         listTrashedEntries(workspaceRoot),
         listTrashItems(workspaceRoot)
       ]);
-      setEntries(nextEntries);
-      setTrashedEntries(nextTrashedEntries);
-      setTrashItems(nextTrashItems);
-      selectFirstEntry(nextEntries);
+      if (entriesCurrent()) {
+        setEntries(nextEntries);
+        setTrashedEntries(nextTrashedEntries);
+        selectFirstEntry(nextEntries);
+      }
+      if (trashCurrent()) setTrashItems(nextTrashItems);
     },
-    [root, selectFirstEntry]
+    [readScope, root, selectFirstEntry]
   );
+
+  useEffect(() => {
+    if (!root) return;
+    let closed = false;
+    const failed = (caught: unknown) => { if (!closed) setError(`论文导入列表刷新失败：${String(caught)}`); };
+    const stop = onResearchLibraryChanged(root, () => { void refreshEntries(root).catch(failed); }, failed);
+    return () => { closed = true; stop(); };
+  }, [root, refreshEntries]);
 
   const applyOpenedWorkspace = useCallback(
     (workspace: {
@@ -135,50 +160,57 @@ export function useWorkspace() {
       tags: TagMeta[];
       trashed_entries: EntryMeta[];
     }) => {
+      readScope.open(workspace.root);
+      const trashCurrent = readScope.begin(workspace.root, 'trash');
+      const annotationsCurrent = readScope.begin(workspace.root, 'annotations');
+      parseStatusRefreshInFlight.current = false;
+      lastParseStatusRefreshAt.current = 0;
+      setIsRefreshingParseStatus(false);
       setRoot(workspace.root);
       setEntries(workspace.entries);
       setAnnotationRecords([]);
       setTrashedEntries(workspace.trashed_entries);
-      void listTrashItems(workspace.root).then(setTrashItems).catch((caught) => {
-        setError(caught instanceof Error ? caught.message : String(caught));
+      setTrashItems([]);
+      void listTrashItems(workspace.root).then(items => { if (trashCurrent()) setTrashItems(items); }).catch((caught) => {
+        if (trashCurrent()) setError(caught instanceof Error ? caught.message : String(caught));
       });
       setTags(workspace.tags);
       selectFirstEntry(workspace.entries);
       setError(null);
       setStatus('ready');
       void listAnnotations(workspace.root)
-        .then(setAnnotationRecords)
+        .then(records => { if (annotationsCurrent()) setAnnotationRecords(records); })
         .catch((caught) => {
-          setError(caught instanceof Error ? caught.message : String(caught));
+          if (annotationsCurrent()) setError(caught instanceof Error ? caught.message : String(caught));
         });
     },
-    [selectFirstEntry]
+    [readScope, selectFirstEntry]
   );
 
   const refreshAnnotationCatalog = useCallback(
     async (workspaceRoot = root) => {
       if (!workspaceRoot) {
-        setAnnotationRecords([]);
         return [];
       }
+      const current = readScope.begin(workspaceRoot, 'annotations');
       const records = await listAnnotations(workspaceRoot);
-      setAnnotationRecords(records);
+      if (current()) setAnnotationRecords(records);
       return records;
     },
-    [root]
+    [readScope, root]
   );
 
   const refreshTrashItems = useCallback(
     async (workspaceRoot = root) => {
       if (!workspaceRoot) {
-        setTrashItems([]);
         return [];
       }
+      const current = readScope.begin(workspaceRoot, 'trash');
       const items = await listTrashItems(workspaceRoot);
-      setTrashItems(items);
+      if (current()) setTrashItems(items);
       return items;
     },
-    [root]
+    [readScope, root]
   );
 
   useEffect(() => {
@@ -364,6 +396,8 @@ export function useWorkspace() {
       if (targets.length === 0) {
         return null;
       }
+      const current = readScope.begin(root, 'parsing');
+      if (!current()) return null;
 
       const previousStatusByEntryId = new Map(
         targets.map((entry) => [entry.id, entry.pdf?.parse.status])
@@ -377,6 +411,7 @@ export function useWorkspace() {
         const results = await Promise.allSettled(
           targets.map((entry) => refreshParseStatus(root, entry.id, endpoint, options.apiKey))
         );
+        if (!current()) return null;
         const updatedEntries = results
           .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof refreshParseStatus>>> =>
             result.status === 'fulfilled'
@@ -409,11 +444,13 @@ export function useWorkspace() {
           updatedEntries
         };
       } finally {
-        parseStatusRefreshInFlight.current = false;
-        setIsRefreshingParseStatus(false);
+        if (current()) {
+          parseStatusRefreshInFlight.current = false;
+          setIsRefreshingParseStatus(false);
+        }
       }
     },
-    [entries, root]
+    [entries, readScope, root]
   );
 
   const selectedEntry = useMemo(
@@ -446,7 +483,7 @@ export function useWorkspace() {
     deleteWorkspaceTag,
     importPdfForEntry,
     importPdfForSelectedEntry,
-    isParsingPdf: parseSubmissionCount > 0,
+    isParsingPdf: parseSubmissionCount > 0 || entries.some(entry => ['uploading', 'uploaded', 'parsing'].includes(entry.pdf?.parse.status ?? '')),
     isRefreshingParseStatus,
     purgeWorkspaceEntry,
     createMarkdownSourceLink,

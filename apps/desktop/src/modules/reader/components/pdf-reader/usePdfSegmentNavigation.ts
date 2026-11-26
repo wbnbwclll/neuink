@@ -1,3 +1,4 @@
+import { useReadingNavigation } from '../navigation/ReadingNavigation';
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 
@@ -22,6 +23,7 @@ export function usePdfSegmentNavigation({
   onActiveSegmentChange,
   pdfScrollRef,
 }: UsePdfSegmentNavigationOptions) {
+  const remember = useReadingNavigation()?.remember;
   const [flashSegmentUid, setFlashSegmentUid] = useState<string | null>(null);
   const [pendingScrollSegmentUid, setPendingScrollSegmentUid] = useState<
     string | null
@@ -63,7 +65,7 @@ export function usePdfSegmentNavigation({
   }, []);
 
   const flashSegment = useCallback(
-    (segment: SourceSegment) => {
+    (segment: SourceSegment, sentenceIndex?: number) => {
       restartSegmentHighlight(segment.uid);
       onActiveSegmentChange?.({
         entryId,
@@ -71,6 +73,7 @@ export function usePdfSegmentNavigation({
         pageIdx: segment.page_idx,
         // The backend hydrates assistant context using the persisted real uid.
         segmentUid: segment.uid,
+        ...(sentenceIndex === undefined ? {} : { sentenceIndex }),
         text: segment.markdown ?? segment.text,
       });
     },
@@ -79,6 +82,7 @@ export function usePdfSegmentNavigation({
 
   const scrollToMountedOrPendingSegment = useCallback(
     (segment: SourceSegment) => {
+      remember?.();
       if (scrollToSegment(segment.uid, pdfScrollRef.current)) {
         setPendingScrollSegmentUid(null);
         restartSegmentHighlight(segment.uid);
@@ -88,7 +92,7 @@ export function usePdfSegmentNavigation({
       scrollToPage(segment.page_idx, pdfScrollRef.current);
       setPendingScrollSegmentUid(segment.uid);
     },
-    [pdfScrollRef, restartSegmentHighlight],
+    [pdfScrollRef, restartSegmentHighlight, remember],
   );
 
   useEffect(() => {
