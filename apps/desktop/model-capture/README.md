@@ -15,6 +15,6 @@
 
 接口不依赖压缩、工具上下文或会话持久化实现，移植时无需连带这些功能。生产行为仍使用默认 transport。
 
-文件仍写入 `D:\Users\新建文件夹`，由 `vitePlugin.ts` 的 `OUTPUT_DIRECTORY` 设置。四类前缀保持 `sdk-req`、`wire-req`、`wire-res`、`sdk-res`，同轮共享 capture id，内容为 UTF-8 格式化 JSON。原始提示词、正文与工具结果属于用户主动启用的本地开发抓取，不应作为常规日志或提交进仓库。
+文件写入 `C:\Users\llx z\Desktop\新建文件夹`，由 `vitePlugin.ts` 的 `OUTPUT_DIRECTORY` 设置。四类前缀保持 `sdk-req`、`wire-req`、`wire-res`、`sdk-res`，同轮共享 capture id，内容为 UTF-8 格式化 JSON。原始提示词、正文与工具结果属于用户主动启用的本地开发抓取，不应作为常规日志或提交进仓库。
 
 验证：`npm --workspace apps/desktop run test:frontend -- model-capture --maxWorkers 4`。

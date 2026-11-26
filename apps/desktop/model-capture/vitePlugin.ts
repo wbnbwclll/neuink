@@ -7,7 +7,7 @@ import type { Plugin } from 'vite';
 // Server-only sink for the renderer's model captures. The webview has no filesystem access, so each
 // payload is POSTed back to the dev server, which writes it to this machine-local folder.
 const CAPTURE_ROUTE = '/__neuink/debug/capture';
-const OUTPUT_DIRECTORY = 'D:\\Users\\新建文件夹';
+const OUTPUT_DIRECTORY = 'C:\\Users\\llx z\\Desktop\\新建文件夹';
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 
 // Ordered so the four files of one round trip sort in flow order.
