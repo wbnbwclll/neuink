@@ -243,16 +243,23 @@ export function modelInputSchema(descriptor: AssistantToolDescriptor): JSONSchem
     objectSchema.properties.offset = { type: 'integer', minimum: 0, description: 'Start at 0. For continuation, copy the exact next_read returned by this tool.' };
     objectSchema.properties.limit = { type: 'integer', minimum: 100, maximum: ENTRY_CONTEXT_MAX_CHARS, description: 'Maximum characters per parsed-text chunk; defaults to 8000.' };
     objectSchema.properties.revision = { type: 'string', pattern: '^[a-f0-9]{8}$', description: 'For offset > 0, copy revision from next_read so changed content cannot be silently mixed.' };
+  } else if (descriptor.name === 'get_entry_outline') {
+    objectSchema.required = ['entry_id'];
   } else {
     objectSchema.required = (objectSchema.required ?? []).filter((key: string) => key !== 'root');
   }
 
   describeProperty(objectSchema, 'query', 'Search phrase or question. Use a concise query relevant to this tool.');
   describeProperty(objectSchema, 'mode', 'Search mode. Prefer hybrid for content lookup; use keyword for exact terms.');
-  describeProperty(objectSchema, 'scope_entry_ids', 'Optional Entry ids. Omit this to use the current Neuink scope.');
+  describeProperty(objectSchema, 'scope_entry_ids', 'Optional. Exact entry_id from Current Scope (not the paper title or filename). Omit this to use the current Neuink scope.');
+  describeProperty(objectSchema, 'entry_ids', 'Exact entry_id values from Current Scope (not the paper title or filename).');
   describeProperty(objectSchema, 'top_k', 'Optional maximum number of segment hits to return.');
-  describeProperty(objectSchema, 'entry_id', 'Required Entry id for explicit Entry or segment reads.');
-  describeProperty(objectSchema, 'segment_uid', 'Segment uid returned by search_segments.');
+  describeProperty(objectSchema, 'english_query', 'Optional English academic query. For a Chinese question about an English paper, provide this in the same search_segments call.');
+  describeProperty(objectSchema, 'sub_queries', 'Optional additional focused queries, at most three.');
+  describeProperty(objectSchema, 'section_filter', 'Optional section id or case-insensitive section path fragment.');
+  describeProperty(objectSchema, 'segment_types', 'Optional segment types such as paragraph, table, figure, math, or heading.');
+  describeProperty(objectSchema, 'entry_id', 'Required. Exact entry_id from Current Scope (not the paper title or filename).');
+  describeProperty(objectSchema, 'segment_uid', 'Segment uid returned by search_library or search_segments.');
   describeProperty(objectSchema, 'doc_id', 'Sciverse document id returned by search_sciverse_evidence.');
   describeProperty(objectSchema, 'offset', 'Optional Unicode character offset for Sciverse content.');
   describeProperty(objectSchema, 'limit', descriptor.name === 'search_papers'
@@ -293,10 +300,13 @@ export function toolDescription(descriptor: AssistantToolDescriptor) {
     return `${descriptor.description} Use this for find/locate questions and questions about experiments, methods, datasets, results, tables, figures, or conclusions.`;
   }
   if (descriptor.name === 'read_segment_content') {
-    return `${descriptor.description} Use this after search_segments when a snippet is not enough.`;
+    return `${descriptor.description} Use this after search_library when a snippet is not enough.`;
   }
   if (descriptor.name === 'read_entry_assistant_context') {
     return `${descriptor.description} Use this only for an explicitly selected, named, or confirmed Entry. Omit limit for the default 8000 characters; if supplied, limit must be between 100 and ${ENTRY_CONTEXT_MAX_CHARS}. Parsed text is returned in bounded chunks: when more is true, call this tool again with the returned next_read arguments. Read all chunks when full reading is requested; otherwise state partial coverage. Never read CLI tool-result files with native Read/shell to obtain the rest. If no parsed segments exist, the host reads up to the first 3 PDF text-layer pages automatically. Continue with read_pdf_pages / search_pdf_text; respect next_page and incomplete/OCR warnings.`;
+  }
+  if (descriptor.name === 'get_entry_outline') {
+    return `${descriptor.description} Use this for a multi-entry or structure question when the compact outline is needed before section-specific retrieval.`;
   }
   if (descriptor.name === 'search_sciverse_evidence') {
     return `${descriptor.description} Cite supported claims with returned [S#] markers. papers is metadata; evidence contains snippets joined by doc_id. counts covers only this batch. Respect truncated, metadata_truncated and omitted_evidence. page_no=null means unknown. Read more with the content tools when needed.\n${PAPER_PRESENTATION_INSTRUCTIONS}`;

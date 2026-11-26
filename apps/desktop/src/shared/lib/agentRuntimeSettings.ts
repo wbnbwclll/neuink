@@ -27,6 +27,8 @@ const DEFAULT_MAIN_TOOL_IDS: AgentToolId[] = [
   'app_set_appearance',
   'create_entry',
   'search_segments',
+  'search_library',
+  'get_entry_outline',
   'read_segment_content',
   'read_entry_assistant_context',
   'search_sciverse_evidence',
@@ -44,11 +46,68 @@ const DEFAULT_MAIN_TOOL_IDS: AgentToolId[] = [
 const EVIDENCE_TOOL_IDS: AgentToolId[] = [
   'read_pdf_pages', 'search_pdf_text',
   'search_segments',
+  'search_library',
+  'get_entry_outline',
   'read_segment_content',
   'read_entry_assistant_context',
   'search_sciverse_evidence',
   'read_sciverse_content'
 ];
+
+const CAPABILITY_REVISION = 6;
+
+// Capability revision in which each tool joined a default grant. A tool not listed here was part
+// of the first grant (revision 0). A grant is complete at revision r when it holds every default
+// tool added at or before r, so an old complete grant is judged against the set it was issued under.
+const MAIN_TOOL_ADDED_IN: Partial<Record<AgentToolId, number>> = {
+  search_papers: 1,
+  search_web: 1,
+  read_webpage: 1,
+  import_papers: 1,
+  read_pdf_pages: 2,
+  search_pdf_text: 2,
+  read_browser_tab: 3,
+  arxiv_search: 4,
+  read_context_reference: 5,
+  get_entry_outline: 6,
+  search_library: 6
+};
+const EVIDENCE_TOOL_ADDED_IN: Partial<Record<AgentToolId, number>> = {
+  get_entry_outline: 6,
+  search_library: 6
+};
+
+/**
+ * Adds each default tool a complete older grant lacked, one revision step at a time. A grant
+ * missing any tool from the set that existed before a step stays as it is, and so does every later
+ * step. Tools added in step 3 or later also require tool-invocation permission.
+ */
+function extendGrant({
+  addedIn,
+  canInvokeTools,
+  defaults,
+  granted,
+  revision
+}: {
+  addedIn: Partial<Record<AgentToolId, number>>;
+  canInvokeTools: boolean;
+  defaults: AgentToolId[];
+  granted: AgentToolId[];
+  revision: number;
+}): AgentToolId[] {
+  let tools = [...granted];
+  for (let step = revision + 1; step <= CAPABILITY_REVISION; step += 1) {
+    const added = defaults.filter(id => addedIn[id] === step);
+    if (added.length === 0) continue;
+    const priorComplete = defaults
+      .filter(id => (addedIn[id] ?? 0) < step)
+      .every(id => tools.includes(id));
+    if (!priorComplete) break;
+    if (step >= 3 && !canInvokeTools) break;
+    tools = [...tools, ...added];
+  }
+  return [...new Set(tools)];
+}
 
 function createMainAssistant(partial: Partial<MainAssistantProfile>): MainAssistantProfile {
   return {
@@ -102,7 +161,7 @@ function createSubagent(
 }
 
 export const DEFAULT_AGENT_RUNTIME_SETTINGS: AgentRuntimeSettings = {
-  capabilityRevision: 5,
+  capabilityRevision: CAPABILITY_REVISION,
   mainAssistant: createMainAssistant({}),
   mcpServers: [],
   subagents: [
@@ -148,55 +207,64 @@ export function normalizeAgentRuntimeSettings(
   if (!settings || settings.version !== 4) {
     return DEFAULT_AGENT_RUNTIME_SETTINGS;
   }
+  const revision = settings.capabilityRevision ?? 0;
   return {
-    capabilityRevision: 5,
+    capabilityRevision: CAPABILITY_REVISION,
     mainAssistant: normalizeMainAssistant(settings.mainAssistant, settings.capabilityRevision ?? 0),
     mcpServers: normalizeMcpServers(settings.mcpServers),
-    subagents: normalizeSubagents(settings.subagents),
+    subagents: normalizeSubagents(settings.subagents, revision),
     toolPackages: normalizeToolPackages(settings.toolPackages),
     version: 4
   };
 }
 
-function normalizeMainAssistant(value: unknown, revision = 5) {
+function normalizeMainAssistant(value: unknown, revision = CAPABILITY_REVISION) {
   if (!value || typeof value !== 'object') {
     return DEFAULT_AGENT_RUNTIME_SETTINGS.mainAssistant;
   }
   const normalized = createMainAssistant(value as Partial<MainAssistantProfile>);
-  // Extend only the former complete built-in grant set. Explicitly restricted profiles stay restricted.
+  // Extend only a complete older built-in grant. Explicitly restricted profiles stay restricted.
   // Native descriptors still require the user to opt in to the external service in Settings.
-  const research = ['search_papers', 'search_web', 'read_webpage', 'import_papers'] as AgentToolId[];
-  const pdf = ['read_pdf_pages', 'search_pdf_text'] as AgentToolId[];
-  const previousDefaults = DEFAULT_MAIN_TOOL_IDS.filter(id => id !== 'arxiv_search' && id !== 'read_context_reference');
-  const hadStandardTools = previousDefaults.filter(id => !research.includes(id) && !pdf.includes(id) && id !== 'read_browser_tab').every(id => normalized.enabledToolIds.includes(id));
-  const migratedTools = [...new Set([...normalized.enabledToolIds,
-    ...(revision < 1 && hadStandardTools ? research : []), ...(revision < 2 && hadStandardTools ? pdf : [])])];
-  const hadCompletePreviousGrant = previousDefaults.filter(id => id !== 'read_browser_tab').every(id => migratedTools.includes(id));
-  if (revision < 3 && hadCompletePreviousGrant && normalized.permissions.canInvokeTools) migratedTools.push('read_browser_tab');
-  if (revision < 4 && previousDefaults.every(id => migratedTools.includes(id)) && normalized.permissions.canInvokeTools) migratedTools.push('arxiv_search');
-  if (revision < 5 && DEFAULT_MAIN_TOOL_IDS.filter(id => id !== 'read_context_reference')
-    .every(id => migratedTools.includes(id)) && normalized.permissions.canInvokeTools) migratedTools.push('read_context_reference');
   return {
     ...normalized,
     allowedSubagentIds: normalized.allowedSubagentIds.filter((id) => id !== 'patch-planner-agent'),
-    enabledToolIds: [...new Set(migratedTools)]
+    enabledToolIds: extendGrant({
+      addedIn: MAIN_TOOL_ADDED_IN,
+      canInvokeTools: normalized.permissions.canInvokeTools,
+      defaults: DEFAULT_MAIN_TOOL_IDS,
+      granted: normalized.enabledToolIds,
+      revision
+    })
   };
 }
 
-function normalizeSubagents(value: unknown) {
+function normalizeSubagents(value: unknown, revision = CAPABILITY_REVISION) {
   const rawSubagents = Array.isArray(value) ? value : DEFAULT_AGENT_RUNTIME_SETTINGS.subagents;
   const hadLegacyPlanner = rawSubagents.some((agent) => agent.id === 'patch-planner-agent');
   const byId = new Map(rawSubagents.map((subagent) => [subagent.id, subagent]));
-  return DEFAULT_AGENT_RUNTIME_SETTINGS.subagents.map((defaultSubagent) =>
-    createSubagent({
+  return DEFAULT_AGENT_RUNTIME_SETTINGS.subagents.map((defaultSubagent) => {
+    const stored = byId.get(defaultSubagent.id);
+    // Same rule as the main assistant: only a stored complete evidence grant is extended.
+    const storedTools = stored?.enabledToolIds;
+    const enabledToolIds = Array.isArray(storedTools)
+      ? extendGrant({
+          addedIn: EVIDENCE_TOOL_ADDED_IN,
+          canInvokeTools: true,
+          defaults: EVIDENCE_TOOL_IDS,
+          granted: storedTools,
+          revision
+        })
+      : storedTools;
+    return createSubagent({
       ...defaultSubagent,
-      ...(byId.get(defaultSubagent.id) ?? {}),
-      enabled: hadLegacyPlanner ? false : byId.get(defaultSubagent.id)?.enabled ?? defaultSubagent.enabled,
+      ...(stored ?? {}),
+      enabledToolIds,
+      enabled: hadLegacyPlanner ? false : stored?.enabled ?? defaultSubagent.enabled,
       id: defaultSubagent.id,
       outputKind: defaultSubagent.outputKind,
-      systemPrompt: byId.get(defaultSubagent.id)?.systemPrompt ?? defaultSubagent.systemPrompt
-    })
-  );
+      systemPrompt: stored?.systemPrompt ?? defaultSubagent.systemPrompt
+    });
+  });
 }
 
 function normalizeMcpServers(value: unknown): AgentMcpServer[] {
@@ -359,7 +427,7 @@ function deniedToolReason(
     return 'subagent invocation disabled';
   }
   if (
-    (toolId === 'search_segments' ||
+    (toolId === 'search_segments' || toolId === 'search_library' ||
       toolId === 'read_pdf_pages' || toolId === 'search_pdf_text' ||
       toolId === 'read_segment_content' ||
       toolId === 'read_entry_assistant_context') &&

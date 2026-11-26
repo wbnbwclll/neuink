@@ -79,6 +79,9 @@ const ALL_SETTINGS_CATALOG: SettingDefinition[] = [
   { id: 'agent-subagents', tab: 'subagents', title: '子助手', description: '配置内置子助手的模型、权限和系统提示词。', keywords: '子Agent 子 Agent worker 权限 启用' },
   { id: 'tools-services', tab: 'external-tools', title: 'Sciverse 外部检索', description: '配置科学文献检索服务和访问凭据。', keywords: 'Sciverse 检索 服务 插件 工具 API Key 密钥 外部工具' },
   { id: 'tools-research', tab: 'external-tools', title: '论文与网页检索', description: '免费免密钥检索、网页读取、确认下载 PDF，以及可选 Tavily 增强。', keywords: 'arXiv Crossref OpenAlex DuckDuckGo Tavily 免费 免配置 论文 下载 PDF 搜索 网页 URL API Key 密钥' },
+  { id: 'tools-model-access', tab: 'external-tools', title: '文本检索器', description: '配置本地或远程文本嵌入模型、下载推荐模型并重建检索索引，支持一键自检。', keywords: '文本检索器 模型 embedding 嵌入 bge-m3 e5 维度 模型目录 onnx 下载 HuggingFace 自检 通道总览' },
+  { id: 'tools-visual', tab: 'external-tools', title: '视觉编码服务', description: '配置本地 Qwen 视觉服务或远程 API，管理模型安装、启动服务与准备视觉索引。', keywords: '视觉编码 视觉服务 视觉检索 双通道 Qwen 图像 页面 图表 索引 启动服务 下载 endpoint' },
+  { id: 'tools-rerank', tab: 'external-tools', title: 'Reranker', description: '配置本地 ONNX 或远程 Rerank API，一键安装并切换重排模型。', keywords: '重排 rerank reranker 交叉编码器 cross encoder 模型 onnx 下载 jina cohere 百炼' },
   { id: 'tools-download-confirmation', tab: 'external-tools', title: '下载论文前确认', description: '控制主动添加论文时的二次确认，模型任务仍需授权。', keywords: '下载 PDF 添加 论文 确认 二次确认 不再确认 防误触' },
   { id: 'tools-deep-research', tab: 'external-tools', title: '深度研究组件', description: '在可选服务中按需安装 Research，查看进度、取消或重试安装。', keywords: 'research DeerFlow 深度研究 可选服务 安装 组件 环境 进度 检查' },
   { id: 'tools-assistant-debug', tab: 'models', title: '助手调试信息', description: '仅本机显示安全错误类别和状态码，默认关闭。', keywords: '调试 debug 诊断 工具报错 错误详情' },
@@ -118,3 +121,6 @@ export function readSettingsTab(): SettingsTab {
 export function rememberSettingsTab(tab: SettingsTab) {
   try { window.localStorage.setItem(LAST_TAB_KEY, tab); } catch { /* Navigation remains usable without persistence. */ }
 }
+
+
+

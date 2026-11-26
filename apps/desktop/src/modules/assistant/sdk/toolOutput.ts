@@ -1,3 +1,4 @@
+import { selectDiverseEvidence } from './evidenceDiversity';
 import { type SciverseContentResponse, type SciverseJsonResponse } from '@/modules/sciverse/types';
 import {
   type AssistantContextSnapshot,
@@ -16,6 +17,7 @@ type ToolEvidence = {
   page: number;
   score?: number;
   segment_uid: string;
+  surrounding_context?: string;
   snippet?: string;
   text?: string;
 };
@@ -89,15 +91,40 @@ export function numberMarkdownLines(markdown: string) {
     .join('\n');
 }
 
+function sectionIdentity(entryId: string, source: SearchHit['source']) {
+  const section = source.section_id || source.section_path;
+  return section ? `${entryId}::${section}` : null;
+}
+
 export function formatSearchSegmentsOutput(
   results: SearchResults,
-  addSource: (source: ConversationSourceLink) => number
+  addSource: (source: ConversationSourceLink) => number,
+  sectionFilter?: string | null,
+  options?: { preserveOrder?: boolean; limit?: number }
 ) {
-  const hits = results.entries.flatMap((group) => group.hits).slice(0, 24);
-  const evidence = hits
+  // Hits arrive grouped by Entry, so re-rank globally with MMR (or preserve global
+  // reranked score order when backend reranking already ran) and collapse segment
+  // notes/annotations that point at the same cited segment.
+  const segmentHits = results.entries
+    .flatMap((group) => group.hits)
     .filter((hit): hit is SearchHit & { target: { kind: 'segment'; entry_id: string; segment_uid: string; page_idx: number } } => hit.target.kind === 'segment')
-    .slice(0, 12)
-    .map((hit) => {
+    .map((hit) => ({
+      hit,
+      key: `${hit.target.entry_id}:${hit.target.segment_uid}`,
+      score: hit.score,
+      text: hit.snippet,
+      // Empty strings are not identities; `||` (not `??`) keeps a blank section_id from
+      // collapsing every section of the Entry onto one key.
+      sectionKey: sectionIdentity(hit.target.entry_id, hit.source)
+    }));
+  const limit = options?.limit ?? 12;
+  const preserveOrder =
+    options?.preserveOrder ?? Boolean(results.rerank_used && results.rerank_used !== 'off');
+  const evidence = selectDiverseEvidence(segmentHits, limit, 0.7, {
+    sectionFilter,
+    preserveOrder
+  })
+    .map(({ hit }) => {
       const source: ConversationSourceLink = {
         entry_id: hit.target.entry_id,
         entry_title: hit.entry_title,
@@ -113,16 +140,22 @@ export function formatSearchSegmentsOutput(
         page: source.page_idx + 1,
         score: hit.score,
         segment_uid: source.segment_uid,
-        snippet: hit.snippet
+        snippet: hit.snippet,
+        ...(hit.surrounding_context ? { surrounding_context: hit.surrounding_context } : {})
       } satisfies ToolEvidence;
     });
 
   // Backend warnings may embed provider errors and private model paths. Keep the
   // successful evidence, but expose only host-owned degradation copy.
   const keywordFallback = results.mode === 'semantic_fallback_keyword' || results.mode === 'hybrid_fallback_keyword';
-  const warnings = keywordFallback
-    ? ['Semantic search is unavailable. These are keyword fallback results, not semantic matches.']
-    : results.warnings?.length ? ['Search reported a limitation. Use only the returned evidence; completeness is not guaranteed.'] : [];
+  const warnings = [
+    ...(keywordFallback
+      ? ['Semantic search is unavailable. These are keyword fallback results, not semantic matches.']
+      : []),
+    ...(results.warnings?.length
+      ? ['Search reported a limitation. Use only the returned evidence; completeness is not guaranteed.']
+      : [])
+  ].filter((warning, index, all) => all.indexOf(warning) === index);
   const modelOutput = {
     evidence,
     kind: 'search_segments',

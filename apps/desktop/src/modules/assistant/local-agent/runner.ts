@@ -1,3 +1,4 @@
+import { readUnifiedRetrieval } from '@/shared/lib/retrievalMode';
 import type { AssistantToolTraceEvent } from '@/shared/ipc/assistantApi';
 import { getAssistantContextSnapshot, loadAgentRuntimeSettings } from '@/shared/ipc/assistantApi';
 import { runLocalAgent } from '@/shared/ipc/localAgentApi';
@@ -78,6 +79,8 @@ async function executeLocalAgent(inputOptions: RunAssistantHarnessOptions, sessi
     if (!options.conversationId) throw new Error('请先创建对话。');
     const runId = crypto.randomUUID();
     const execution = options.execution;
+    const agentRun = createAgentRun(execution?.record.id ?? `local-${runId}`);
+    const turnDurationsMs: number[] = [];
     const budget = options.budget ?? new RunBudget();
     const savedSession = execution?.get<LocalAgentSession>('local:session');
     if (savedSession && savedSession.provider !== session.provider) throw new Error('请切换回原任务使用的本地 Agent 后继续。');
@@ -110,13 +113,17 @@ async function executeLocalAgent(inputOptions: RunAssistantHarnessOptions, sessi
     const ledger = new SourceLedger(new Map(execution?.get<Array<[number, import('@/shared/ipc/assistantApi').ConversationSourceLink]>>('sources') ?? []));
     const browserTabTarget = options.currentSurface?.kind === 'browser' ? options.currentSurface.browserTab : null;
     const restoredState = execution?.get<ToolRuntimeState>('tools:local');
+    const unifiedRetrieval = (await readUnifiedRetrieval()) ? {} : null;
     const runtime = await createAssistantTools({ execution, budget, plan,
-      restoredState: restoredState && { ...restoredState, readNotes: [] }, root:options.root, scope:options.scope, abortSignal:options.abortSignal,
+      restoredState: restoredState && { ...restoredState, readNotes: [] }, retrievalScope:options.retrievalScope, root:options.root, scope:options.scope, abortSignal:options.abortSignal,
       activeExecution:{agent:main}, runtimeSettings, currentEntry:options.currentEntry, currentNote:options.currentNote,
       contextSnapshot:snapshot, assistantContext:options.assistantContext, availableEntries:options.availableEntries,
       tagMentionScopes:options.tagMentionScopes,
       browserTabTarget,
       conversationHistory:options.conversationHistory, sourceLedger:ledger, profiles:options.profiles,
+      defaultProfile:options.profiles?.[0],
+      unifiedRetrieval,
+      callerPlansRetrieval:!(options.profiles && options.profiles.length > 0),
       applicationActions:options.applicationActions, onCreateEntry:options.onCreateEntry,
       onNoteProposal:proposal => proposals.push(proposal), onToolEvent:emit,
       onEntryMetaProposal:proposal => entryMetaProposals.push(proposal),
@@ -162,6 +169,7 @@ async function executeLocalAgent(inputOptions: RunAssistantHarnessOptions, sessi
     for (;;) {
       budget.turn();
       await checkpoint.save();
+      const turnStartedAt = Date.now();
       const prepared = prepareNativeContextRequest({ previous:session.initialized ? session.contextState : undefined,
         workspace, policy:{ mode:plan.executionMode ?? 'act', write_policy:invocationPlan.writePolicy,
           source_policy:invocationPlan.sourcePolicy ?? 'mixed', required_tools:invocationPlan.requiredToolIds ?? [] },
@@ -230,6 +238,7 @@ async function executeLocalAgent(inputOptions: RunAssistantHarnessOptions, sessi
             return {isError:true,content:[{type:'text',text:message}]};
           }
         });
+      turnDurationsMs.push(Math.max(0, Date.now() - turnStartedAt));
       options.abortSignal?.throwIfAborted();
       await checkpoint.settled();
       session = {...session,initialized:true,contextState:contextCompacted ? undefined : prepared.state}; onSession(session);
@@ -278,7 +287,10 @@ async function executeLocalAgent(inputOptions: RunAssistantHarnessOptions, sessi
     const proposalIds = [...(grounded.noteProposals ?? []),...entryMetaProposals,...tagProposals].map(p => p.id);
     const task = createCompiledTaskState({ conversationId:options.conversationId, request:options.question, spec:plan });
     grounded.taskState = transitionTaskState(task, proposalIds.length ? 'awaiting_approval' : plan.executionMode === 'plan' ? 'awaiting_user' : 'completed', 'verify', proposalIds);
-    grounded.agentRun = finishAgentRun(createAgentRun(execution?.record.id ?? `local-${runId}`),'succeeded');
+    if (turnDurationsMs.length > 0) {
+      agentRun.turnDurationsMs = turnDurationsMs;
+    }
+    grounded.agentRun = finishAgentRun(agentRun, 'succeeded');
     return grounded;
   } finally {
     // A crashed CLI or a lost IPC channel must release host approval/question
@@ -288,7 +300,7 @@ async function executeLocalAgent(inputOptions: RunAssistantHarnessOptions, sessi
 }
 
 const PAPER_READ_NAMES = new Set(['read_entry_assistant_context', 'read_pdf_pages', 'search_pdf_text',
-  'read_segment_content', 'search_segments']);
+  'read_segment_content', 'search_segments', 'search_library']);
 const NOTE_READ_NAMES = new Set(['read_note', 'read_current_note']);
 const EXTERNAL_NEUINK_READ = /^(?:codex|claude|opencode)\.mcp__neuink__(.+)$/;
 

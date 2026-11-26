@@ -4,13 +4,16 @@ import {
   formatSearchSegmentsOutput,
   formatSciverseSearchOutput,
   applyMarkdownPatchPreview,
+  entryIdOrSingleScope,
   markdownPatchOperations,
   noteProposalAction,
   noteProposalInputSchema,
   normalizeToolInput,
   prependMarkdownPreview,
+  scopedEntryIds,
   sourcesFromMarkers
 } from './toolSupport';
+import type { ScopeSnapshot } from '@/shared/ipc/assistantApi';
 
 describe('local search degradation', () => {
   it.each(['semantic_fallback_keyword', 'hybrid_fallback_keyword', 'keyword'])(
@@ -18,7 +21,8 @@ describe('local search degradation', () => {
       const output = formatSearchSegmentsOutput({ query: 'participants', mode, index_generation: 1,
         total_hit_count: 0, entries: [], warnings: ['Embedding unavailable at C:\\Private\\models\\secret-model.onnx; Authorization: Bearer secret-token']
       }, () => 1);
-      expect(output.modelOutput.warnings).toHaveLength(1);
+      // Fallback modes add the keyword notice before the generic limitation notice.
+      expect(output.modelOutput.warnings).toHaveLength(mode === 'keyword' ? 1 : 2);
       expect(output.modelOutput.warnings[0]).toContain(mode === 'keyword' ? 'limitation' : 'keyword fallback');
       expect(JSON.stringify(output)).not.toMatch(/Private|secret-model|Authorization|secret-token/);
     }
@@ -27,6 +31,46 @@ describe('local search degradation', () => {
     const output = formatSearchSegmentsOutput({ query: 'participants', mode: 'keyword', index_generation: 1,
       total_hit_count: 0, entries: [] }, () => 1);
     expect(output.modelOutput.warnings).toEqual([]);
+  });
+
+  it('forwards post-ranking surrounding_context to evidence without polluting citation quotes', () => {
+    const output = formatSearchSegmentsOutput({
+      query: 'accuracy',
+      mode: 'hybrid',
+      index_generation: 1,
+      total_hit_count: 1,
+      entries: [{
+        entry_id: 'e1',
+        entry_title: 'Paper A',
+        hit_count: 1,
+        max_score: 0.9,
+        hits: [{
+          entry_id: 'e1',
+          entry_title: 'Paper A',
+          source: {
+            kind: 'segment',
+            label: 'Segment',
+            field_name: null,
+            tag_id: null,
+            note_id: null,
+            segment_uid: 's2',
+            page_idx: 2
+          },
+          target: { kind: 'segment', entry_id: 'e1', segment_uid: 's2', page_idx: 2 },
+          title: 'Results',
+          snippet: 'Table 2 reports 91.4% F1.',
+          score: 0.9,
+          matched_terms: [],
+          surrounding_context: '[Prev] Experimental setup.\n[Next] Ablations confirm the gain.'
+        }]
+      }],
+      warnings: []
+    }, () => 1);
+    expect(output.modelOutput.evidence).toHaveLength(1);
+    expect(output.modelOutput.evidence[0]?.surrounding_context).toBe(
+      '[Prev] Experimental setup.\n[Next] Ablations confirm the gain.'
+    );
+    expect(output.sources[0]?.quote).toBe('Table 2 reports 91.4% F1.');
   });
 });
 
@@ -189,5 +233,38 @@ describe('Sciverse assistant tools', () => {
       page: 999, page_size: 0, query: 'benchmark'
     }, { root: 'workspace', scope })).toEqual({ page: 100, page_size: 1, query: 'benchmark' });
     expect(normalizeToolInput('get_sciverse_metadata_catalog', {}, { root: 'workspace', scope })).toEqual({});
+  });
+});
+
+const frozenScope: ScopeSnapshot = {
+  tag_ids: [],
+  tag_names: [],
+  entry_ids: ['Kk7-HVa15guV-M2X', 'MeZ6gjESjMdVABhs', 'c6RD33rP-Jg3kGQA'],
+  entry_titles: [
+    '3830397.3841887.pdf-1933de06-bc45-4c67-960b-c28664d93a10',
+    '2026.acl-long.818.pdf',
+    '2026.acl-long.818'
+  ],
+  scope_intent: 'selection'
+};
+
+describe('frozen entry id resolution', () => {
+  it('maps a unique in-scope title to the real entry id', () => {
+    expect(entryIdOrSingleScope('3830397.3841887.pdf-1933de06-bc45-4c67-960b-c28664d93a10', frozenScope))
+      .toBe('Kk7-HVa15guV-M2X');
+    expect(scopedEntryIds(['2026.acl-long.818.pdf', 'c6RD33rP-Jg3kGQA'], frozenScope))
+      .toEqual(['MeZ6gjESjMdVABhs', 'c6RD33rP-Jg3kGQA']);
+  });
+
+  it('rejects a title outside the frozen scope and an ambiguous title', () => {
+    expect(() => entryIdOrSingleScope('not-in-scope.pdf', frozenScope))
+      .toThrow(/outside the frozen Assistant scope/);
+    const tied: ScopeSnapshot = {
+      ...frozenScope,
+      entry_ids: ['a', 'b'],
+      entry_titles: ['Same Paper', 'Same Paper']
+    };
+    expect(() => scopedEntryIds(['Same Paper'], tied)).toThrow(/超出冻结范围/);
+    expect(() => entryIdOrSingleScope('Same Paper', tied)).toThrow(/outside the frozen Assistant scope/);
   });
 });

@@ -1,3 +1,4 @@
+import type { GetEntryOutlineResponse } from '@/shared/ipc/assistantApi';
 import {
   type SciverseAgenticSearchResponse,
   type SciverseContentResponse,
@@ -102,7 +103,7 @@ export async function executeTool(
   if (toolName === 'search_segments') {
     const results = await invokeAssistantTool<SearchResults>('search_segments', input);
     signal?.throwIfAborted();
-    return formatSearchSegmentsOutput(results, recordSource);
+    return formatSearchSegmentsOutput(results, recordSource, typeof input.section_filter === 'string' ? input.section_filter : null);
   }
 
   if (toolName === 'read_segment_content') {
@@ -126,6 +127,26 @@ export async function executeTool(
         note: 'PDF 尚未完整解析，已自动读取前 3 页以内的文字层；按 next_page 继续 read_pdf_pages，不能把这部分当成全文。' } };
     }
     return formatReadEntryOutput(result, recordSource, contextBudget, input);
+  }
+
+  if (toolName === 'get_entry_outline') {
+    const result = await invokeAssistantTool<GetEntryOutlineResponse>('get_entry_outline', {
+      root: input.root,
+      entry_id: input.entry_id
+    });
+    signal?.throwIfAborted();
+    const sections = result.sections.map((section) => `${'  '.repeat(Math.max(0, section.level - 1))}- ${section.section_path} (${section.segment_count} segments)`);
+    return {
+      modelOutput: {
+        entry_id: result.entry_id,
+        entry_title: result.entry_title,
+        compact_summary: result.compact_summary ?? '',
+        kind: 'get_entry_outline',
+        sections
+      },
+      sources: [],
+      summary: sections.length > 0 ? `Read the outline for "${result.entry_title}".` : `No section outline is available for "${result.entry_title}".`
+    };
   }
 
   if (toolName === 'search_sciverse_evidence') {

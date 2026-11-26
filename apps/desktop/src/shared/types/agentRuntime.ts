@@ -11,6 +11,8 @@ export type AgentToolId =
   | 'app_set_appearance'
   | 'create_entry'
   | 'search_segments'
+  | 'search_library'
+  | 'get_entry_outline'
   | 'read_segment_content'
   | 'read_entry_assistant_context'
   | 'search_sciverse_evidence'

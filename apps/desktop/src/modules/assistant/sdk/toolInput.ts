@@ -1,3 +1,4 @@
+import { resolveAllowedEntryId, type LibraryEntryRef } from './searchScope';
 import { type ScopeSnapshot } from '@/shared/ipc/assistantApi';
 import { isResearchTool } from '@/shared/ipc/researchApi';
 import {
@@ -50,7 +51,11 @@ export function normalizeToolInput(
       query: requiredString(object.query, 'query'),
       mode: searchMode(object.mode),
       scope_entry_ids: scopedEntryIds(object.scope_entry_ids, scope),
-      top_k: clampTopK(object.top_k)
+      top_k: clampTopK(object.top_k),
+      ...(optionalString(object.english_query) ? { english_query: optionalString(object.english_query) } : {}),
+      sub_queries: stringArray(object.sub_queries).map(query => query.trim()).filter(Boolean).slice(0, 3),
+      ...(optionalString(object.section_filter) ? { section_filter: optionalString(object.section_filter) } : {}),
+      segment_types: stringArray(object.segment_types).map(type => type.trim().toLowerCase()).filter(Boolean).slice(0, 8)
     };
   }
 
@@ -59,6 +64,13 @@ export function normalizeToolInput(
       root,
       entry_id: entryIdOrSingleScope(object.entry_id, scope),
       segment_uid: requiredString(object.segment_uid, 'segment_uid')
+    };
+  }
+
+  if (toolName === 'get_entry_outline') {
+    return {
+      root,
+      entry_id: entryIdOrSingleScope(object.entry_id, scope)
     };
   }
 
@@ -164,6 +176,13 @@ export function mcpToolIdsForAgent(
     );
 }
 
+function allowedEntriesFromScope(scope: ScopeSnapshot): LibraryEntryRef[] {
+  return scope.entry_ids.map((id, index) => ({
+    id,
+    title: scope.entry_titles[index] ?? ''
+  }));
+}
+
 export function scopedEntryIds(value: unknown, scope: ScopeSnapshot) {
   const requested = stringArray(value);
 
@@ -175,11 +194,20 @@ export function scopedEntryIds(value: unknown, scope: ScopeSnapshot) {
     return scope.entry_ids;
   }
 
-  const allowed = new Set(scope.entry_ids);
-  if (requested.some(entryId => !allowed.has(entryId))) {
-    throw new Error('检索条目超出冻结范围，不能自动扩大到其他论文。');
+  const allowedEntries = allowedEntriesFromScope(scope);
+  const resolved: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of requested) {
+    const id = resolveAllowedEntryId(raw, allowedEntries);
+    if (!id) {
+      throw new Error('检索条目超出冻结范围，不能自动扩大到其他论文。');
+    }
+    if (!seen.has(id)) {
+      seen.add(id);
+      resolved.push(id);
+    }
   }
-  return requested;
+  return resolved;
 }
 
 export function entryIdOrSingleScope(value: unknown, scope: ScopeSnapshot) {
@@ -187,12 +215,13 @@ export function entryIdOrSingleScope(value: unknown, scope: ScopeSnapshot) {
   if (!entryId) {
     throw new Error('entry_id is required for explicit Entry reads.');
   }
-  if (!scope.entry_ids.includes(entryId)) {
+  const resolved = resolveAllowedEntryId(entryId, allowedEntriesFromScope(scope));
+  if (!resolved) {
     throw new Error(
       `Entry ${entryId} is outside the frozen Assistant scope. Allowed Entry ids: ${scope.entry_ids.join(', ') || 'none'}. Resolve [C] markers from the Typed Mention Map before retrying.`
     );
   }
-  return entryId;
+  return resolved;
 }
 
 export function clampTopK(value: unknown) {

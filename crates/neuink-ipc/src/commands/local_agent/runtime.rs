@@ -281,6 +281,7 @@ async fn execute(
         .await;
     }
     let mut command = path.command();
+    process::apply_loopback_no_proxy(&mut command);
     command
         .current_dir(&cwd)
         .args([

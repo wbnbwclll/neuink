@@ -1,5 +1,60 @@
 # Neuink 开发计划
 
+## 2026-11-26：用户确认 PR #17/#18 功能候选晋级 beta
+
+- 授权：向用户说明两个 PR 的功能及旧格式会话限制后，用户明确要求“把最新的更新合并到beta”，确认本次保留该功能范围并进入 beta 稳定性测试，不代表 main 或发行体验验收。
+- 固定来源：远端 alpha `0dc33fa0f0728f3603798845c36ac6969f02549f`；打包修复后的候选 `2418f7a49fe10bebf4a852b0872b701fab61f420`。beta 原基线 `e48d9738726e2f73da1e790b510258b11de9f31e` 是候选祖先，可快进，完整保留两个 PR 的历史。修复和本记录同时回流远端 alpha。本地 alpha 的其他未发布开发历史及 D:\NeuInk 的未提交修改不属于此次晋级。
+- 保留功能：统一/双语/批量/视觉检索、检索模型设置、范围约束和超时降级；增量上下文、长对话压缩、当前格式会话恢复、最多四个独立只读工具并行；原有研究卡片、构思数据、阅读、笔记和云同步功能继续保留。
+- 主动改变的行为与入口：默认模型工具从 search_segments 转为 search_library，旧工具仍支持受限授权及冻结执行恢复；正文和目录按需读取；检索设置按模型通道组织。取消启动时大模型预热，视觉服务重试复用存活进程；手动进入空解析页不再自动跳走。未移除研究卡片或构思入口。
+- 数据兼容：不迁移或删除论文、笔记、研究卡片和构思数据；保留原会话文件，但旧 model-transcript/retained_context/ProjectionState 格式不再参与续聊恢复。沿用当前格式 v2/v2/v5，授权修订 6 保留自定义限制和撤销。此次不操作 portable/data。
+- 验证证据：来源 0dc33fa 的远端 validate 和 verify 均成功，包含前端、类型/生产构建及 Rust 服务回归；本地上一轮 IPC 546 项通过、48 项按设置跳过。远端便携 build 在原生 release 编译成功后因残留的 onnx/model.onnx 硬编码失败。本次源/目标模型目录统一使用共享验证器，接受 int8 文件并拒绝空文件/同名目录；补齐便携包 PDFium、许可证及视觉服务脚本。打包回归 76 项通过、1 项缺少本地演示样本跳过，包含两种模型布局的实际组装逻辑；版本一致性通过。
+- 已知限制：新候选完整 Windows ZIP/安装包尚待本次 CI 重新生成；未做本轮原生 Tauri 视觉与长期稳定性验收、真实模型质量/内存基准及端到端模型安装验收。模拟组装测试替换了原生编译、PowerShell 复制和 ZIP 操作，不能等同最终发行包验证。beta 用于继续稳定性测试，不因自动测试通过而宣称体验验收完成。
+
+## 2026-11-25：PR #17 统一检索集成审查
+
+- 用户授权读取、修复并合并 PR。来源 `3abf63c9f045fb09801c2fbda932a8c43f5a0de7`，接入已合并 #18 的 `alpha`（`846f285`）；保留两个 PR 的来源历史。本次不晋级 beta/main，不替换 portable 或发布下载包。
+- 保留统一检索、双语查询、图表视觉检索、PDFium、批量任务、超时降级、模型设置及范围约束；保留 alpha 的研究卡片、构思、云同步及上下文架构。网站和发行工作流沿用 alpha，没有从旧分叉覆盖。
+- 交互调整：默认模型工具由 `search_segments` 转为 `search_library`，旧工具仍供受限配置及冻结旧执行恢复；正文和完整目录按需读取，PR #18 的增量协议替代旧预载正文/目录与旧记忆格式。设置权限修订升到 6，避免两个分支的 4/5 修订碰撞；只扩展完整旧默认授权，尊重自定义限制与撤销。
+- 修复审查发现的问题：视觉进程在端口就绪前由宿主持有，重复启动复用同一存活进程，进程退出后允许重启；启动等待超时返回未就绪错误；安装状态原子写入。取消打开应用后自动预热大模型，保留显式准备/诊断/启动入口，降低启动争用；用户手动进入空解析页时不再被自动跳走。
+- 离线评估接入当前 `search_library` 声明、批量后端夹具及冻结范围；保留真实模型循环、引用验证、失败记录和提案断言。本地 Agent 测试按新协议验证元数据冻结及正文/目录不预载。
+- 验证：前端全量首次运行 640 文件，4597 项通过、9 项失败、39 项跳过；发现协议断言、旧评估入口及两个 PDF 模块超时，修复/复跑全部 5 个失败文件后 81 项通过。评估目录额外回归 47 项通过、28 项真实模型测试按设置跳过。TypeScript/Vite 生产构建通过；打包契约 73 项通过、1 项跳过，版本一致性通过。Rust `neuink-ipc --no-default-features` 编译通过，视觉进程 3 项通过；同一构建生成的 IPC 单元测试程序串行全量运行，546 项通过、0 失败、48 项按原设置跳过。其余 Rust crate 全量套件留给分支 CI，本地未重复运行。#18 合入后的远端 validate/verify 均通过。
+- 限制：未完成原生 Tauri 视觉验收、真实模型质量/内存基准和端到端本地模型安装测试。构建保留现有大 chunk 提示；不能据此宣称启动卡顿已在原生环境验收。用户工作区未提交修改和 `portable/data` 不纳入本次集成。
+
+## 2026-11-25：PR #18 上下文工程集成审查
+
+- 来源 `5dc1286ac65d312dd1f867da1360197d60995988`，用户授权读取、修复并合并待处理 PR；目标调整为 `alpha`，不作为 beta/main 晋级或发行验收。
+- 保留增量工作区观察、真实模型输入记录、压缩后的状态补发、本地 Agent 会话，以及最多四个独立只读工具并行；写入仍串行并遵守执行保护。
+- 兼容性：仅恢复 model-transcript v2、retained_context v2、ProjectionState v5。旧记录原文件保留，但不进入续聊上下文；不自动迁移或删除。此条取代下方早期方案中“保留旧格式兼容”的说明。
+- 复现 CI 中 DailySidebar 懒加载模块尚未完成就超过查询超时的问题；测试收集阶段预载真实 DailyCalendar，生产懒加载保持不变。修复后定向回归 8 文件、87 项通过，涵盖日历、并行工具、观察、投影、模型记录及本地 Agent 检查点。
+- 代码规范和需求落实分别审查，未发现已确认的阻塞问题。未做本轮原生 Tauri、真实模型或旧资料迁移验收；不替换 portable、不操作用户 data、不更新云端发行包。
+
+### 2026-11-04：统一检索工具规划与 BM25 初步诊断
+
+- 新增[统一检索工具补全计划](retrieval-tool-completion-plan.md)，说明问题分析、范围解析、论文级与片段级候选召回及按需补查的待实施设计。
+- 新增[章节感知 BM25 初步诊断](section-aware-bm25-diagnostic.md)。当前仅完成小样本关键词离线对照；标注尚未人工确认，章节权重候选未在独立留出集、混合检索或原生助手入口验收，不改变生产排序。
+
+### 2026-11-03：BookRAG Lite 检索实施记录（生产默认保持 Legacy，章节重排关闭）
+
+- 共享检索入口位于 `crates/neuink-search/src/retrieval_pipeline.rs`（`recall_candidates`、`fuse_query_candidates`、`finalize_candidates`）。IPC 与 bench 共用同一路径。候选窗口为 `max(5K, 60)`，K 截到 200。过滤先于截断，最终 K 只截断一次。
+- 同分候选以 `hit_identity` 作最终 tie-break，修复候选尾部随 HashMap 顺序漂移的问题。RRF 未改。References 只在 finalize 阶段乘 0.35 一次；显式 section_filter（ID 或路径）豁免。
+- 缓存索引格式 v6，表示版本 1，身份为模型内容 blake3、维度与表示版本。译文、boost、显示标签不进入稳定键。章节完整性不足时整题旁路。前端 section 身份按 Entry 限定。
+- 数据：Qasper 原始 dev 1005 题，按哈希划分 select 140 篇（455 题）与 gate 141 篇（467 题）。整题排除（不保留部分 qrels）。float 只按 caption 文本匹配，不证明表内容理解。
+- 冻结结果：select 阶段一赢家 H1；章节最佳 B 的两指标平均增益 0.0013，低于 0.005，章节重排保持关闭。Qasper gate 与 test 的 evaluator 均选中 H1，`reselected` 为 false。test 结果已标注为事后分析的冻结评估。
+- 回归：SciFact 中 H1 点估计通过，Semantic 诊断项失败。COVID（本地中文，非 TREC-COVID）中 H1 相对 Legacy 的 nDCG@10 与 R@10 点估计均失败（−0.019178，−0.013172）。因此生产默认保持 `Legacy`、alpha 0。未挑选 H2 或 H3，未做语言路由。H1 在 Qasper test 的 Overall 双指标为正，这一结果不改变默认。
+- 确定性：两进程比较 select 6 方法 × 455 题的 raw 与 candidate 字段，零差异（证明 `D:\neuink-orchestration\bookrag-v5-determinism-proof.json`）。
+- 测试：`neuink-search` 52 通过（默认）与 53 通过（local-embedding），IPC search 9 通过，parser 单元 40 与集成 2 通过，前端 418 文件、2996 项通过，3 项跳过。
+- 成本协议为固定机器与线程、单方法独立进程、warm 1 次预热加 3 次计时，结果为当前单机有效观测；不保证其他机器或负载下的普适性。冷构建墙钟按 watcher process_start 到 observed_finish 计算，两次冷构建与 COVID 预构建重叠，因此冷构建数值不作隔离比较。
+- 未验收与限制：原生 Tauri UI 未验收（用户物理停止）；IPC 真实原地模型替换无端到端测试；语义索引缺少 limit 1 加高分候选的组合断言；ORT 线程调度未观测。
+- 冻结报告：`D:\neuink-orchestration\bookrag-lite-acceptance.md`；状态 `D:\neuink-orchestration\bookrag-acceptance-state.json`；索引 `D:\neuink-orchestration\bookrag-live-handoff.md`。
+## 2026-11-20：同步上游 beta 并接收上下文工程（排除消息抓取）
+
+- 用户明确要求同步上游 beta 到本地和 origin/beta，并把 test 中除消息抓取外的功能纳入 beta；PR 由用户自行创建。上游来源为 e48d973，本地原 beta 为 91921d0，同步提交 cbc436c 保留已有助手只读工具有限并行。test 原来源 a5494f5，通过 91c8d1e 合入同步后的 beta；test 继续保留开发抓取。
+- 功能保留：顶部固定规则、精简工作区元数据、只追加发生变化的状态、正文与完整目录按需读取、真实模型输入持久化、跨轮历史恢复、本地 Codex／Claude Code／OpenCode 的增量上下文，以及手动／自动压缩改进。不引入额外 Previous task state；最终方案不维护独立压缩基线。
+- 自动压缩补发本轮已冻结的工作区和执行策略，固定补发位置，后续过程消息只向后追加；手动压缩后在下次提问时补发。保留旧摘要、消息与投影版本的读取兼容，不迁移或删除原始对话，不修改写入提案确认和新鲜读取校验。
+- 选择性接收 test 的最终功能差异，未把抓取提交历史整包合入 beta。beta 不包含 apps/desktop/model-capture、Agent 抓取调用、Provider 专用 fetch 注入或 Vite 抓取插件；Provider 与 Vite 配置保持上游 beta 原样。LoCoMo 草稿、抓取配置和原有文档未提交修改仍仅留在用户工作区，不纳入提交。
+- 验证：助手及相关配置／构思回归 139 文件、1,235 项全部通过；全项目 TypeScript 检查 0 错误，Vite 生产构建通过（保留既有大包提示）。Rust 助手 27 项、本地 Agent 32 项通过，11 项真实 CLI／模型测试按原设置跳过。
+- 范围核对：功能代码与合并后的 test 一致，差异仅为抓取排除及尾部空行整理；本节额外记录 beta 交付范围。上游新增同步、管理、资料库及发行代码保留，不以本轮助手回归宣称这些能力完成全量验收。未调用真实模型或检索服务，未完成原生 Tauri 视觉及真实资料验收；不创建 PR、不合并 main、不打标签、不发布或更新日常程序。
+
 ## 2026-11-19 日常构建归档与 alpha / beta 同步
 
 - 用户确认保留当前日常版功能、README 像素总览及官网介绍，并授权整理相关提交后同步 GitHub alpha、beta 和下载入口。本次不晋级 main。
@@ -2678,6 +2733,32 @@ Hover 即时反馈（2026-09-17）：按用户要求删除 PDF 600ms 冷却、�
 - 状态仍归运行控制器和消息所有，单条详情自己持有展开状态；聊天列表负责外层滚动，展开详情保留 256px 内层滚动。复用共享 Button、语义色和原有键盘操作，没有新增拖动方式或依赖。ChatMessage 仅传递已有派生内容并调整原区块顺序，未增加其业务状态。
 - 验证：协议、消息组件、运行控制器及本地 Agent runner 共 64 项测试通过，TypeScript 检查通过。浏览器隔离演示核对正常／生成中／错误、无思考、展开收起、Enter 操作、窄面板及 125% 缩放，长思考无横向溢出，详情高度受限。未调用真实模型；原生 Tauri 视觉验收未完成。改动仅在 beta 工作区，未提交、合并或打包，现有便携版尚不包含此功能。
 
+## 2026-10-22：本地检索排序、助手证据多样化与增量对话记忆
+
+- 关键词索引由无长度归一化的 TF-IDF 改为 Okapi BM25（k1=1.2、b=0.75）。分段 boost 同时计入词频与文档长度（BM25F），文档 boost 乘在最终分数上；保留原匹配覆盖率系数、CJK 双字切分和摘要逻辑。长页面不再因体量压过聚焦片段，单词重复受 k1 饱和。
+- 修复助手 `search_segments` 与“构建向量索引”片段范围不一致：前者含笔记，后者不含，语义缓存命名空间永不命中，混合检索始终退回关键词。两处统一取 `search_scope_options(true)`（片段 + 锚定笔记/批注）；片段向量索引因此多嵌入笔记，需重新构建一次。
+- `search_segments` 工具结果先按全局分数重排，再用 MMR（λ=0.7，词集 Jaccard，CJK 双字）选取 12 条；同一片段的正文、片段笔记、批注合并为一个来源，相似度 ≥0.9 的近重复不再占用名额。纯函数位于 `sdk/evidenceDiversity.ts`。
+- 对话记忆检查点改为 Mem0 式增量操作：已有条目以 d/o/e/p 编号提供给模型，模型返回 ADD/UPDATE/DELETE/NONE，由宿主确定性应用；未提及条目保留，近重复 ADD 改写原条目，超限时先淘汰最旧项。兼容仍返回整份列表的模型；`AssistantConversationMemory` 存储形状不变，旧会话可直接读取。
+- 验证：neuink-search 18 项、neuink-ipc 289 项（28 项既有忽略）、neuink-workspace 145 项（4 项既有忽略）通过；TypeScript 检查与前端全量 2981 项通过。新增 BM25 排序/饱和、片段范围一致性、MMR 与记忆操作测试。未调用真实模型，未用真实资料对比检索质量，原生 Tauri 验收未完成；改动未提交。
+
+## 2026-11-14：双通道视觉旁路（页面/区域 + MinerU 资产同步）
+
+- 文档级路由：新增 `document_head`（head 20 / cap 20，点名论文单独传入不被 cap 丢弃）、`carrier_binding`（唯一编号才收窄，未编号/多编号只报告）、`unified_retrieval`（路由 → 视觉投票 → 文档头 → 载体 → 证据，子问题只进证据层，路由为空不扩散）。
+- 视觉通道固定 Qwen3-VL-Embedding-2B，两种传输：`qwen_local`（默认 `http://127.0.0.1:8765`，`.no_proxy()`）与 `qwen_api`（https + 只写密钥）。随包 fastembed 视觉编码停用，旧设置值经 `Retired` 承接并拒绝运行。
+- **页面与区域来自原生 PDF，图表资产来自 MinerU，同进一个快照**：`VisualSourceKind::{Page,Region,Figure,Table}`，页面与四个 region 共享 `page:{idx}` 父级（一页一票、region 取最大），资产按 `asset:` 独立投票。栅格化在本地服务内完成（`/embed_pages`），产品不存页面位图，Rust 不引入 PDF 库；`qwen_api` 无页面源。
+- 融合参数恢复为设置项：`append_gated`（默认，文本顺序不变、门控打开才追加）与 `weighted`，含权重、RRF k、门控阈值；`RoutingStage.visual_gate_open` 暴露门控结果。
+- 资产持久化：MinerU ZIP 的 `images/**` 落盘 `<entry>/assets/`（zip-slip/符号链接/超限校验、原子发布、blake3 清单幂等），并新增 `backfill_entry_assets` 从已存 `full.zip` 回填旧库。
+- 验证：`neuink-search` 109、`neuink-workspace` 161、`neuink-ipc commands::search` 24、回填 4、`tsc --noEmit` 通过、前端 3110 项通过（3 跳过）。
+- 未完成：本地 Qwen 服务脚本（`/health`、`/embed`、`/embed_pages` + PyMuPDF）、设置页 UI 与下载引导、原生端到端验收。视觉通道在无服务时报 `model_unavailable`，不影响文本检索。
+
+## 2026-11-14：图表资产改为从已存 MinerU ZIP 直读（取代落盘副本与回填）
+
+- 判定：图片字节是纯派生数据，`full.zip` 已有唯一一份，不应再复制到 `<entry>/assets/`。
+- 移除：`assets/` 目录、`assets.manifest.json`、`import_entry_assets_from_zip`、`backfill_entry_assets` 命令、`AssetBudgetExceeded`/`AssetSymlink` 错误、`entry_assets_dir`/`entry_assets_manifest_file` 布局函数，以及 MinerU 导入路径中的复制步骤。
+- 改为：`collect_entry_visual_assets` / `entry_asset_bytes` 只读 zip；逐文件限 32 MiB，非白名单扩展名与危险路径跳过，未知 scope 条目仍报错。
+- 效果：老库与新库行为一致，无需迁移；磁盘不再翻倍；写盘与迁移代码整体消失。
+- 视觉快照陈旧检测不变：重开时比对完整文档集合（含 PDF 与图片内容哈希），任何源变化自动报 `index_missing`。
+- 验证：`neuink-workspace` 156（资产 7 项）、`neuink-ipc commands::search` 38、`tsc --noEmit` 通过。
 ### 2026-11-05：默认翻译来源
 
 - 翻译行为合并为一个默认来源，支持小牛、DeepL、Azure、Qwen-MT 和已有大模型；各行为跟随默认或保留独立覆盖。

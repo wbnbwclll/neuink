@@ -1,6 +1,9 @@
 import { SettingsPage } from './SettingsPrimitives';
 import { SciverseSettingsSection } from '@/modules/sciverse/components/SciverseSettingsSection';
 import { ResearchSettingsSection } from './ResearchSettingsSection';
+import { RerankSettingsSection } from './RerankSettingsSection';
+import { VisualSettingsSection } from './VisualSettingsSection';
+import { ModelAccessSettings } from './ModelAccessSettings';
 import { ResearchComponentSettings } from './ResearchComponentSettings';
 
 import { AgentToolRuntimeSection } from './AgentSettingsSection';
@@ -20,6 +23,9 @@ export function ExternalToolsSettingsSection({
           <SciverseSettingsSection active={active} />
           <ResearchComponentSettings active={active} workspaceRoot={props.workspaceRoot} />
         </ResearchSettingsSection>
+      <ModelAccessSettings active={active} root={props.workspaceRoot ?? ''} />
+      <VisualSettingsSection active={active} root={props.workspaceRoot ?? ''} />
+      <RerankSettingsSection active={active} />
         {ADVANCED_ASSISTANT_SETTINGS_VISIBLE && <fieldset data-setting-id="tools-mcp" tabIndex={-1} disabled={props.runtimeUnavailable} className="min-w-0"><AgentToolRuntimeSection
           runtimeSettings={props.runtimeSettings}
           onUpdateRuntimeSettings={props.onUpdateRuntimeSettings}

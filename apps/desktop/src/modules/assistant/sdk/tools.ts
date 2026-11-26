@@ -40,6 +40,7 @@ import type {
 
 import { executeTool, runningSummary } from './toolExecution';
 import {
+  clampTopK,
   entryIdOrSingleScope,
   mcpToolIdsForAgent,
   normalizeToolInput,
@@ -83,8 +84,26 @@ import { RunBudget, type AgentLoopGuard } from '../agent-core';
 import type { ApplicationActions } from '../runtime/applicationActions';
 import type { DurableExecution } from '../runtime/durableExecution';
 import { stableHash } from '../runtime/evidenceLedger';
-import { PLANNING_READ_TOOLS } from '../runtime/executionPolicy';
 import { SourceLedger } from '../runtime/sourceLedger';
+import { resolveModelProfile, runJsonModelTask } from './modelTasks';
+import {
+  HOP2_RESOLVE_TASK_DESCRIPTION,
+  HOP2_RESOLVE_TASK_NAME,
+  MAX_RETRIEVAL_TASKS,
+  PLANNER_TASK_DESCRIPTION,
+  PLANNER_TASK_NAME,
+  QUESTION_TYPES,
+  fallbackDirectPlan,
+  planRetrieval,
+  resolveDependentTaskQuery,
+  validatePlanningOutput,
+  type PlanResolution,
+  type QuestionType
+} from './retrievalPlanning';
+import { runSearchLibrary, type DependentTaskResolveInput, type PlanInput, type SearchOptions } from './searchLibrary';
+import { createSearchLibraryBatch, type UnifiedRetrievalConfig } from './searchLibraryBatch';
+import { frozenScopeFromSnapshot, scopeRequestFromToolInput } from './searchScope';
+import { PLANNING_READ_TOOLS } from '../runtime/executionPolicy';
 import { runSubagentTask } from '../runtime/subagent';
 import { assistantContextCharBudget } from './contextBudget';
 import { buildEntryMetaProposal } from './entryMetaProposal';
@@ -93,15 +112,16 @@ import {
   entryMetaProposalInputSchema,
   entryMetaProposalSummary
 } from './entryMetaProposalTool';
-import { resolveModelProfile } from './modelTasks';
 
 const SUPPORTED_TOOL_NAMES = new Set([
   'read_context_reference',
   ...PDF_TOOL_NAMES,
   'search_papers', 'arxiv_search', 'search_web', 'read_webpage', 'import_papers',
   'search_segments',
+  'search_library',
   'read_segment_content',
   'read_entry_assistant_context',
+  'get_entry_outline',
   'search_sciverse_evidence',
   'read_sciverse_content',
   'search_sciverse_metadata',
@@ -144,6 +164,29 @@ function isAllowedMcpTool(
   return activeExecution?.agent.allowedMcpServerIds?.includes(serverId) ?? false;
 }
 
+/** Optional retrieval options the model supplies once; every sub-question inherits them. */
+/** Cancellation from the model call and from the run. Either one stops the search. */
+function combinedAbortSignal(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const present = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+  return present.length > 1 ? AbortSignal.any(present) : present[0];
+}
+
+const SEARCH_LIBRARY_FAILED_COPY = '资料库检索失败，本次未返回证据。';
+
+/** Without a host-built retrieval scope, `search_library` asks for clarification. It never falls back to the legacy scope. */
+const UNRESOLVED_RETRIEVAL_SCOPE: ScopeSnapshot = {
+  tag_ids: [], tag_names: [], entry_ids: [], entry_titles: [], scope_intent: 'unresolved'
+};
+
+function searchLibraryOptions(object: JsonObject): SearchOptions {
+  return {
+    english_query: optionalString(object.english_query) ?? undefined,
+    sub_queries: stringArray(object.sub_queries).slice(0, 3),
+    section_filter: optionalString(object.section_filter) ?? undefined,
+    segment_types: stringArray(object.segment_types)
+  };
+}
+
 type ToolEventHandler = (event: AssistantToolTraceEvent) => void;
 type NoteProposalHandler = (proposal: AssistantNoteProposal) => void;
 type EntryMetaProposalHandler = (proposal: AssistantEntryMetaProposal) => void;
@@ -177,6 +220,14 @@ type CreateAssistantToolsOptions = {
   initialSourceByMarker?: Map<number, ConversationSourceLink>;
   markerStart?: number;
   loopGuard?: AgentLoopGuard;
+  /** Host-only opt-in for composed retrieval. Absent keeps the batch path. */
+  unifiedRetrieval?: UnifiedRetrievalConfig | null;
+  /**
+   * When true (e.g. local CLI agents running without an external HTTP LLM profile),
+   * the calling agent applies retrieval planning rules directly via `question_types`
+   * and `planned_tasks` on `search_library`, without spawning a second planner process.
+   */
+  callerPlansRetrieval?: boolean;
   onCreateEntry?: CreateEntryHandler;
   onNoteProposal?: NoteProposalHandler;
   onEntryMetaProposal?: EntryMetaProposalHandler;
@@ -185,6 +236,8 @@ type CreateAssistantToolsOptions = {
   profiles?: LlmProfile[];
   invocationPlan?: AgentInvocationPlan | null;
   plan?: AssistantTaskPlan;
+  /** Explicit scope that `search_library` may search. Legacy `scope` is never used for retrieval. */
+  retrievalScope?: ScopeSnapshot;
   root: string;
   runtimeSettings?: AgentRuntimeSettings | null;
   scope: ScopeSnapshot;
@@ -246,6 +299,8 @@ export async function createAssistantTools({
   executionDepth = 0,
   initialSourceByMarker,
   loopGuard,
+  unifiedRetrieval,
+  callerPlansRetrieval = false,
   onCreateEntry,
   onNoteProposal,
   onEntryMetaProposal,
@@ -254,6 +309,7 @@ export async function createAssistantTools({
   profiles = [],
   invocationPlan,
   plan,
+  retrievalScope,
   root,
   runtimeSettings,
   scope
@@ -271,9 +327,21 @@ export async function createAssistantTools({
     return ledger.add(source);
   };
 
+  const startedAtByToolId = new Map<string, number>();
   const emit = (event: AssistantToolTraceEvent) => {
     if (abortSignal?.aborted) return;
     event = safeToolErrorEvent(event);
+    if (event.status === 'running') {
+      if (!startedAtByToolId.has(event.id)) {
+        startedAtByToolId.set(event.id, Date.now());
+      }
+    } else if (event.durationMs === undefined) {
+      const startedAt = startedAtByToolId.get(event.id);
+      if (startedAt !== undefined) {
+        event = { ...event, durationMs: Math.max(0, Date.now() - startedAt) };
+        startedAtByToolId.delete(event.id);
+      }
+    }
     const index = events.findIndex((current) => current.id === event.id);
     const nextEvent =
       index >= 0
@@ -467,6 +535,16 @@ export async function createAssistantTools({
 
   for (const descriptor of descriptors) {
     if (descriptor.name === 'import_papers' && (!canPropose || activeExecution?.agent.kind !== 'main_assistant')) continue;
+    // `search_library` is a strict superset of legacy `search_segments` (adding planning,
+    // unified routing, and visual rescue). Hide `search_segments` whenever `search_library`
+    // is enabled unless a resumed execution explicitly froze `search_segments`.
+    if (
+      descriptor.name === 'search_segments' &&
+      enabledToolIds.has('search_library') &&
+      !restoredState?.toolNames?.includes('search_segments')
+    ) {
+      continue;
+    }
     if (!SUPPORTED_TOOL_NAMES.has(descriptor.name) && !descriptor.name.startsWith('mcp.')) {
       continue;
     }
@@ -665,6 +743,190 @@ export async function createAssistantTools({
     }) as ToolSet[string];
   }
 
+  if (enabledToolIds.has('search_library')) {
+    const planSearchWithHttp = async (
+      input: PlanInput,
+      englishQuery?: string
+    ): Promise<PlanResolution> => {
+      let profile: LlmProfile;
+      try {
+        profile = resolveModelProfile(null, profiles, defaultProfile);
+      } catch {
+        if (callerPlansRetrieval) {
+          return {
+            status: 'planned',
+            plan: {
+              question_types: ['single'],
+              scope_kind: 'unspecified',
+              original_question: input.question.trim(),
+              ...(englishQuery ? { english_query: englishQuery } : {}),
+              retrieval_tasks: [],
+              unresolved_targets: [],
+              synthesis_task: undefined
+            },
+            attempts: 0
+          };
+        }
+        return fallbackDirectPlan(input.question, 'no_model_configured');
+      }
+      return planRetrieval({
+        question: input.question,
+        scopeHint: input.scopeHint,
+        papers: input.papers,
+        libraryScope: input.libraryScope,
+        runModel: async (system, prompt) =>
+          runJsonModelTask({
+            budget,
+            abortSignal: input.abortSignal,
+            settings: profile,
+            name: PLANNER_TASK_NAME,
+            description: PLANNER_TASK_DESCRIPTION,
+            system,
+            prompt
+          }),
+        abortSignal: input.abortSignal
+      });
+    };
+
+    const resolveDependentTask = async (input: DependentTaskResolveInput) => {
+      let profile: LlmProfile;
+      try {
+        profile = resolveModelProfile(null, profiles, defaultProfile);
+      } catch {
+        return null;
+      }
+      return resolveDependentTaskQuery({
+        originalQuestion: input.originalQuestion,
+        task: input.task,
+        dependencyEvidence: input.dependencyEvidence,
+        abortSignal: input.abortSignal,
+        runModel: async (system, prompt) =>
+          runJsonModelTask({
+            budget,
+            abortSignal: input.abortSignal,
+            settings: profile,
+            name: HOP2_RESOLVE_TASK_NAME,
+            description: HOP2_RESOLVE_TASK_DESCRIPTION,
+            system,
+            prompt
+          })
+      });
+    };
+
+    tools.search_library = tool<unknown, unknown>({
+      description:
+        'Search the library for evidence answering a question. Supports optional caller-supplied question_types and planned_tasks so an agent can submit decomposed sub-questions directly in one batch; otherwise the host planner splits multi-target or cross-paper questions when configured. Returns evidence per sub-question with each task status (retrieved, empty, or failed). When one turn needs several papers, send one search_library call and set target_entry_ids on each planned_tasks item instead of several serial search_library calls.',
+      inputSchema: jsonSchema<unknown>({
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          question: { type: 'string', description: 'The question to search for. Optional when planned_tasks contain non-empty questions; the host derives it from those sub-questions.' },
+          scope_entry_ids: { type: 'array', items: { type: 'string' }, description: 'Optional. Exact entry_id from Current Scope (not the paper title or filename). Omit for the current scope. An empty array searches nothing.' },
+          target_entry_ids: { type: 'array', items: { type: 'string' }, description: 'Optional alias for scope_entry_ids. Exact entry_id from Current Scope (not the paper title or filename). Omit for the current scope.' },
+          use_planning: { type: 'boolean', description: 'Optional; keep true (default) unless explicitly searching one atomic query without planning.' },
+          question_types: {
+            type: 'array',
+            items: { type: 'string', enum: ['single', 'multi_target', 'cross_paper', 'global'] },
+            description: 'Optional retrieval intent classification when you decompose the query yourself via planned_tasks.'
+          },
+          planned_tasks: {
+            type: 'array',
+            maxItems: MAX_RETRIEVAL_TASKS,
+            description: 'Optional decomposed retrieval sub-tasks executed in one batch (preferred over nested planning for multi-aspect, cross-paper, or global questions). For several papers in one turn, put each paper in its own item via target_entry_ids instead of issuing separate search_library calls.',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['question'],
+              properties: {
+                id: { type: 'string', description: 'Optional short task id such as t1, t2.' },
+                question: { type: 'string', description: 'Focused sub-question preserving necessary entities and constraints.' },
+                english_query: { type: 'string', description: 'Optional English academic query for this sub-question.' },
+                constraints: { type: 'array', items: { type: 'string' }, description: 'Optional short atomic constraints.' },
+                target_entry_ids: { type: 'array', items: { type: 'string' }, description: 'Optional. Exact entry_id from Current Scope (not the paper title or filename) for this sub-question.' }
+              }
+            }
+          },
+          top_k: { type: 'integer', minimum: 1, description: 'Optional maximum segment hits per sub-question (default 8, automatically clamped to at most 12).' },
+          english_query: { type: 'string', description: 'Optional English academic query for the original question, for a Chinese question about English papers.' },
+          sub_queries: { type: 'array', items: { type: 'string' }, maxItems: 3, description: 'Optional additional focused queries, at most three, applied to every sub-question.' },
+          section_filter: { type: 'string', description: 'Optional section id or section path fragment.' },
+          segment_types: { type: 'array', items: { type: 'string' }, description: 'Optional segment types such as paragraph, table, figure, math, or heading.' }
+        }
+      } as JSONSchema7),
+      execute: async (input, options) => {
+        const toolCallId = options.toolCallId;
+        let fingerprint: string | undefined;
+        try {
+          const object = asObject(input);
+          const question = toolPreflight(() => resolveSearchLibraryQuestion(object));
+          const rawScopeEntryIds = object.scope_entry_ids ?? object.target_entry_ids;
+          const scopeRequest = toolPreflight(() => scopeRequestFromToolInput(rawScopeEntryIds));
+          const topK = clampTopK(object.top_k);
+          const searchOptions = searchLibraryOptions(object);
+          const callerPlan = buildCallerPlanResolution(question, object, searchOptions.english_query);
+          // Caller-supplied planned_tasks always execute as a validated plan.
+          const usePlanning = callerPlan !== null ? true : object.use_planning !== false;
+          // Keep absent scope (null) distinct from an explicit empty scope ([]) and every option.
+          fingerprint = loopGuard?.beforeToolCall('search_library', {
+            question,
+            scope_entry_ids: rawScopeEntryIds ?? null,
+            use_planning: usePlanning,
+            question_types: object.question_types ?? null,
+            planned_tasks: object.planned_tasks ?? null,
+            top_k: topK,
+            options: searchOptions
+          });
+          emit({
+            id: toolCallId,
+            input: publicInput({ question, use_planning: usePlanning, top_k: topK }),
+            status: 'running',
+            summary: '正在检索资料库…',
+            toolName: 'search_library'
+          });
+          // Planner calls and batch searches stop on the model-call signal or the run signal.
+          const searchSignal = combinedAbortSignal(options.abortSignal, abortSignal);
+          const result = await runSearchLibrary({
+            question,
+            scopeRequest,
+            usePlanning,
+            topK,
+            options: searchOptions,
+            frozenScope: frozenScopeFromSnapshot(retrievalScope ?? UNRESOLVED_RETRIEVAL_SCOPE),
+            libraryEntries: availableEntries.map((entry) => ({ id: entry.id, title: entry.title })),
+            plan: callerPlan
+              ? async () => callerPlan
+              : (planInput) => planSearchWithHttp(planInput, searchOptions.english_query),
+            searchBatch: createSearchLibraryBatch({ root, addSource, abortSignal: searchSignal, unifiedRetrieval }),
+            resolveDependentTask,
+            abortSignal: searchSignal
+          });
+          searchSignal?.throwIfAborted();
+          observations.push({ output: result.modelOutput, toolName: 'search_library' });
+          loopGuard?.recordSuccess(result.modelOutput);
+          emit({
+            id: toolCallId,
+            input: publicInput({ question }),
+            sources: result.sources,
+            status: 'done',
+            summary: result.summary,
+            toolName: 'search_library'
+          });
+          return result.modelOutput;
+        } catch (error) {
+          if (fingerprint) loopGuard?.recordFailure(fingerprint);
+          // Raw provider, root and input text stay out of the trace. Cancellation and quota stops still propagate.
+          emit({
+            error: SEARCH_LIBRARY_FAILED_COPY,
+            id: toolCallId,
+            status: 'error',
+            toolName: 'search_library'
+          });
+          throw error;
+        }
+      }
+    }) as ToolSet[string];
+  }
+
   const proposalToolNames = [
     'note_propose_create',
     'note_propose_patch',
@@ -845,10 +1107,12 @@ export async function createAssistantTools({
             currentNote,
             instruction,
             question: optionalString(object.question) ?? instruction,
+            retrievalScope: retrievalScope ?? UNRESOLVED_RETRIEVAL_SCOPE,
             root,
             runtimeSettings,
             scope,
-            settings: profile
+            settings: profile,
+            unifiedRetrieval
           });
           loopGuard?.recordSuccess(result);
           observations.push({ toolName: 'task_run_subagent', output: { externalSourceUrls: result.externalSourceUrls } });
@@ -942,4 +1206,101 @@ function assertToolPrerequisites(
   if (!searchedDocIds.has(docId)) {
     throw new ToolPreconditionError('source_search_required');
   }
+}
+
+const CALLER_QUESTION_TYPE_SET = new Set<string>(
+  QUESTION_TYPES.filter((kind) => kind !== 'dependent_multihop')
+);
+
+const SEARCH_LIBRARY_QUESTION_LIMIT = 240;
+
+/** Top-level `question`, or a stable question synthesized from `planned_tasks`. */
+function resolveSearchLibraryQuestion(object: JsonObject): string {
+  const explicit = optionalString(object.question);
+  if (explicit) return explicit;
+  const questions = (Array.isArray(object.planned_tasks) ? object.planned_tasks : []).flatMap((entry) => {
+    const question = optionalString(asObject(entry).question);
+    return question ? [question] : [];
+  });
+  if (questions.length === 0) {
+    throw new Error('question is required (or provide non-empty planned_tasks).');
+  }
+  if (questions.length === 1) return questions[0];
+  const joined = questions.slice(0, 3).join('；');
+  return joined.length > SEARCH_LIBRARY_QUESTION_LIMIT
+    ? joined.slice(0, SEARCH_LIBRARY_QUESTION_LIMIT)
+    : joined;
+}
+
+/**
+ * Validates optional caller-supplied `question_types` / `planned_tasks` on `search_library`
+ * into a standard `PlanResolution`, allowing strong multi-turn local agents (Codex / Claude)
+ * to execute decomposed retrieval batches directly without spawning a second planner process.
+ */
+function buildCallerPlanResolution(
+  question: string,
+  object: JsonObject,
+  englishQuery?: string
+): PlanResolution | null {
+  const rawTypes = Array.isArray(object.question_types)
+    ? object.question_types
+        .filter((value): value is string => typeof value === 'string' && CALLER_QUESTION_TYPE_SET.has(value))
+        .map((value) => value as QuestionType)
+    : [];
+  const rawTasks = Array.isArray(object.planned_tasks) ? object.planned_tasks : [];
+  if (rawTypes.length === 0 && rawTasks.length === 0) return null;
+
+  const usedIds = new Set<string>();
+  const retrievalTasks = rawTasks.slice(0, MAX_RETRIEVAL_TASKS).flatMap((entry, index) => {
+    const item = asObject(entry);
+    const taskQuestion = optionalString(item.question);
+    if (!taskQuestion) return [];
+    let id = optionalString(item.id) ?? `t${index + 1}`;
+    while (usedIds.has(id)) {
+      id = `t${usedIds.size + 1}`;
+    }
+    usedIds.add(id);
+    return [{
+      id,
+      question: taskQuestion,
+      constraints: stringArray(item.constraints),
+      depends_on: [],
+      ...(optionalString(item.english_query) ? { english_query: optionalString(item.english_query) } : {}),
+      target_entry_ids: stringArray(item.target_entry_ids)
+    }];
+  });
+
+  const uniqueTypes = [...new Set(rawTypes)];
+  const questionTypes: QuestionType[] = retrievalTasks.length > 0
+    ? (uniqueTypes.length === 0 || (uniqueTypes.length === 1 && uniqueTypes[0] === 'single')
+        ? ['multi_target']
+        : uniqueTypes)
+    : (uniqueTypes.length > 0 ? uniqueTypes : ['single']);
+
+  // Decomposition types require at least one retrieval task under `validatePlanningOutput`.
+  const needsDecompositionTask =
+    retrievalTasks.length === 0 &&
+    questionTypes.some((kind) => kind === 'multi_target' || kind === 'cross_paper' || kind === 'global') &&
+    !questionTypes.includes('single');
+  if (needsDecompositionTask) {
+    retrievalTasks.push({
+      id: 't1',
+      question: question.trim(),
+      constraints: [],
+      depends_on: [],
+      ...(englishQuery ? { english_query: englishQuery } : {}),
+      target_entry_ids: []
+    });
+  }
+
+  const candidate = {
+    question_types: questionTypes,
+    scope_kind: 'unspecified' as const,
+    original_question: question.trim(),
+    ...(englishQuery ? { english_query: englishQuery } : {}),
+    retrieval_tasks: retrievalTasks,
+    unresolved_targets: []
+  };
+  const validated = validatePlanningOutput(candidate, question);
+  return validated.ok ? { status: 'planned', plan: validated.plan, attempts: 0 } : null;
 }

@@ -2,6 +2,8 @@ mod account_parse_transaction;
 pub mod agent_execution;
 pub mod annotation_index;
 pub mod atomic_write;
+pub mod entry_assets;
+pub mod entry_meta;
 mod content_transaction;
 pub mod daily;
 pub mod daily_note;
@@ -10,7 +12,6 @@ mod downloaded_pdf;
 pub mod edit_recovery;
 pub mod entertainment;
 pub mod entry_lifecycle;
-pub mod entry_meta;
 pub mod field_definitions;
 pub mod entry_sources;
 pub mod error;
@@ -65,6 +66,7 @@ pub use annotation_index::{
     AnnotationIndexRecord, AnnotationSegmentContext, AnnotationSegmentStatus,
 };
 pub use atomic_write::{atomic_write, atomic_write_json};
+pub use entry_assets::EntryVisualAsset;
 pub use error::WorkspaceError;
 pub use layout::WorkspaceLayout;
 pub use read_only::validate_workspace_read_only;

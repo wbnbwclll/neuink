@@ -1,3 +1,4 @@
+import { readUnifiedRetrieval } from '@/shared/lib/retrievalMode';
 import type { ApplicationActions } from '../runtime/applicationActions';
 import type { RequestToolApproval } from '../runtime/toolApproval';
 import type { RequestUserInput } from '../runtime/userInput';
@@ -79,6 +80,7 @@ export type GroundedAnswer = {
   sources: ConversationSourceLink[];
   taskState?: AssistantTaskState;
   toolEvents?: AssistantToolTraceEvent[];
+  turnDurationsMs?: number[];
   modelTranscript?: AssistantModelTranscript;
 };
 
@@ -112,6 +114,7 @@ export async function answerWithGroundedAgent({
   root,
   activeExecution,
   profiles,
+  retrievalScope,
   runtimeSettings,
   scope,
   settings
@@ -146,6 +149,7 @@ export async function answerWithGroundedAgent({
   root: string;
   activeExecution?: AgentExecutionSelection | null;
   profiles?: LlmProfile[];
+  retrievalScope?: ScopeSnapshot;
   runtimeSettings?: AgentRuntimeSettings | null;
   scope: ScopeSnapshot;
   settings: LlmProfile;
@@ -188,6 +192,7 @@ export async function answerWithGroundedAgent({
     currentEntry,
     currentNote,
     executionDepth: 0,
+    unifiedRetrieval: (await readUnifiedRetrieval()) ? {} : null,
     markerStart: firstNewMarker,
     loopGuard,
     onCreateEntry,
@@ -206,6 +211,7 @@ export async function answerWithGroundedAgent({
     invocationPlan,
     profiles,
     root,
+    retrievalScope,
     runtimeSettings,
     scope
   });
@@ -321,6 +327,16 @@ export async function answerWithGroundedAgent({
       return issue.correction;
     }
   });
+  const turnDurationsMs: number[] = [];
+  let currentTurnStartedAt: number | null = null;
+  agent.subscribe((event) => {
+    if (event.type === 'turn_start') {
+      currentTurnStartedAt = Date.now();
+    } else if (event.type === 'turn_end' && currentTurnStartedAt !== null) {
+      turnDurationsMs.push(Math.max(0, Date.now() - currentTurnStartedAt));
+      currentTurnStartedAt = null;
+    }
+  });
   let answer: string;
   try {
     answer = normalizeReturnedExternalCitationLinks(await agent.run(), returnedExternalCitationUrls(citationObservations()));
@@ -383,6 +399,7 @@ export async function answerWithGroundedAgent({
         segment_uid: source.segmentUid
       })))
     ]),
+    turnDurationsMs,
     toolEvents: runtime.events,
     modelTranscript: recording.current,
     conversationMemory: compactedMemory
